@@ -32,9 +32,9 @@ class VersionPolicyTests(unittest.TestCase):
         path = self.solution / "XDR Detections/Test.yaml"
         document = json.loads(path.read_text().removeprefix("---\n"))
         if version is None:
-            document["contentProvenance"]["source"].pop("version", None)
+            document.pop("version", None)
         else:
-            document["contentProvenance"]["source"]["version"] = version
+            document["version"] = version
         path.write_text("---\n" + json.dumps(document))
         changes = {"Include XDR Content Registration": registration}
         if fallback is not None:
@@ -86,7 +86,12 @@ class VersionPolicyTests(unittest.TestCase):
                                           if r.get("properties", {}).get("contentKind") == "CustomDetection"]
                             self.assertEqual(1 if registration else 0, len(registered))
                             if registration:
-                                self.assertEqual(version, registered[0]["properties"]["version"])
+                                properties = registered[0]["properties"]
+                                self.assertEqual(version, properties["version"])
+                                self.assertIn(f"'-','{version}'", properties["contentProductId"])
+                                self.assertNotIn("'-','1.0.0'", properties["contentProductId"])
+                                self.assertEqual(properties["contentProductId"], properties["id"])
+                                self.assertEqual("3.0.0", properties["contentSchemaVersion"])
                         else:
                             result = self.assert_rejected_unchanged(entry, pipeline=pipeline)
                             self.assertIn("CustomDetection 'XDR Detections/Test.yaml'", result.stdout + result.stderr)
@@ -140,20 +145,40 @@ class VersionPolicyTests(unittest.TestCase):
             with self.subTest(pipeline=pipeline):
                 self.assert_rejected_unchanged(entry, pipeline=pipeline)
 
-    def test_xdr_existing_precedence_and_defaults(self):
+    def test_xdr_own_version_is_required_and_fallbacks_cannot_override_it(self):
         entry = self.fixture()
-        self.update_detection("1.0.0", fallback="3.1.0")
-        self.assert_rejected_unchanged(entry)
-        self.update_detection(None, fallback="3.1.0")
-        result = self.package(entry, False)
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.update_detection(None, fallback="1.0.0")
-        self.assert_rejected_unchanged(entry)
-        document = json.loads(self.data.read_text())
-        document.pop("XDR Detection Version")
-        self.data.write_text(json.dumps(document))
-        result = self.package(entry, False)
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        for pipeline in (False, True):
+            for registration in (False, True):
+                with self.subTest(pipeline=pipeline, registration=registration):
+                    for version in ("1.0.0", "", None):
+                        self.update_detection(version, registration=registration, fallback="3.1.0")
+                        result = self.assert_rejected_unchanged(entry, pipeline=pipeline)
+                        self.assertIn("major.minor.patch", result.stdout + result.stderr)
+                        self.assertIn("reconvert with --overwrite", result.stdout + result.stderr)
+                    self.update_detection("3.1.1", registration=registration, fallback="4.0.0")
+                    result = self.package(entry, pipeline)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    detection = json.loads((self.solution / "XDR Detections/Test.yaml").read_text().removeprefix("---\n"))
+                    self.assertEqual("1.0.0", detection["contentProvenance"]["source"]["version"])
+                    self.assertEqual("3.1.1", detection["version"])
+                    self.update_detection(None, registration=registration)
+                    document = json.loads(self.data.read_text())
+                    document.pop("XDR Detection Version")
+                    self.data.write_text(json.dumps(document))
+                    self.assert_rejected_unchanged(entry, pipeline=pipeline)
+
+    def test_xdr_release_requires_three_numeric_components(self):
+        policy = attribution.ps_literal(attribution.PACKAGER / "common/versionPolicy.ps1")
+        for version in ("3.1", "3.1.0.1", "3.01.0", "3.1.0-preview", "3.1.0\n"):
+            with self.subTest(version=version):
+                result = self.run_ps(
+                    f". {policy}; "
+                    "$v31VersionPolicy = @{ Errors = [System.Collections.Generic.List[string]]::new() }; "
+                    f"Assert-V31ReleaseVersion -Version {attribution.ps_literal(version)} "
+                    "-ContentKind CustomDetection -ContentPath 'test'"
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("major.minor.patch", result.stderr)
 
     def test_catalog_result_is_guarded_without_source_mutation(self):
         entry = self.fixture(xdr=False)
@@ -314,6 +339,9 @@ class VersionPolicyTests(unittest.TestCase):
         template = json.loads((self.solution / "Package/mainTemplate.json").read_text())
         xdr = next(r for r in template["resources"] if r.get("condition") == "[parameters('E5Flavor')]")
         self.assertEqual("9.0.0", xdr["properties"]["template"]["imports"]["MicrosoftSecurity"]["version"])
+        self.assertEqual("Microsoft.Security/detectionRules@2025-06-01",
+                         xdr["properties"]["template"]["resources"]["detectionRule"]["type"])
+        self.assertEqual("1.0.0", document["schemaVersion"])
 
 
 if __name__ == "__main__":

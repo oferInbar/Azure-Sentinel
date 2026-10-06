@@ -47,10 +47,15 @@ V3.1 requires effective solution and XDR content release versions in
 `[3.1.0, 4.0.0)`. Other content release versions must be below `4.0.0`; their
 legacy lower versions remain valid. Out-of-range versions are hard errors, not
 automatic promotions. A major bump from `3.x` is therefore rejected.
-XDR currently takes `contentProvenance.source.version`, falling back to Data
-`XDR Detection Version`, then solution version. This check applies even without
-XDR registration. Do not falsify source provenance or invent an independent
-CD-version field to satisfy it; surface that authoring limitation.
+XDR requires its own top-level YAML `version` (`major.minor.patch`); new
+conversions initialize it to `3.1.0` independently of the Sentinel source.
+Registration metadata and content product IDs use that value. This check
+applies even without XDR registration. Data `XDR Detection Version`, solution
+version, and source provenance are not fallbacks. Older files missing the
+version must be explicitly reconverted with `--overwrite` after reviewing
+manual edits, or have their independent XDR version authored. Never falsify
+`contentProvenance.source.version` or bump the source AR to satisfy the XDR floor.
+Solution version bumps do not change per-detection versions.
 These bounds do not apply to API, schema, or extension-provider versions.
 
 ## XDR packaging contract
@@ -62,7 +67,6 @@ contains:
 {
   "Analytic Rules": [],
   "XDR Detections": [],
-  "XDR Detection Version": "1.0.0",
   "Include XDR Content Registration": false
 }
 ```
@@ -70,6 +74,7 @@ contains:
 For every XDR Detection YAML, require:
 
 - `kind: CustomDetection`;
+- top-level `version` in `[3.1.0, 4.0.0)`, separate from `schemaVersion`;
 - `resourceType: Microsoft.Security/detectionRules`;
 - a supported `apiVersion`;
 - a stable `properties.id`;

@@ -24,6 +24,8 @@ from .parser_bindings import normalize_parser_bindings
 from .report import write_transformation_report
 
 SCHEMA_VERSION = "1.0.0"
+INITIAL_XDR_VERSION = "3.1.0"
+XDR_VERSION_PATTERN = r"3\.[1-9][0-9]*\.(?:0|[1-9][0-9]*)"
 DETECTION_API_VERSION = "2026-06-01-preview"
 ENTITY_CONFIRMATION_PREFIX = "Entity confirmation required:"
 REQUIRED_ASSET_COLLECTIONS = frozenset({"hosts", "accounts", "mailboxes", "ips"})
@@ -639,6 +641,7 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
     relative_source = source.relative_to(solution_root).as_posix()
     return {
         "schemaVersion": SCHEMA_VERSION,
+        "version": INITIAL_XDR_VERSION,
         "kind": "CustomDetection",
         "resourceType": "Microsoft.Security/detectionRules",
         "apiVersion": DETECTION_API_VERSION,
@@ -684,6 +687,17 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
     }
 
 
+def xdr_version_error(version: Any) -> str | None:
+    if isinstance(version, str) and re.fullmatch(XDR_VERSION_PATTERN, version):
+        return None
+    return (
+        f"XDR top-level version {version!r} must be a major.minor.patch release "
+        ">= 3.1.0 and < 4.0.0. For older files without version, reconvert with "
+        "--overwrite (initial version 3.1.0), or explicitly author the XDR version. "
+        "Do not change contentProvenance.source.version."
+    )
+
+
 def validate_document(document: dict[str, Any]) -> list[str]:
     schema_path = Path(__file__).resolve().parents[1] / "schema" / "xdr-detection.schema.json"
     with schema_path.open(encoding="utf-8") as handle:
@@ -692,6 +706,9 @@ def validate_document(document: dict[str, Any]) -> list[str]:
         f"schema: {error.message}"
         for error in Draft202012Validator(schema).iter_errors(document)
     ]
+    version_error = xdr_version_error(document.get("version"))
+    if version_error:
+        errors.append(version_error)
     if document.get("schemaVersion") != SCHEMA_VERSION:
         errors.append(f"schemaVersion must be {SCHEMA_VERSION}")
     if document.get("kind") != "CustomDetection":
@@ -778,6 +795,26 @@ def convert_solution(
             )
             continue
         document = build_xdr_document(source, root, config)
+        if target.exists():
+            with target.open(encoding="utf-8-sig") as handle:
+                existing_document = yaml.safe_load(handle)
+            if isinstance(existing_document, dict) and "version" in existing_document:
+                error = xdr_version_error(existing_document["version"])
+                existing_source = (existing_document.get("contentProvenance") or {}).get("source") or {}
+                if not error and str(existing_source.get("id") or "") != source_id:
+                    error = (
+                        "existing XDR version belongs to a different source rule; "
+                        "resolve the output identity conflict before reconverting"
+                    )
+                if error:
+                    results.append(
+                        ConversionResult(
+                            source, target, document["properties"]["displayName"],
+                            "conflict", True, (error,), (), (error,),
+                        )
+                    )
+                    continue
+                document["version"] = existing_document["version"]
         rendered = yaml.dump(
             document,
             Dumper=XdrYamlDumper,

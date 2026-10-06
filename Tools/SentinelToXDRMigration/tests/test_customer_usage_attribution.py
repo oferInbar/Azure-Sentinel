@@ -144,9 +144,10 @@ class AttributionTests(unittest.TestCase):
             "requiredDataConnectors": [], "entityMappings": [],
         }
         detection = {
+            "schemaVersion": "1.0.0", "version": "3.1.0",
             "kind": "CustomDetection", "resourceType": "Microsoft.Security/detectionRules",
             "apiVersion": "2025-06-01",
-            "contentProvenance": {"source": {"id": source_id, "version": "3.1.0"}},
+            "contentProvenance": {"source": {"id": source_id, "version": "1.0.0"}},
             "properties": {
                 "id": "22222222-2222-3333-4444-555555555555",
                 "displayName": "Test detection", "status": "disabled",

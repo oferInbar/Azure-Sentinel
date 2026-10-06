@@ -45,7 +45,12 @@ provider.
    sentinel-xdr-migration validate --solution "<solution-path>"
    ```
 
-5. Stop if structural errors remain.
+5. Stop if structural errors remain. Each detection requires its own top-level
+   `version` (`major.minor.patch`) in `[3.1.0, 4.0.0)`, separate from
+   `schemaVersion: 1.0.0`. Source Sentinel `1.x` versions remain valid provenance
+   and must not be promoted to satisfy this check. For older files without the
+   XDR version, report the reconversion guidance rather than changing provenance
+   or accepting Data/solution version fallbacks.
 6. Generate the complete runtime plan:
 
    ```powershell

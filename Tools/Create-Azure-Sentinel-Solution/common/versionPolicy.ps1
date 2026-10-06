@@ -14,12 +14,18 @@ function Assert-V31ReleaseVersion {
     $parsed = $null
     $valid = $Version -cmatch '\A[0-9]+\.[0-9]+(?:\.[0-9]+){0,2}\z' -and
         [version]::TryParse($Version, [ref]$parsed)
+    if ($ContentKind -eq 'CustomDetection') {
+        $valid = $valid -and $Version -cmatch '\A3\.[1-9][0-9]*\.(?:0|[1-9][0-9]*)\z'
+    }
     if ($valid) {
         $normalized = [version]::new($parsed.Major, $parsed.Minor, [Math]::Max(0, $parsed.Build), [Math]::Max(0, $parsed.Revision))
         $valid = $normalized -ge $minimum -and $normalized -lt [version]'4.0.0.0'
     }
     if (-not $valid) {
         $message = "V3.1 version policy: $ContentKind '$ContentPath' has effective release version '$Version'; required $range (numeric release version). No version is automatically promoted."
+        if ($ContentKind -eq 'CustomDetection') {
+            $message += " Set the XDR YAML top-level version to its own major.minor.patch release. For older files without version, reconvert with --overwrite (initial version 3.1.0), or explicitly author the XDR version. Do not change contentProvenance.source.version; Data 'XDR Detection Version' and solution Version are not fallbacks in V3.1."
+        }
         $v31VersionPolicy.Errors.Add($message)
         throw $message
     }

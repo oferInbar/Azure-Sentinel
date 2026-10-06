@@ -56,3 +56,14 @@ python -m pip install -e Tools\SentinelToXDRMigration
 The converter must not modify `Analytic Rules` or `Package/mainTemplate.json`.
 Generated detections must remain disabled.
 `XDR Detections` must contain detection YAML only.
+
+New detections receive an independent top-level `version: 3.1.0`; source
+Sentinel versions remain unchanged in `contentProvenance.source.version`.
+The XDR release must be a `major.minor.patch` string in `[3.1.0, 4.0.0)`.
+Regeneration preserves a valid existing XDR version for the same source rule,
+including with `--overwrite`. Invalid versions or mismatched source identities
+are conflicts and must not be silently reset. Older YAML without its own version
+fails validation/packaging; after reviewing manual edits and obtaining overwrite
+approval, reconvert with `--overwrite` to initialize `3.1.0`, or explicitly author
+the independent XDR version. Do not change schema/API versions or source AR
+versions to satisfy the XDR release bounds.

@@ -47,6 +47,7 @@ Solutions/<solution>/
 
 Each XDR Detection YAML contains:
 
+- an independent top-level content release `version`, initially `3.1.0`;
 - the properties required to generate a
   `Microsoft.Security/detectionRules` resource;
 - a disabled-by-default lifecycle state;
@@ -72,6 +73,26 @@ Generated detections start with:
 properties:
   status: disabled
 ```
+
+### Independent XDR release version
+
+New detections start with `version: 3.1.0` even when the source Sentinel rule is
+`1.x`. `contentProvenance.source.version` continues to record the actual source
+version; neither that source file nor its release version is promoted.
+The required XDR version is a `major.minor.patch` string in `[3.1.0, 4.0.0)`.
+It is distinct from `schemaVersion: 1.0.0`, `properties.id`, the converter
+version, and API/provider versions.
+
+Regeneration preserves an existing valid XDR version (for example `3.1.1`)
+when the output belongs to the same source rule, including with `--overwrite`.
+An invalid existing version or different source identity is a conflict, not
+permission to reset the release. Resolve it explicitly before reconverting.
+Files from older converter runs without a top-level version fail structural
+validation and V3.1 packaging with reconversion guidance. After reviewing any
+manual edits, explicitly reconvert with `--overwrite` to initialize `3.1.0`,
+or author the independent XDR version. Never rewrite source provenance.
+Solution bumps do not bump detection versions; authors manage subsequent XDR
+content releases independently.
 
 ### Local parser bindings
 
@@ -216,10 +237,10 @@ rejects effective solution and XDR release versions outside `[3.1.0, 4.0.0)`,
 and other content-item release versions `>= 4.0.0`. Explicit bumps that select
 an out-of-range version fail without overwriting package files or persisting
 the bumped source version. These are release bounds, not ARM API/schema bounds.
-XDR currently uses `contentProvenance.source.version` before the Data
-`XDR Detection Version` fallback and then solution version. A source-derived
-`1.x` value fails even with registration disabled; do not alter provenance to
-fake a newer CD version. Independent CD versioning is not introduced here.
+XDR uses only its top-level YAML `version`, including when registration is
+disabled. Registration metadata and content product IDs use that same version.
+Data `XDR Detection Version`, solution version, and source provenance are not
+fallbacks in V3.1. See "Independent XDR release version" above for older files.
 Optional `trackingId` in SolutionMetadata.json is the complete Partner Center
 customer usage attribution ID, not a bare GUID, Partner ID, or plan ID.
 When missing, nested XDR packaging continues with a prominent warning, also

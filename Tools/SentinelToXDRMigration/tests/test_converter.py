@@ -14,6 +14,7 @@ from sentinel_xdr_migration.converter import (
     convert_solution,
     inspect_solution,
     runtime_validation_plan,
+    validate_document,
     validate_solution,
 )
 from sentinel_xdr_migration import __version__
@@ -86,6 +87,11 @@ class ConverterTests(unittest.TestCase):
         output = self.solution / "XDR Detections" / "SampleRule.yaml"
         document = yaml.safe_load(output.read_text(encoding="utf-8"))
         self.assertEqual(document["schemaVersion"], "1.0.0")
+        self.assertEqual(document["version"], "3.1.0")
+        self.assertEqual(document["contentProvenance"]["source"]["version"], "1.0.0")
+        self.assertEqual(document["contentProvenance"]["conversion"]["version"], __version__)
+        self.assertEqual(document["apiVersion"], "2026-06-01-preview")
+        self.assertEqual((self.solution / "Analytic Rules/SampleRule.yaml").read_text(), RULE)
         self.assertEqual(document["resourceType"], "Microsoft.Security/detectionRules")
         self.assertEqual(document["properties"]["status"], "disabled")
         self.assertIn("Timestamp", document["properties"]["queryCondition"]["queryText"])
@@ -97,6 +103,86 @@ class ConverterTests(unittest.TestCase):
             document["contentProvenance"]["conversion"]["requiredWorkloads"], ["sentinel"]
         )
         self.assertFalse(document["contentProvenance"]["conversion"]["reviewRequired"])
+
+    def test_reconversion_preserves_independent_release_version(self) -> None:
+        convert_solution(self.solution)
+        output = self.solution / "XDR Detections/SampleRule.yaml"
+        original = yaml.safe_load(output.read_text())
+        for version in ("3.1.1", "3.9.0"):
+            with self.subTest(version=version):
+                output.write_text(output.read_text().replace(f"version: {original['version']}\n", f"version: {version}\n", 1))
+                before = output.read_bytes()
+                result = convert_solution(self.solution)
+                self.assertEqual(0, result["conflicts"])
+                self.assertEqual(before, output.read_bytes())
+                source = self.solution / "Analytic Rules/SampleRule.yaml"
+                source.write_text(RULE.replace("version: 1.0.0", "version: 1.0.3"))
+                result = convert_solution(self.solution, overwrite=True)
+                self.assertEqual(0, result["conflicts"])
+                updated = yaml.safe_load(output.read_text())
+                self.assertEqual(version, updated["version"])
+                self.assertEqual("1.0.3", updated["contentProvenance"]["source"]["version"])
+                self.assertEqual(original["properties"]["id"], updated["properties"]["id"])
+                self.assertEqual(RULE.replace("version: 1.0.0", "version: 1.0.3"), source.read_text())
+                original = updated
+
+    def test_xdr_release_boundaries_in_schema_and_structural_validation(self) -> None:
+        convert_solution(self.solution)
+        output = self.solution / "XDR Detections/SampleRule.yaml"
+        document = yaml.safe_load(output.read_text())
+        for version, accepted in (("3.0.0", False), ("3.1.0", True), ("3.9.0", True),
+                                  ("4.0.0", False), ("1.0.0", False), ("3.1", False),
+                                  ("3.1.0.1", False), ("3.1.0-preview", False),
+                                  ("", False), (None, False), (3.1, False)):
+            with self.subTest(version=version):
+                document["version"] = version
+                errors = validate_document(document)
+                self.assertEqual(accepted, not errors, errors)
+                if not accepted:
+                    self.assertTrue(any(error.startswith("schema:") for error in errors))
+                    self.assertTrue(any("XDR top-level version" in error for error in errors))
+        document.pop("version")
+        errors = validate_document(document)
+        self.assertTrue(any("'version' is a required property" in error for error in errors))
+        self.assertTrue(any("reconvert with --overwrite" in error for error in errors))
+
+    def test_reconversion_does_not_reset_invalid_or_unrelated_existing_release(self) -> None:
+        convert_solution(self.solution)
+        output = self.solution / "XDR Detections/SampleRule.yaml"
+        original = yaml.safe_load(output.read_text())
+        for version in ("3.0.0", "4.0.0", "", None):
+            for overwrite in (False, True):
+                with self.subTest(version=version, overwrite=overwrite):
+                    document = dict(original, version=version)
+                    output.write_text(yaml.safe_dump(document, sort_keys=False))
+                    before = output.read_bytes()
+                    result = convert_solution(self.solution, overwrite=overwrite)
+                    self.assertEqual(1, result["conflicts"])
+                    self.assertEqual(before, output.read_bytes())
+                    self.assertIn("XDR top-level version", result["results"][0]["errors"][0])
+        original["contentProvenance"]["source"]["id"] = "different-source"
+        output.write_text(yaml.safe_dump(original, sort_keys=False))
+        before = output.read_bytes()
+        result = convert_solution(self.solution, overwrite=True)
+        self.assertEqual(1, result["conflicts"])
+        self.assertEqual(before, output.read_bytes())
+        self.assertIn("different source rule", result["results"][0]["errors"][0])
+
+    def test_legacy_detection_requires_explicit_reconversion(self) -> None:
+        convert_solution(self.solution)
+        output = self.solution / "XDR Detections/SampleRule.yaml"
+        document = yaml.safe_load(output.read_text())
+        document.pop("version")
+        output.write_text(yaml.safe_dump(document, sort_keys=False))
+        before = output.read_bytes()
+        self.assertEqual(1, validate_solution(self.solution)["invalid"])
+        self.assertEqual(1, convert_solution(self.solution)["conflicts"])
+        self.assertEqual(before, output.read_bytes())
+        self.assertEqual(0, convert_solution(self.solution, overwrite=True)["conflicts"])
+        updated = yaml.safe_load(output.read_text())
+        self.assertEqual("3.1.0", updated["version"])
+        self.assertEqual(document["contentProvenance"], updated["contentProvenance"])
+        self.assertEqual(1, validate_solution(self.solution)["valid"])
 
     def test_validate_accepts_generated_detection(self) -> None:
         convert_solution(self.solution)

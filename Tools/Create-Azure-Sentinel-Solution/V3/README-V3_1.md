@@ -75,16 +75,22 @@ packaged custom APIs/function apps); connector UI metadata version (default
 version; and CCF `DataConnectorCCFVersion` (fallback solution version), shared by
 connector-definition and connections content. Missing/invalid effective versions
 without an existing generator default fail rather than gaining a new default.
-Numeric release versions support existing two-to-four-component representations;
-comparison does not rewrite the emitted value.
+Non-XDR numeric release versions support existing two-to-four-component
+representations; comparison does not rewrite the emitted value.
 
-**XDR version caveat:** current precedence is unchanged:
-`contentProvenance.source.version` → Data `XDR Detection Version` → solution
-version. A present source-derived `1.0.0` therefore fails even when the Data
-fallback says `3.1.0`, and even when `Include XDR Content Registration` is false.
-The tool does not rewrite source provenance or invent an independent CD-version
-field. If the actual source version is below `3.1.0`, an independent CD version
-requires a separately agreed authoring/model change; do not falsify provenance.
+**Independent XDR version:** every XDR YAML must declare its own top-level
+`version` as a `major.minor.patch` string in `[3.1.0, 4.0.0)`. New conversions
+start at `3.1.0`, independently of Sentinel source versions such as `1.0.2`.
+Regeneration preserves valid existing XDR versions for the same source rule;
+it does not reset `3.1.1` or silently replace an invalid `4.0.0`.
+`contentProvenance.source.version` remains the original Sentinel release.
+The packager uses the XDR version for registration metadata and content product
+IDs, and checks it even when `Include XDR Content Registration` is false.
+Data `XDR Detection Version`, solution version, and source provenance are not
+fallbacks in V3.1. Missing or invalid XDR versions fail before package output.
+For older files with no top-level version, review manual edits and explicitly
+reconvert with `--overwrite` to initialize `3.1.0`, or author the independent
+version. Never falsify provenance. A solution bump does not bump XDR versions.
 
 These guards do not govern ARM `apiVersion`, `contentSchemaVersion`, ARM template
 `contentVersion`, extension-provider versions, converter/schema versions, or
@@ -135,7 +141,7 @@ rebuild rather than rename or edit old reports.
 From the repository root (Python 3.11/3.12, PowerShell 7, and `powershell-yaml`):
 
 ```bash
-PYTHONPATH=Tools/SentinelToXDRMigration:Tools/SentinelToXDRMigration/tests python -m unittest test_packaging test_workflow test_customer_usage_attribution test_version_policy
+PYTHONPATH=Tools/SentinelToXDRMigration:Tools/SentinelToXDRMigration/tests python -m unittest test_packaging test_workflow test_customer_usage_attribution test_version_policy test_converter
 ```
 
 The attribution tests exercise both local and positional pipeline entry points
@@ -146,6 +152,8 @@ build existing solution packages, deploy to Azure, or prove Marketplace upload
 acceptance. Version tests also cover boundaries, catalog-result guards, effective
 defaults, local bumps, pipeline consistency, and rejection without source/output
 mutation.
+Converter tests cover independent XDR initialization, unchanged source provenance,
+version preservation, explicit legacy reconversion, and invalid-version conflicts.
 
 ## Local parser names in Custom Detections
 

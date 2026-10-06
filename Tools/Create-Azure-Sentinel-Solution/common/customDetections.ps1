@@ -449,12 +449,16 @@ function Add-XdrCustomDetectionsToSolution {
         $deploymentName = Get-CustomDetectionDeploymentName -SolutionName $SolutionName -DetectionId $detectionId
         $Template.resources += New-CustomDetectionInstallDeployment -DeploymentName $deploymentName -DetectionResource $detectionResource -ExtensionVersion $extensionVersion
 
-        $contentVersion = [string]$detectionDocument.contentProvenance.source.version
-        if ([string]::IsNullOrWhiteSpace($contentVersion)) {
-            $contentVersion = $defaultContentVersion
-        }
+        $contentVersion = [string]$detectionDocument.version
         if ($v31VersionPolicy) {
             Assert-V31ReleaseVersion -Version $contentVersion -ContentKind CustomDetection -ContentPath $configuredPath
+        }
+        elseif ($null -eq $detectionDocument.PSObject.Properties['version']) {
+            # Retain old-document compatibility only outside the V3.1 entry point.
+            $contentVersion = [string]$detectionDocument.contentProvenance.source.version
+            if ([string]::IsNullOrWhiteSpace($contentVersion)) {
+                $contentVersion = $defaultContentVersion
+            }
         }
         if ($includeRegistration) {
             $Template.resources += New-CustomDetectionRegistration -DeploymentName $deploymentName -DetectionResource $detectionResource -DetectionDocument $detectionDocument -ContentVersion $contentVersion -ExtensionVersion $extensionVersion

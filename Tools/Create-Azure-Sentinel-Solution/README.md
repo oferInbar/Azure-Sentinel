@@ -54,8 +54,8 @@ Create an input file and place it in the path `C:\One\Azure-Sentinel\Tools\Creat
  * PlaybookDescription: Playbook description(s), generally from Playbooks' Metadata. This field can be a string if 1 description is used across all, and an array if multiple are used.
  * WatchlistDescription: Watchlist description(s), generally from Watchlists' Property data. This field can be a string if 1 description is used across all, and an array if multiple are used. This field is used if the description from the Watchlist resource is not desired in the Create-UI.
  * Workbooks, Analytic Rules, Playbooks, etc.: These fields take arrays of paths relative to the repo root, or BasePath if provided.
- * XDR Detections: Optional array of converted Custom Detection YAML files. Each file must declare kind CustomDetection, resourceType Microsoft.Security/detectionRules, a stable properties.id, contentProvenance.source.id matching an Analytic Rule in the same solution, a query, and entity mappings.
- * XDR Detection Version: Optional content version used when registering Custom Detections. If omitted, the solution Version is used.
+ * XDR Detections: Optional array of converted Custom Detection YAML files. Each file must declare kind CustomDetection, resourceType Microsoft.Security/detectionRules, a stable properties.id, contentProvenance.source.id matching an Analytic Rule in the same solution, a query, and entity mappings. V3.1 requires an independent top-level version in [3.1.0, 4.0.0).
+ * XDR Detection Version: Legacy fallback only; not used by V3.1. Set each XDR YAML's own top-level version instead.
  * Include XDR Content Registration: Optional boolean. Defaults to false because the live resource provider does not yet support Custom Detection content-template registration.
  * SavedSearches: This input assumes a format of any of the following:
  * -- Direct export via API (see https://docs.microsoft.com/rest/api/loganalytics/saved-searches/list-by-workspace)
@@ -77,7 +77,6 @@ Create an input file and place it in the path `C:\One\Azure-Sentinel\Tools\Creat
   "Workbooks": [],
   "Analytic Rules": [],
   "XDR Detections": [],
-  "XDR Detection Version": "1.0.0",
   "Include XDR Content Registration": false,
   "Playbooks": [],
   "PlaybookDescription": ["{Description of playbook}"],
@@ -106,6 +105,12 @@ solution template. It adds:
 
 Custom Detections are always packaged disabled. The solution `Version` must be incremented
 when adding or changing XDR content so Content Hub recognizes the package update.
+V3.1 requires the solution version in `[3.1.0, 4.0.0)` and independently checks
+every XDR YAML's own `major.minor.patch` version in that range, even without
+registration. Newly converted detections start at `3.1.0`; source Sentinel
+versions remain unchanged in provenance. Existing YAML without its own version
+must be explicitly reconverted or have that version authored. See the
+[V3.1 version policy](V3/README-V3_1.md#release-version-bounds-v31-only).
 
 #### **Example of Input File: Solution_McAfeePO.json**
 
