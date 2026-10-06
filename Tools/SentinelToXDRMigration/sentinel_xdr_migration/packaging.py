@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from typing import Any
 from .artifacts import report_directory, repository_root
 
 
-PACKAGER_NAME = "V4"
+PACKAGER_NAME = "V3.1"
 DATA_EXCLUSIONS = {
     "parameter.json",
     "parameters.json",
@@ -63,15 +64,14 @@ def _xdr_references(solution: Path, document: dict[str, Any]) -> list[Path]:
     for value in values:
         if not isinstance(value, str) or not value.strip():
             raise ValueError("solution data contains an invalid XDR Detection reference")
-        normalized = value.replace("/", "\\")
-        candidate = solution / normalized
+        candidate = solution.joinpath(*value.replace("\\", "/").split("/"))
         if not candidate.is_file():
             raise ValueError(f"referenced XDR Detection does not exist: {candidate}")
         references.append(candidate.resolve())
     return references
 
 
-def package_solution_v4(
+def package_solution_v3_1(
     solution: str | Path,
     *,
     version_bump: str,
@@ -94,14 +94,14 @@ def package_solution_v4(
         repository
         / "Tools"
         / "Create-Azure-Sentinel-Solution"
-        / "V4"
-        / "createSolutionV4.ps1"
+        / "V3"
+        / "createSolutionV3_1.ps1"
     )
     if not script.is_file():
-        raise ValueError(f"V4 solution packager does not exist: {script}")
+        raise ValueError(f"V3.1 solution packager does not exist: {script}")
     pwsh = shutil.which("pwsh")
     if not pwsh:
-        raise RuntimeError("PowerShell 7 is required to run the V4 solution packager.")
+        raise RuntimeError("PowerShell 7 is required to run the V3.1 solution packager.")
 
     command = [
         pwsh,
@@ -128,11 +128,16 @@ def package_solution_v4(
     )
     if completed.returncode != 0:
         raise RuntimeError(
-            f"V4 solution packaging failed with exit code {completed.returncode}: "
+            f"V3.1 solution packaging failed with exit code {completed.returncode}: "
             f"{output[-4000:]}"
         )
-    if "Starting Package Creation using V4 tool" not in output:
-        raise RuntimeError("Packaging output did not confirm the V4 entry point.")
+    if "Starting Package Creation using V3.1 tool" not in output:
+        raise RuntimeError("Packaging output did not confirm the V3.1 entry point.")
+    warnings = [
+        line for line in output.splitlines() if "CUSTOMER USAGE ATTRIBUTION:" in line
+    ]
+    for warning in warnings:
+        print(warning, file=sys.stderr)
 
     after = _read_json(data_file)
     version = str(_value(after, "Version") or "").strip()
@@ -148,7 +153,7 @@ def package_solution_v4(
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise RuntimeError(
-            "V4 packaging completed without required artifacts: " + ", ".join(missing)
+            "V3.1 packaging completed without required artifacts: " + ", ".join(missing)
         )
     _read_json(main_template)
     _read_json(create_ui)
@@ -165,10 +170,11 @@ def package_solution_v4(
         )
 
     reports = report_directory(root, create=True)
-    report_path = reports / "packaging.v4.json"
+    report_path = reports / "packaging.v3_1.json"
     result = {
         "status": "passed",
         "packager": PACKAGER_NAME,
+        "warnings": warnings,
         "solution": str(root),
         "version": version,
         "versionBump": version_bump,

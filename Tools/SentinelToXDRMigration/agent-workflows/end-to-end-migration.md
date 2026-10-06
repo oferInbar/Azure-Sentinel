@@ -195,16 +195,16 @@ Sentinel validation.
 
 For Authoring, structural success with an environment-only runtime gap may
 complete this stage as passed with `runtimeStatus=environment-blocked`; preserve
-the exact error and do not claim runtime qualification. This allows V4 package
+the exact error and do not claim runtime qualification. This allows V3.1 package
 creation. Qualification keeps the same gap blocking because deployment, mock
 ingestion, and parity require the selected lab environment.
 
 ### Packaging
 
-Use V4 for solutions containing XDR Detections:
+Use V3.1 for solutions containing XDR Detections:
 
 ```powershell
-sentinel-xdr-migration package-v4 `
+sentinel-xdr-migration package-v3-1 `
   --solution ".\Solutions\<solution>" `
   --version-bump none
 ```
@@ -217,8 +217,11 @@ solution data and metadata versions.
 Require the generated template, UI definition, parameter file, versioned ZIP,
 AR/CD count matching, correct `E5Flavor` conditions, disabled CDs, unique IDs,
 and explained validation results. Complete the packaging stage only with
-`packager=V4`, the generated `packaging.v4.json`, and its template, UI,
+`packager=V3.1`, the generated `packaging.v3_1.json`, and its template, UI,
 parameters, and ZIP paths. Existing package files are not current-run evidence.
+Do not relabel historical V4 evidence. Rebuild with V3.1. Surface missing
+customer usage attribution warnings; optional `trackingId` must be copied
+unchanged from Partner Center into SolutionMetadata.json, never synthesized.
 
 ### Deployment — qualification only
 

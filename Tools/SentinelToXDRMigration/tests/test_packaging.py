@@ -8,12 +8,12 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from unittest import mock
 
-from sentinel_xdr_migration.packaging import package_solution_v4
+from sentinel_xdr_migration.packaging import package_solution_v3_1
 
 
 class PackagingTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.repository = Path(self.temp.name)
         self.solution = self.repository / "Solutions" / "Sample"
         data = self.solution / "Data"
@@ -23,8 +23,8 @@ class PackagingTests(unittest.TestCase):
             self.repository
             / "Tools"
             / "Create-Azure-Sentinel-Solution"
-            / "V4"
-            / "createSolutionV4.ps1"
+            / "V3"
+            / "createSolutionV3_1.ps1"
         )
         data.mkdir(parents=True)
         detections.mkdir()
@@ -58,7 +58,7 @@ class PackagingTests(unittest.TestCase):
         return_value=CompletedProcess(
             args=[],
             returncode=0,
-            stdout="=======Starting Package Creation using V4 tool=========",
+            stdout="=======Starting Package Creation using V3.1 tool=========",
             stderr="",
         ),
     )
@@ -66,19 +66,20 @@ class PackagingTests(unittest.TestCase):
         "sentinel_xdr_migration.packaging.shutil.which",
         return_value=r"C:\Program Files\PowerShell\7\pwsh.exe",
     )
-    def test_runs_v4_and_returns_workflow_evidence(
+    def test_runs_v3_1_and_returns_workflow_evidence(
         self,
         which: mock.Mock,
         run: mock.Mock,
     ) -> None:
-        result = package_solution_v4(self.solution, version_bump="none")
+        result = package_solution_v3_1(self.solution, version_bump="none")
 
-        self.assertEqual("V4", result["packager"])
+        self.assertEqual("V3.1", result["packager"])
         self.assertEqual(1, result["xdrDetectionCount"])
-        self.assertEqual("V4", result["workflowArtifacts"]["packager"])
+        self.assertEqual("V3.1", result["workflowArtifacts"]["packager"])
         self.assertTrue(Path(result["packageReport"]).is_file())
+        self.assertEqual("packaging.v3_1.json", Path(result["packageReport"]).name)
         command = run.call_args.args[0]
-        self.assertIn("createSolutionV4.ps1", command[3])
+        self.assertIn("createSolutionV3_1.ps1", command[3])
         self.assertEqual("none", command[-1])
         self.assertEqual(self.repository, run.call_args.kwargs["cwd"])
         which.assert_called_once_with("pwsh")
@@ -90,7 +91,38 @@ class PackagingTests(unittest.TestCase):
         data.write_text(json.dumps(document), encoding="utf-8")
 
         with self.assertRaisesRegex(ValueError, "does not exist"):
-            package_solution_v4(self.solution, version_bump="none")
+            package_solution_v3_1(self.solution, version_bump="none")
+
+    @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
+    @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
+    def test_old_entry_point_output_is_not_relabelled(self, run, which) -> None:
+        run.return_value = CompletedProcess(
+            [], 0, "Starting Package Creation using V4 tool", ""
+        )
+        with self.assertRaisesRegex(RuntimeError, "did not confirm the V3.1"):
+            package_solution_v3_1(self.solution, version_bump="none")
+
+    @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
+    @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
+    def test_attribution_warning_is_visible_and_persisted(self, run, which) -> None:
+        warning = "WARNING: CUSTOMER USAGE ATTRIBUTION: No attribution marker."
+        run.return_value = CompletedProcess(
+            [], 0, f"Starting Package Creation using V3.1 tool\n{warning}", ""
+        )
+        with mock.patch("sys.stderr") as stderr:
+            result = package_solution_v3_1(self.solution, version_bump="none")
+        self.assertEqual([warning], result["warnings"])
+        self.assertTrue(stderr.write.called)
+        self.assertEqual(
+            [warning], json.loads(Path(result["packageReport"]).read_text())["warnings"]
+        )
+
+    @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
+    @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
+    def test_failure_does_not_accept_old_artifacts(self, run, which) -> None:
+        run.return_value = CompletedProcess([], 1, "", "Invalid trackingId")
+        with self.assertRaisesRegex(RuntimeError, "Invalid trackingId"):
+            package_solution_v3_1(self.solution, version_bump="none")
 
 
 if __name__ == "__main__":

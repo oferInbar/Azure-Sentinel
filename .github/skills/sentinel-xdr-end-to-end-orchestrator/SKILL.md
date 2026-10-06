@@ -70,5 +70,6 @@ Resolve those from the pair provenance and locked target. Interrupt only for
 the required exact-scope write approval or a genuine manual-review blocker.
 
 For the packaging stage, always invoke `sentinel-xdr-solution-packager` and use
-the `sentinel-xdr-migration package-v4` result as workflow evidence. Existing
-files under `Package` do not prove that V4 ran during the current workflow.
+the `sentinel-xdr-migration package-v3-1` result as workflow evidence. Existing
+files under `Package` do not prove that V3.1 ran during the current workflow.
+Do not relabel old V4 reports; rebuild to produce V3.1 evidence.

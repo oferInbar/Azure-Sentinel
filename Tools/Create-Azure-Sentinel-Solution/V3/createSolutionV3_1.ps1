@@ -40,15 +40,18 @@ if ($PSCmdlet.ParameterSetName -eq "Local") {
         -SolutionDataFolderPath $SolutionDataFolderPath `
         -VersionMode $VersionMode `
         -VersionBump $VersionBump `
-        -EntryPointName "V4" `
+        -EntryPointName "V3.1" `
         -DefaultInputPath (Join-Path $PSScriptRoot "input") `
-        -IncludeXdrDetections $true
+        -IncludeXdrDetections $true `
+        -EnforceV31Versions $true
     return
 }
 
 . ./Tools/Create-Azure-Sentinel-Solution/common/commonFunctions.ps1
 . ./Tools/Create-Azure-Sentinel-Solution/common/LogAppInsights.ps1
 . ./Tools/Create-Azure-Sentinel-Solution/common/get-ccp-details.ps1
+$v31VersionPolicy = @{ Errors = [System.Collections.Generic.List[string]]::new() }
+Assert-V31SolutionVersion -SolutionName $pipelineSolutionName -Version $pipelineDataFileRawContent.Version -CalculatedVersion $calculatedPackageVersion
 
 # Add a helper to normalize folder case for summary rules
 function Normalize-SummaryRulesFolderCase {
@@ -333,12 +336,12 @@ try {
         updateDescriptionCount $global:customConnectorsList.Count                      "**Custom Azure Logic Apps Connectors:** "  "{{LogicAppCustomConnectorCount}}"  $(checkResourceCounts @($global:playbookCounter))
         updateDescriptionCount $global:functionAppList.Count                           "**Function Apps:** "                       "{{FunctionAppsCount}}"             $(checkResourceCounts @($global:playbookCounter))
         updateDescriptionCount ($global:playbookCounter - $global:customConnectorsList.Count - $global:functionAppList.Count)  "**Playbooks:** "  "{{PlaybookCount}}"  $false
-        GeneratePackage -solutionName $solutionName -contentToImport $contentToImport -calculatedBuildPipelinePackageVersion $calculatedPackageVersion -IncludeXdrDetections $true
+        GeneratePackage -solutionName $solutionName -contentToImport $contentToImport -calculatedBuildPipelinePackageVersion $calculatedPackageVersion -IncludeXdrDetections $true -SolutionMetadataPath (Join-Path $solutionFolderBasePath 'SolutionMetadata.json')
         Write-Host "Package Generated Successfully!!"
         $solutionFolderBasePath = Join-Path $pipelineBasePath "Solutions/$pipelineSolutionName"
         CheckJsonIsValid $solutionFolderBasePath
     }
 } catch {
     $errorDetails = $_ | Out-String
-    Write-Error "Error occured in createSolutionV4 file. Error Details : $errorDetails"
+    throw "Error occurred in createSolutionV3_1 file. Error Details : $errorDetails"
 }

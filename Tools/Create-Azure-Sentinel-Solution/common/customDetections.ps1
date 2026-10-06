@@ -453,6 +453,9 @@ function Add-XdrCustomDetectionsToSolution {
         if ([string]::IsNullOrWhiteSpace($contentVersion)) {
             $contentVersion = $defaultContentVersion
         }
+        if ($v31VersionPolicy) {
+            Assert-V31ReleaseVersion -Version $contentVersion -ContentKind CustomDetection -ContentPath $configuredPath
+        }
         if ($includeRegistration) {
             $Template.resources += New-CustomDetectionRegistration -DeploymentName $deploymentName -DetectionResource $detectionResource -DetectionDocument $detectionDocument -ContentVersion $contentVersion -ExtensionVersion $extensionVersion
         }

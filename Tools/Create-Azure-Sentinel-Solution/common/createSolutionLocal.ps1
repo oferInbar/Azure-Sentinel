@@ -7,7 +7,8 @@ param(
     [string]$VersionBump = "patch",
     [string]$EntryPointName = "Local",
     [string]$DefaultInputPath = $null,
-    [bool]$IncludeXdrDetections = $false
+    [bool]$IncludeXdrDetections = $false,
+    [bool]$EnforceV31Versions = $false
 )
 
 Write-Host "=======Starting Package Creation using $EntryPointName tool========="
@@ -101,6 +102,9 @@ $getccpDetailsFilePath = $repositoryBasePath + "Tools/Create-Azure-Sentinel-Solu
 
 . $commonFunctionsFilePath # load common functions
 . $getccpDetailsFilePath # load ccp functions
+if ($EnforceV31Versions) {
+    $v31VersionPolicy = @{ Errors = [System.Collections.Generic.List[string]]::new() }
+}
 
 # Load catalog API functions only if using catalog mode
 if ($VersionMode -eq "catalog") {
@@ -214,7 +218,7 @@ function GetLocalPackageVersion($defaultPackageVersion, $userInputPackageVersion
         }
         
         # Persist the release version only when an increment was requested.
-        if ($versionBumpType -ne "none" -and $null -ne $dataFilePath -and $dataFilePath -ne '') {
+        if (-not $EnforceV31Versions -and $versionBumpType -ne "none" -and $null -ne $dataFilePath -and $dataFilePath -ne '') {
             try {
                 Write-Host "Updating version in data file: $dataFilePath"
                 $dataFileContent = Get-Content -Raw $dataFilePath | Out-String | ConvertFrom-Json
@@ -309,6 +313,7 @@ try {
             $packageVersion = GetPackageVersion $defaultPackageVersion $offerId $offerDetails $packageVersionAttribute $userInputPackageVersion
         }
         
+        Assert-V31SolutionVersion -SolutionName $solutionName -Version $packageVersion
         if ($packageVersion -ne $contentToImport.version) {
             $contentToImport.PSObject.Properties.Remove('version')
             $contentToImport | Add-Member -MemberType NoteProperty -Name 'version' -Value $packageVersion 
@@ -521,7 +526,10 @@ try {
         updateDescriptionCount $global:functionAppList.Count                           "**Function Apps:** "                       "{{FunctionAppsCount}}"             $(checkResourceCounts @($global:playbookCounter))
         updateDescriptionCount ($global:playbookCounter - $global:customConnectorsList.Count - $global:functionAppList.Count)  "**Playbooks:** "   "{{PlaybookCount}}"       $false
 
-        GeneratePackage -solutionName $solutionName -contentToImport $contentToImport -calculatedBuildPipelinePackageVersion $contentToImport.Version -IncludeXdrDetections $IncludeXdrDetections;
+        GeneratePackage -solutionName $solutionName -contentToImport $contentToImport -calculatedBuildPipelinePackageVersion $contentToImport.Version -IncludeXdrDetections $IncludeXdrDetections -SolutionMetadataPath (Join-Path $solutionFolderBasePath 'SolutionMetadata.json');
+        if ($EnforceV31Versions -and $VersionMode -eq 'local' -and $VersionBump -ne 'none') {
+            Save-V31LocalPackageVersion -DataFilePath $inputFile.FullName -Version $contentToImport.Version
+        }
         RunArmTtkOnPackage -solutionName $solutionName -isPipelineRun $false;
 
         # check if mainTemplate and createUiDefinition json files are valid or not
@@ -529,5 +537,8 @@ try {
     }
 }
 catch {
+    if ($IncludeXdrDetections) {
+        throw
+    }
     Write-Host "Error occurred in $EntryPointName local package creation. Error details are $_" -ForegroundColor Red
 }

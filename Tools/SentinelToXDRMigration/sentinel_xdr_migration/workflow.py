@@ -252,28 +252,28 @@ def _validate_packaging_evidence(
     state: dict[str, Any],
     artifacts: dict[str, str],
 ) -> None:
-    if artifacts.get("packager") != "V4":
-        raise ValueError("passed packaging stage requires packager=V4")
+    if artifacts.get("packager") != "V3.1":
+        raise ValueError("passed packaging stage requires packager=V3.1; rebuild old packages")
     report_value = artifacts.get("packageReport")
     if not report_value:
-        raise ValueError("passed packaging stage requires a V4 packageReport artifact")
+        raise ValueError("passed packaging stage requires a V3.1 packageReport artifact")
     report_path = Path(report_value).expanduser().resolve()
     if not report_path.is_file():
-        raise ValueError(f"V4 package report does not exist: {report_path}")
+        raise ValueError(f"V3.1 package report does not exist: {report_path}")
     try:
         report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"V4 package report is invalid: {report_path}: {exc}") from exc
-    if not isinstance(report, dict) or report.get("packager") != "V4":
-        raise ValueError(f"package report does not prove V4 packaging: {report_path}")
+        raise ValueError(f"V3.1 package report is invalid: {report_path}: {exc}") from exc
+    if not isinstance(report, dict) or report.get("packager") != "V3.1":
+        raise ValueError(f"package report does not prove V3.1 packaging: {report_path}")
     for name in ("mainTemplate", "createUiDefinition", "testParameters", "zip"):
         value = artifacts.get(name) or report.get(name)
         if not value or not Path(value).expanduser().resolve().is_file():
-            raise ValueError(f"V4 packaging evidence is missing artifact: {name}")
+            raise ValueError(f"V3.1 packaging evidence is missing artifact: {name}")
     requested_bump = state["context"].get("versionBump")
     if requested_bump is not None and report.get("versionBump") != requested_bump:
         raise ValueError(
-            "V4 package report version bump does not match workflow context: "
+            "V3.1 package report version bump does not match workflow context: "
             f"{report.get('versionBump')!r} != {requested_bump!r}"
         )
 

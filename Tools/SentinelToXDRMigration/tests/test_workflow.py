@@ -17,7 +17,7 @@ from sentinel_xdr_migration.artifacts import artifact_path
 
 class WorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.solution = Path(self.temp.name) / "Sample"
         self.solution.mkdir()
 
@@ -35,17 +35,17 @@ class WorkflowTests(unittest.TestCase):
         }
         for path in paths.values():
             path.write_text("{}", encoding="utf-8")
-        report = artifact_path(self.solution, "packaging.v4.json", create_parent=True)
+        report = artifact_path(self.solution, "packaging.v3_1.json", create_parent=True)
         report.write_text(
             json.dumps({
-                "packager": "V4",
+                "packager": "V3.1",
                 "versionBump": version_bump,
                 **{name: str(path) for name, path in paths.items()},
             }),
             encoding="utf-8",
         )
         return {
-            "packager": "V4",
+            "packager": "V3.1",
             "packageReport": str(report),
             **{name: str(path) for name, path in paths.items()},
         }
@@ -205,18 +205,35 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual("pending", changed["stages"]["deployment"]["status"])
         self.assertEqual("deployment", changed["next"])
 
-    def test_packaging_cannot_pass_without_v4_evidence(self) -> None:
+    def test_packaging_cannot_pass_without_v3_1_evidence(self) -> None:
         initialize_workflow(self.solution, workflow_profile="authoring")
         for stage in ("discovery", "conversion", "validation"):
             self._complete_passed_stage(stage)
         start_workflow_stage(self.solution, "packaging")
 
-        with self.assertRaisesRegex(ValueError, "requires packager=V4"):
+        with self.assertRaisesRegex(ValueError, "requires packager=V3.1"):
             complete_workflow_stage(
                 self.solution,
                 "packaging",
                 status="passed",
             )
+
+    def test_old_report_is_not_relabelled_as_v3_1(self) -> None:
+        initialize_workflow(self.solution, workflow_profile="authoring")
+        for stage in ("discovery", "conversion", "validation"):
+            self._complete_passed_stage(stage)
+        start_workflow_stage(self.solution, "packaging")
+        artifacts = self._packaging_artifacts()
+        report = Path(artifacts["packageReport"])
+        document = json.loads(report.read_text())
+        document["packager"] = "V4"
+        report.write_text(json.dumps(document))
+        before = report.read_bytes()
+        with self.assertRaisesRegex(ValueError, "does not prove V3.1"):
+            complete_workflow_stage(
+                self.solution, "packaging", status="passed", artifacts=artifacts
+            )
+        self.assertEqual(before, report.read_bytes())
 
     def test_blocked_stage_requires_explanation(self) -> None:
         initialize_workflow(self.solution, workflow_profile="authoring")

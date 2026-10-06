@@ -190,12 +190,12 @@ runtime providers are unavailable.
 13. Complete or abort every parity run so cleanup is guaranteed.
 
 The packaging stage must invoke `sentinel-xdr-solution-packager`, which must run
-`sentinel-xdr-migration package-v4`. Never mark packaging passed from existing
+`sentinel-xdr-migration package-v3-1`. Never mark packaging passed from existing
 package files alone. The workflow gate requires the new
-`packaging.v4.json` evidence plus the generated template, UI definition,
+`packaging.v3_1.json` evidence plus the generated template, UI definition,
 parameters, and versioned ZIP.
 
-In Authoring, do not block V4 packaging solely because a required table is
+In Authoring, do not block V3.1 packaging solely because a required table is
 unavailable on a runtime provider when structural validation passed. Record the
 runtime result as environment-blocked, name the exact query surface, and
 continue to packaging without calling the content runtime-qualified. In

@@ -127,7 +127,7 @@ resolves through the Log Analytics workspace API, and vice versa.
   user explicitly requested a multi-workspace audit.
 
 For an **Authoring** profile, an environment-only runtime block does not prevent
-V4 packaging when structural validation passed. Complete validation as passed
+V3.1 packaging when structural validation passed. Complete validation as passed
 with `runtimeStatus=environment-blocked`, preserve the provider error and query
 surface, and do not claim the detection is runtime-qualified. For a
 **Qualification** profile, the same runtime block remains blocking until the

@@ -6,7 +6,7 @@ versioned Defender XDR Custom Detection YAML files.
 ## Requirements
 
 - Python 3.11 or 3.12
-- PowerShell 7 for V4 solution packaging
+- PowerShell 7 for V3.1 solution packaging
 - Azure CLI for authenticated runtime validation and Qualification
 
 Install the package with a supported Python interpreter:
@@ -185,7 +185,7 @@ provider.
 The repository agent uses a gated workflow manifest. Before initialization,
 the user must explicitly select `authoring` or `qualification`; the CLI has no
 profile default. The `authoring` profile coordinates discovery, conversion,
-validation, V4 packaging, and final reporting:
+validation, V3.1 packaging, and final reporting:
 
 ```powershell
 sentinel-xdr-migration workflow-init `
@@ -200,15 +200,34 @@ sentinel-xdr-migration workflow-next --solution "Solutions\<solution>"
 Every packaging stage runs through:
 
 ```powershell
-sentinel-xdr-migration package-v4 `
+sentinel-xdr-migration package-v3-1 `
   --solution "Solutions\<solution>" `
   --version-bump none
 ```
 
-The command invokes the repository V4 packager and writes
-`Reports\<solution>\sentinel-xdr-migration\packaging.v4.json`. A packaging
-stage cannot pass without that current-run V4 evidence and all generated
+The command invokes `V3/createSolutionV3_1.ps1` (V3.1) and writes
+`Reports\<solution>\sentinel-xdr-migration\packaging.v3_1.json`. A packaging
+stage cannot pass without that current-run V3.1 evidence and all generated
 package artifacts.
+
+Old V4 reports remain historical evidence; do not relabel them as V3.1.
+Rebuild using `package-v3-1`. Package-version selection is unchanged, but V3.1
+rejects effective solution and XDR release versions outside `[3.1.0, 4.0.0)`,
+and other content-item release versions `>= 4.0.0`. Explicit bumps that select
+an out-of-range version fail without overwriting package files or persisting
+the bumped source version. These are release bounds, not ARM API/schema bounds.
+XDR currently uses `contentProvenance.source.version` before the Data
+`XDR Detection Version` fallback and then solution version. A source-derived
+`1.x` value fails even with registration disabled; do not alter provenance to
+fake a newer CD version. Independent CD versioning is not introduced here.
+Optional `trackingId` in SolutionMetadata.json is the complete Partner Center
+customer usage attribution ID, not a bare GUID, Partner ID, or plan ID.
+When missing, nested XDR packaging continues with a prominent warning, also
+recorded in the packaging report: Partner Center cannot auto-add tracking for
+functional nested deployments. Obtain the ID from offer > plan > Technical
+configuration, add it, and rebuild. Missing attribution does not imply upload
+rejection. See the [V3.1 guide](../Create-Azure-Sentinel-Solution/V3/README-V3_1.md)
+and [official attribution guidance](https://learn.microsoft.com/partner-center/marketplace-offers/azure-partner-customer-usage-attribution#microsoft-marketplace-azure-apps).
 
 The workflow state is written to:
 
