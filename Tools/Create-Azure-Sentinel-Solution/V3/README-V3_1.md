@@ -46,6 +46,21 @@ package automation calls it through:
 
 The positional pipeline parameter contract is unchanged.
 
+## Content-count summary
+
+Both V3.1 entry points include **XDR Detections:** followed by the number of
+successfully packaged individual detections in the Basics description of
+`createUiDefinition.json` and the content package's `descriptionHtml` in
+`mainTemplate.json`. The count follows Analytic Rules and precedes Hunting
+Queries; zero-count categories are omitted. For example:
+**Analytic Rules:** 15, **XDR Detections:** 15, **Hunting Queries:** 15.
+
+This is an inventory count, independent of enabled status or the E5 selection.
+Deployment wrappers, optional content registrations, and customer usage
+attribution markers do not add to it. No navigation step or selector is added,
+and the API/schema kind remains `CustomDetection`. Legacy V3 and
+`pipeline/createSolutionV4.ps1` descriptions are unchanged.
+
 ## Release-version bounds (V3.1 only)
 
 V3.1 applies these hard guards in local, catalog, and positional pipeline modes:
@@ -141,7 +156,7 @@ rebuild rather than rename or edit old reports.
 From the repository root (Python 3.11/3.12, PowerShell 7, and `powershell-yaml`):
 
 ```bash
-PYTHONPATH=Tools/SentinelToXDRMigration:Tools/SentinelToXDRMigration/tests python -m unittest test_packaging test_workflow test_customer_usage_attribution test_version_policy test_converter
+PYTHONPATH=Tools/SentinelToXDRMigration:Tools/SentinelToXDRMigration/tests python -m unittest test_packaging test_workflow test_customer_usage_attribution test_version_policy test_xdr_description_counts test_converter
 ```
 
 The attribution tests exercise both local and positional pipeline entry points
@@ -154,6 +169,11 @@ defaults, local bumps, pipeline consistency, and rejection without source/output
 mutation.
 Converter tests cover independent XDR initialization, unchanged source provenance,
 version preservation, explicit legacy reconversion, and invalid-version conflicts.
+Description-count tests cover zero, one, and multiple XDR detections, mixed
+inventories, registration on/off, attribution exclusion, Markdown/HTML and ZIP
+consistency, failed generation without partial output, and unchanged legacy
+descriptions. Formatter tests also cover XDR-only and trailing/empty categories;
+actual XDR packaging still requires the matching source Analytic Rules.
 
 ## Local parser names in Custom Detections
 

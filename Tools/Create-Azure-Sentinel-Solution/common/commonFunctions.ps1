@@ -440,6 +440,27 @@ function updateDescriptionCount($counter, $emplaceString, $replaceString, $count
     }
 }
 
+function Update-XdrDescriptionCount([int]$Count) {
+    if ($Count -le 0) { return }
+
+    # Target only the generated count paragraph, before substituting author-supplied text.
+    # XDR follows analytics (or the preceding nonempty category), ahead of hunting.
+    $pattern = '(\{\{SolutionDescription\}\}\r?\n\r?\n)(?<before>(?:\*\*(?:Data Connectors|Parsers|Workbooks|Analytic Rules):\*\* \d+(?:, )?)*)(?<after>[^\r\n]*)'
+    $global:baseCreateUiDefinition.parameters.config.basics.description = [regex]::Replace(
+        $global:baseCreateUiDefinition.parameters.config.basics.description,
+        $pattern,
+        [System.Text.RegularExpressions.MatchEvaluator]{
+            param($match)
+            $counts = @(
+                $match.Groups['before'].Value.TrimEnd(', '),
+                "**XDR Detections:** $Count",
+                $match.Groups['after'].Value.TrimEnd(', ')
+            ) | Where-Object { $_ -ne '' }
+            return $match.Groups[1].Value + ($counts -join ', ')
+        }
+    )
+}
+
 function GetContentSchemaVersion($defaultPackageVersion, $dataInputVersion) {
     # DEPENDING OF VERSION WE SHOULD SET THE CONTENTSCHEMAVERSION
     if ($null -eq $defaultPackageVersion -and $null -eq $dataInputVersion) {
@@ -3062,6 +3083,7 @@ function GeneratePackage(
         $xdrDetectionCount = Add-XdrCustomDetectionsToSolution -SolutionName $solutionName -ContentToImport $contentToImport -Template $global:baseMainTemplate
         # PrepareSolutionMetadata filters out deployments; add the marker only after that filtering.
         Add-CustomerUsageAttribution -SolutionMetadataPath $SolutionMetadataPath -Template $global:baseMainTemplate -WarnIfMissing ($xdrDetectionCount -gt 0)
+        Update-XdrDescriptionCount -Count $xdrDetectionCount
     }
 
     if ($contentToImport.Description) {
