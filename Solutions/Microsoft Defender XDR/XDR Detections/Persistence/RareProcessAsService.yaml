@@ -1,0 +1,114 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 91a451e3-178f-41b2-9e5d-da97d75b9971
+    path: Analytic Rules/Persistence/RareProcessAsService.yaml
+    version: 1.0.0
+    querySha256: 286404a72cde0557dc9f481b4404ba481a010e27dd319f2018254655f7c049ac
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 14d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1d, lookback=14d; target frequency=P1D, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.ProcessId to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.CommandLine to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-rare-process-as-a-service-91a451e3' to originating Sentinel template ID '91a451e3-178f-41b2-9e5d-da97d75b9971'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Persistence
+    originalTechniques:
+    - T1543
+    - T1543.003
+    identityChange:
+      previousId: xdr-rare-process-as-a-service-91a451e3
+      currentId: 91a451e3-178f-41b2-9e5d-da97d75b9971
+      scope: local-artifact-only
+properties:
+  id: 91a451e3-178f-41b2-9e5d-da97d75b9971
+  displayName: Rare Process as a Service
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let LookupTime = 14d;
+      let WhiteList = pack_array(
+      "svchost.exe",
+      "mssense.exe",
+      "msmpeng.exe",
+      "searchindexer.exe",
+      "microsoftedgeupdate.exe"
+      );
+      let GetServices = materialize (
+      DeviceProcessEvents
+      | where Timestamp > ago(LookupTime)
+      | where InitiatingProcessParentFileName contains "services.exe"
+      | where InitiatingProcessFileName !in~(WhiteList)
+      | project Timestamp, DeviceName, StartedChildProcess = FileName, StartedChildProcessSHA1 = SHA1, StartedChildProcessCmdline = ProcessCommandLine, ServiceProcessSHA1 = InitiatingProcessSHA1, ServiceProcess = InitiatingProcessFileName, ServiceProcessCmdline = InitiatingProcessCommandLine, ServiceProcessID = InitiatingProcessId, ServiceProcessCreationTime = InitiatingProcessCreationTime, ServiceProcessUser = InitiatingProcessAccountName
+      );
+      GetServices
+      | summarize count() by ServiceProcess, DeviceName
+      | where count_ < 6
+      | join kind = inner GetServices on ServiceProcess, DeviceName
+      | join kind = leftouter (
+      DeviceNetworkEvents
+      | where Timestamp > ago(LookupTime)
+      | where InitiatingProcessParentFileName contains "services.exe"
+      | where InitiatingProcessFileName !in~(WhiteList)
+      | project Timestamp, DeviceName, ServiceProcessSHA1 = InitiatingProcessSHA1, ServiceProcess = InitiatingProcessFileName, ServiceProcessCmdline = InitiatingProcessCommandLine, ServiceProcessID = InitiatingProcessId, ServiceProcessCreationTime = InitiatingProcessCreationTime, ServiceProcessUser = InitiatingProcessAccountName, NetworkAction = ActionType, RemoteIP, RemoteUrl
+      ) on DeviceName, ServiceProcess, ServiceProcessCmdline, ServiceProcessCreationTime, ServiceProcessID, ServiceProcessUser, ServiceProcessSHA1
+      | join kind = leftouter (
+      DeviceFileEvents
+      | where Timestamp > ago(LookupTime)
+      | where InitiatingProcessParentFileName contains "services.exe"
+      | where InitiatingProcessFileName !in~(WhiteList)
+      | project Timestamp, DeviceName, ServiceProcessSHA1 = InitiatingProcessSHA1, ServiceProcess = InitiatingProcessFileName, ServiceProcessCmdline = InitiatingProcessCommandLine, ServiceProcessID = InitiatingProcessId, ServiceProcessCreationTime = InitiatingProcessCreationTime, ServiceProcessUser = InitiatingProcessAccountName, FileAction = ActionType, ModifiedFile = FileName, ModifiedFileSHA1 = SHA1, ModifiedFilePath = FolderPath
+      ) on DeviceName, ServiceProcess, ServiceProcessCmdline, ServiceProcessCreationTime, ServiceProcessID, ServiceProcessUser, ServiceProcessSHA1
+      | join kind = leftouter (
+      DeviceImageLoadEvents
+      | where Timestamp > ago(LookupTime)
+      | where InitiatingProcessParentFileName contains "services.exe"
+      | where InitiatingProcessFileName !in~(WhiteList)
+      | project Timestamp, DeviceName, ServiceProcessSHA1 = InitiatingProcessSHA1, ServiceProcess = InitiatingProcessFileName, ServiceProcessCmdline = InitiatingProcessCommandLine, ServiceProcessID = InitiatingProcessId, ServiceProcessCreationTime = InitiatingProcessCreationTime, ServiceProcessUser = InitiatingProcessAccountName, LoadedDLL = FileName, LoadedDLLSHA1 = SHA1, LoadedDLLPath = FolderPath
+      ) on DeviceName, ServiceProcess, ServiceProcessCmdline, ServiceProcessCreationTime, ServiceProcessID, ServiceProcessUser, ServiceProcessSHA1
+      | summarize ConnectedAddresses = make_set(RemoteIP, 100000), ConnectedUrls = make_set(RemoteUrl, 100000), FilesModified = make_set(ModifiedFile, 100000),FileModFolderPath = make_set(ModifiedFilePath, 100000),FileModHA1s = make_set(ModifiedFileSHA1, 100000), ChildProcesses = make_set(StartedChildProcess, 100000), ChildCommandlines = make_set(StartedChildProcessCmdline, 100000), DLLsLoaded = make_set(LoadedDLL, 100000), DLLSHA1 = make_set(LoadedDLLSHA1, 100000) by DeviceName, ServiceProcess, ServiceProcessCmdline, ServiceProcessCreationTime, ServiceProcessID, ServiceProcessUser, ServiceProcessSHA1
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: Rare Process as a Service
+      description: |-
+        This query is looking for rarely seen processes which are launched as a service. Whiltelisted process list need to be updated based on the environment.
+        Author: Jouni Mikkola
+        More info: https://threathunt.blog/rare-process-launch-as-a-service/
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: Persistence
+        techniques:
+        - technique: T1543
+          subTechniques:
+          - T1543.003

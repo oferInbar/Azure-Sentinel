@@ -1,0 +1,94 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 3ab04acf-e0e7-4f7c-8995-748ab4c848c2
+    path: Analytic Rules/Exfiltration/FilesCopiedToUSBDrives.yaml
+    version: 1.0.0
+    querySha256: 161193c19bae0958bef335b4dfd13f6346291f3ca2840af88c24e099f02b2bae
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map File.Directory to a documented Custom Detection field; this source identifier is not represented
+    - 'converter cannot map FileHash.Algorithm/Value: requires a query-proven constant SHA1 or SHA256 algorithm and an available
+      hash value column; MD5, unknown algorithms and linked file/process references are not inferred'
+    - Local detection ID changed from 'xdr-files-copied-to-usb-drives-3ab04acf' to originating Sentinel template ID '3ab04acf-e0e7-4f7c-8995-748ab4c848c2'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Exfiltration
+    originalTechniques:
+    - T1041
+    identityChange:
+      previousId: xdr-files-copied-to-usb-drives-3ab04acf
+      currentId: 3ab04acf-e0e7-4f7c-8995-748ab4c848c2
+      scope: local-artifact-only
+properties:
+  id: 3ab04acf-e0e7-4f7c-8995-748ab4c848c2
+  displayName: Files Copied to USB Drives
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let UsbDriveMount = DeviceEvents
+      | where ActionType=="UsbDriveMounted"
+      | extend ParsedFields=parse_json(AdditionalFields)
+      | project DeviceId, DeviceName, DriveLetter=ParsedFields.DriveLetter, MountTime=Timestamp,
+      ProductName=ParsedFields.ProductName,SerialNumber=ParsedFields.SerialNumber,Manufacturer=ParsedFields.Manufacturer
+      | order by DeviceId asc, MountTime desc;
+      let FileCreation = DeviceFileEvents
+      | where InitiatingProcessAccountName != "system"
+      | where ActionType == "FileCreated"
+      | where FolderPath !startswith "C:\\"
+      | where FolderPath !startswith "\\"
+      | project ReportId,DeviceId,InitiatingProcessAccountDomain,
+      InitiatingProcessAccountName,InitiatingProcessAccountUpn,
+      FileName, FolderPath, SHA256, Timestamp, SensitivityLabel, IsAzureInfoProtectionApplied
+      | order by DeviceId asc, Timestamp desc;
+      FileCreation | lookup kind=inner (UsbDriveMount) on DeviceId
+      | where FolderPath startswith DriveLetter
+      | where Timestamp >= MountTime
+      | partition hint.strategy=native by ReportId ( top 1 by MountTime )
+      | order by DeviceId asc, Timestamp desc
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+      | extend FileHashAlgorithm = 'SHA256'
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Files Copied to USB Drives
+      description: This query lists files copied to USB external drives with USB drive information based on FileCreated events
+        associated with most recent USBDriveMount events befor file creations. But be aware that Advanced Hunting is not monitoring
+        all the file types.
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+        files:
+        - id: file1
+          nameColumn: FileName
+      tactics:
+      - tactic: Exfiltration
+        techniques:
+        - technique: T1041

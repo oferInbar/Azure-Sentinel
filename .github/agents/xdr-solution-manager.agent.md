@@ -113,7 +113,14 @@ runtime providers are unavailable.
    or workspace customer-ID mismatch. No specialist tool may independently
    discover or select a workspace.
 3. Persist state under
-   `Reports\<solution>\sentinel-xdr-migration\workflow-state.json`.
+   `Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\workflow-state.json`.
+   Keep the same run ID on resume. Use `workflow-runs` to list available IDs;
+   if more than one exists, require explicit `--run-id` selection rather than
+   choosing the newest. `workflow-init --new-run` creates an isolated workflow
+   only when explicitly requested, not to bypass a blocked stage.
+   Logs are Git-ignored, not PR evidence. When legacy state is found, follow
+   the canonical workflow's explicit `migrate-reports` copy step before writes;
+   never initialize over it or delete the originals.
    If its context already contains a full `workspaceResourceId`, reuse that
    exact workspace for every later stage. Do not list, rediscover, rank, or scan
    other workspaces. A tenant mismatch requires authentication correction, not

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
-from html import escape
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .artifacts import existing_artifact_path, report_directory
-from .converter import analytic_rule_files, validate_document
+from .artifacts import existing_artifact_path, existing_artifacts, report_directory, resolve_artifact_reference, portable_artifact, write_json_artifact
+from .converter import analytic_rule_files, solution_paths, validate_document
+from .content_paths import content_path
+from .report_dashboard import render_dashboard
 
 JSON_NAME = "migration-report.json"
 HTML_NAME = "migration-report.html"
@@ -67,22 +69,21 @@ def build_solution_report(
     *,
     ingestion_reports: list[str | Path] | None = None,
 ) -> dict[str, Any]:
-    root = Path(solution).expanduser().resolve()
-    output = root / "XDR Detections"
+    root, analytic, output = solution_paths(solution)
     reports = report_directory(root, create=True)
     manifest = _read_json(existing_artifact_path(root, "manifest.json"))
-    manifest_by_source = {
-        Path(item.get("source") or "").name: item for item in manifest.get("results") or []
-    }
+    workflow = _read_json(existing_artifact_path(root, "workflow-state.json"))
+    manifest_by_source = {}
+    for item in manifest.get("results") or []:
+        reference = str(item.get("sourceRelativePath") or item.get("source") or "").replace("\\", "/")
+        root_prefix = root.as_posix() + "/"
+        if reference.startswith(root_prefix):
+            reference = reference[len(root_prefix):]
+        manifest_by_source[reference] = item
     runtime_reports = [
         _read_json(path)
-        for path in sorted(reports.glob("runtime-validation.*.json"))
+        for path in existing_artifacts(root, "runtime-validation.*.json")
     ]
-    if not runtime_reports:
-        runtime_reports = [
-            _read_json(path)
-            for path in sorted(output.glob("runtime-validation.*.json"))
-        ]
     deployment = _read_json(existing_artifact_path(root, "deployment.graph.json"))
     analytic_deployment = _read_json(
         existing_artifact_path(root, "deployment.sentinel.json")
@@ -97,22 +98,23 @@ def build_solution_report(
         for item in analytic_deployment.get("results") or []
     }
     parity_by_detection = {
-        str(item.get("detection")): item for item in parity.get("comparisons") or []
+        str(item.get("detection")).replace("\\", "/"): item for item in parity.get("comparisons") or []
     }
     query_parity_by_detection = {
-        str(item.get("detection")): item
+        str(item.get("detection")).replace("\\", "/"): item
         for item in query_parity.get("comparisons") or []
     }
     ingestion = [
-        _read_json(Path(path).expanduser().resolve())
+        _read_json(resolve_artifact_reference(root, path))
         for path in ingestion_reports or []
     ]
 
     rules: list[dict[str, Any]] = []
     for source_path in analytic_rule_files(root):
         source = yaml.safe_load(source_path.read_text(encoding="utf-8-sig")) or {}
-        conversion = manifest_by_source.get(source_path.name) or {}
-        detection_path = output / source_path.name
+        conversion = manifest_by_source.get(source_path.relative_to(root).as_posix()) or {}
+        detection_name = source_path.relative_to(analytic).as_posix()
+        detection_path = content_path(output, detection_name)
         detection: dict[str, Any] = {}
         structural_errors: list[str] = []
         if detection_path.exists():
@@ -138,7 +140,7 @@ def build_solution_report(
                 (
                     candidate
                     for candidate in report.get("results") or []
-                    if candidate.get("detection") == source_path.name
+                    if str(candidate.get("detection") or "").replace("\\", "/") == detection_name
                 ),
                 None,
             )
@@ -196,8 +198,8 @@ def build_solution_report(
                     details=graph_error,
                 )
             )
-        parity_item = parity_by_detection.get(source_path.name) or {}
-        query_parity_item = query_parity_by_detection.get(source_path.name) or {}
+        parity_item = parity_by_detection.get(detection_name) or {}
+        query_parity_item = query_parity_by_detection.get(detection_name) or {}
         if parity_item and not parity_item.get("passed"):
             errors.append(
                 _error(
@@ -227,6 +229,25 @@ def build_solution_report(
             {
                 "name": source.get("name") or source_path.stem,
                 "sourceFile": str(source_path),
+                "sourceSha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+                "outputFile": str(detection_path),
+                "queries": {
+                    "source": source.get("query"),
+                    "converted": (properties.get("queryCondition") or {}).get("queryText"),
+                },
+                "attackClassification": {
+                    "sourceTactics": source.get("tactics"),
+                    "sourceTechniques": source.get("relevantTechniques"),
+                    "draftTactics": (
+                        (properties.get("detectionAction") or {}).get("alertTemplate") or {}
+                    ).get("tactics"),
+                    "originalTactics": (
+                        (detection.get("contentProvenance") or {}).get("conversion") or {}
+                    ).get("originalTactics"),
+                    "originalTechniques": (
+                        (detection.get("contentProvenance") or {}).get("conversion") or {}
+                    ).get("originalTechniques"),
+                },
                 "analyticRule": {
                     "id": source.get("id"),
                     "sourceStatus": source.get("status"),
@@ -286,6 +307,13 @@ def build_solution_report(
                     ),
                 },
                 "warnings": list(conversion.get("warnings") or []),
+                "informational": list(
+                    conversion.get("informational") or []
+                    if "informational" in conversion
+                    else (
+                        (detection.get("contentProvenance") or {}).get("conversion") or {}
+                    ).get("informational") or []
+                ),
                 "errors": errors,
             }
         )
@@ -294,7 +322,24 @@ def build_solution_report(
         "solution": root.name,
         "solutionPath": str(root),
         "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "workflow": {
+            "runId": workflow.get("runId"),
+            "profile": (workflow.get("context") or {}).get("workflowProfile"),
+            "status": workflow.get("workflowStatus"),
+            "workspaceConfigured": bool(
+                (workflow.get("context") or {}).get("workspaceResourceId")
+            ),
+            "stages": {
+                name: {
+                    key: stage.get(key)
+                    for key in ("status", "attempts", "message", "evidence", "updatedAt")
+                    if stage.get(key) is not None
+                }
+                for name, stage in (workflow.get("stages") or {}).items()
+            },
+        },
         "summary": {
+            "conversionScope": manifest.get("scope") or {},
             "rules": len(rules),
             "converted": sum(
                 item["customDetection"]["conversionStatus"] == "converted"
@@ -331,6 +376,8 @@ def build_solution_report(
                 item["queryParity"]["status"] == "passed" for item in rules
             ),
             "errors": sum(len(item["errors"]) for item in rules),
+            "informational": sum(len(item["informational"]) for item in rules),
+            "rulesWithInformation": sum(bool(item["informational"]) for item in rules),
         },
         "rules": rules,
         "ingestion": ingestion,
@@ -357,92 +404,10 @@ def build_solution_report(
     html_path = reports / HTML_NAME
     report["jsonReport"] = str(json_path)
     report["htmlReport"] = str(html_path)
-    json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    html_path.write_text(render_solution_report(report), encoding="utf-8", newline="\n")
+    write_json_artifact(root, json_path, report)
+    html_path.write_text(render_solution_report(portable_artifact(root, report)), encoding="utf-8", newline="\n")
     return report
 
 
 def render_solution_report(report: dict[str, Any]) -> str:
-    def runtime_html(values: list[dict[str, Any]]) -> str:
-        if not values:
-            return '<span class="muted">not recorded</span>'
-        return "<br>".join(
-            f"{escape(str(item['provider']))}: "
-            f"<span class=\"status {escape(str(item['status']))}\">"
-            f"{escape(str(item['status']))}</span>"
-            f" ({item.get('rowCount', 0)} rows)"
-            for item in values
-        )
-
-    rows: list[str] = []
-    for rule in report["rules"]:
-        errors = rule["errors"]
-        error_html = (
-            "<span class=\"ok\">None</span>"
-            if not errors
-            else "".join(
-                "<details><summary>"
-                f"{escape(str(item['stage']))}: {escape(str(item['message']))}"
-                "</summary><pre>"
-                f"{escape(json.dumps(item, indent=2, ensure_ascii=True))}"
-                "</pre></details>"
-                for item in errors
-            )
-        )
-        recommendation = rule.get("entityRecommendation")
-        recommendation_html = (
-            escape(recommendation)
-            if recommendation
-            else '<span class="muted">None</span>'
-        )
-        rows.append(
-            "<tr>"
-            f"<td><strong>{escape(str(rule['name']))}</strong><br>"
-            f"<code>{escape(str(rule['analyticRule']['id']))}</code></td>"
-            f"<td>{escape(str(rule['analyticRule']['deploymentStatus']))}<br>"
-            f"alerts: {escape(str(rule['analyticRule']['alertStatus']))}<br>"
-            f"runtime: {runtime_html(rule['analyticRule']['runtime'])}</td>"
-            f"<td>{escape(str(rule['customDetection']['conversionStatus']))}<br>"
-            f"review required: {escape(str(rule['customDetection']['reviewRequired']).lower())}<br>"
-            f"structural: {escape(str(rule['customDetection']['structuralStatus']))}<br>"
-            f"deployment: {escape(str(rule['customDetection']['deploymentStatus']))}<br>"
-            f"alerts: {escape(str(rule['customDetection']['alertStatus']))}<br>"
-            f"runtime: {runtime_html(rule['customDetection']['runtime'])}</td>"
-            f"<td>{recommendation_html}</td>"
-            f"<td><span class=\"status {escape(str(rule['queryParity']['status']))}\">"
-            f"{escape(str(rule['queryParity']['status']))}</span><br>"
-            f"AR rows: {escape(str(rule['queryParity']['analyticRuleRows']))}<br>"
-            f"CD rows: {escape(str(rule['queryParity']['customDetectionRows']))}<br>"
-            f"<code>{escape(json.dumps(rule['queryParity']['matchKey'], ensure_ascii=True))}</code></td>"
-            f"<td>{error_html}</td>"
-            "</tr>"
-        )
-    summary = report["summary"]
-    return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{escape(str(report["solution"]))} migration report</title>
-<style>
-body{{font-family:Segoe UI,Arial,sans-serif;background:#0f172a;color:#e2e8f0;margin:0}}main{{max-width:1600px;margin:auto;padding:28px}}
-.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:20px 0}}.card,table{{background:#111827;border:1px solid #334155}}
-.card{{padding:14px;border-radius:8px}}.card strong{{display:block;font-size:1.7rem}}table{{width:100%;border-collapse:collapse}}
-th,td{{padding:12px;border-bottom:1px solid #334155;text-align:left;vertical-align:top}}th{{background:#1e293b}}
-.muted{{color:#94a3b8}}.ok{{color:#86efac}}pre{{white-space:pre-wrap;max-width:720px;overflow:auto}}details{{margin-bottom:8px}}
-.status{{display:inline-block;border-radius:999px;padding:2px 7px;font-weight:600}}.passed{{background:#14532d;color:#bbf7d0}}.failed{{background:#7f1d1d;color:#fecaca}}.blocked{{background:#78350f;color:#fde68a}}.not-run{{background:#334155;color:#cbd5e1}}
-code{{font-size:.8rem}}@media(max-width:900px){{.cards{{grid-template-columns:repeat(2,1fr)}}}}
-</style></head><body><main>
-<h1>{escape(str(report["solution"]))} migration report</h1>
-<div class="muted">{escape(str(report["generatedAt"]))}</div>
-<section class="cards">
-<div class="card">Rules<strong>{summary["rules"]}</strong></div>
-<div class="card">Converted<strong>{summary["converted"]}</strong></div>
-<div class="card">Review required<strong>{summary["needsReview"]}</strong></div>
-<div class="card">Deployment ready<strong>{summary["deploymentReady"]}</strong></div>
-<div class="card">AR runtime passed<strong>{summary["analyticRuntimePassed"]}</strong></div>
-<div class="card">CD runtime passed<strong>{summary["customRuntimePassed"]}</strong></div>
-<div class="card">Query parity passed<strong>{summary["queryParityPassed"]}</strong></div>
-<div class="card">Parity passed<strong>{summary["strictParityPassed"]}</strong></div>
-<div class="card">Errors<strong>{summary["errors"]}</strong></div>
-</section>
-<table><thead><tr><th>Rule</th><th>Analytic Rule</th><th>Custom Detection</th><th>Entity recommendation</th><th>Query parity</th><th>Detailed errors</th></tr></thead>
-<tbody>{''.join(rows)}</tbody></table>
-</main></body></html>"""
+    return render_dashboard(report)

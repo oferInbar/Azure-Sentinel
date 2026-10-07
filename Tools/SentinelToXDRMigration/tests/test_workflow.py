@@ -12,7 +12,7 @@ from sentinel_xdr_migration.workflow import (
     start_workflow_stage,
     workflow_status,
 )
-from sentinel_xdr_migration.artifacts import artifact_path
+from sentinel_xdr_migration.artifacts import artifact_path, migrate_reports
 
 
 class WorkflowTests(unittest.TestCase):
@@ -107,18 +107,24 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "blocked by: discovery"):
             start_workflow_stage(self.solution, "conversion")
 
-    def test_legacy_state_moves_to_reports_when_resumed(self) -> None:
+    def test_legacy_state_is_read_only_until_explicit_copy(self) -> None:
         created = initialize_workflow(self.solution, workflow_profile="authoring")
         preferred = Path(created["statePath"])
         legacy = self.solution / "XDR Detections" / "workflow-state.json"
         legacy.parent.mkdir(parents=True, exist_ok=True)
         preferred.replace(legacy)
 
-        resumed = workflow_status(self.solution)
-
-        self.assertEqual(preferred, Path(resumed["statePath"]))
+        with self.assertWarnsRegex(UserWarning, "reading legacy"):
+            resumed = workflow_status(self.solution)
+        self.assertEqual(legacy, Path(resumed["statePath"]))
+        self.assertFalse(preferred.is_file())
+        with self.assertRaisesRegex(ValueError, "migrate-reports"):
+            start_workflow_stage(self.solution, "discovery")
+        migrate_reports(self.solution, apply=True)
         self.assertTrue(preferred.is_file())
-        self.assertFalse(legacy.exists())
+        self.assertTrue(legacy.exists())
+        start_workflow_stage(self.solution, "discovery")
+        self.assertEqual("running", workflow_status(self.solution)["stages"]["discovery"]["status"])
 
     def test_failed_stage_can_be_retried(self) -> None:
         initialize_workflow(self.solution, workflow_profile="authoring")
@@ -153,7 +159,7 @@ class WorkflowTests(unittest.TestCase):
         discovery = persisted["stages"]["discovery"]
         self.assertEqual(
             discovery["artifacts"]["inspection"],
-            "Reports/Sample/sentinel-xdr-migration/inspection.json",
+            artifact_path(self.solution, "inspection.json").relative_to(self.solution).as_posix(),
         )
         self.assertEqual(discovery["evidence"], ["Analytic Rules/Sample.yaml"])
 

@@ -1,0 +1,99 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 1bf6e165-5e32-420e-ab4f-0da8558a8be2
+    path: Analytic Rules/PotentialBuildProcessCompromiseMDE.yaml
+    version: 1.1.0
+    querySha256: 6fcfad36d129688e9bd14308a42cbecb53d2ec0434624a6c5868f7e545d85430
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 1d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Account.FullName to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-potential-build-process-compromise-mde-1bf6e165' to originating Sentinel template
+      ID '1bf6e165-5e32-420e-ab4f-0da8558a8be2'. No cloud rules were updated, deleted, or migrated. Review existing deployed
+      rules and reconcile their identities before any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Persistence
+    originalTechniques:
+    - T1554
+    identityChange:
+      previousId: xdr-potential-build-process-compromise-mde-1bf6e165
+      currentId: 1bf6e165-5e32-420e-ab4f-0da8558a8be2
+      scope: local-artifact-only
+properties:
+  id: 1bf6e165-5e32-420e-ab4f-0da8558a8be2
+  displayName: Potential Build Process Compromise - MDE
+  status: disabled
+  queryCondition:
+    queryText: |-
+      // How far back to look for events from
+      let timeframe = 1d;
+      // How close together build events and file modifications should occur to alert (make this smaller to reduce FPs)
+      let time_window = 5m;
+      // Edit this to include build processes used
+      let build_processes = dynamic(["MSBuild.exe", "dotnet.exe", "VBCSCompiler.exe"]);
+      // Include any processes that you want to allow to edit files during/around the build process
+      let allow_list = dynamic([]);
+      DeviceProcessEvents
+      | where Timestamp > ago(timeframe)
+      // Look for build process starts
+      | where FileName has_any (build_processes)
+      | summarize by BuildParentProcess=InitiatingProcessFileName, BuildProcess=FileName, BuildAccount = AccountName, DeviceName, BuildCommand=ProcessCommandLine,
+      timekey= bin(Timestamp, time_window), BuildProcessTime=Timestamp
+      | join kind=inner(
+      DeviceFileEvents
+      | where Timestamp > ago(timeframe)
+      | where InitiatingProcessFileName !in (allow_list)
+      | where ActionType == "FileCreated"  or ActionType == "FileModified"
+      // Look for code files, edit this to include file extensions used in build.
+      | where FileName endswith ".cs" or FileName endswith ".cpp"
+      | summarize by FileEditParentProcess=InitiatingProcessParentFileName, FileEditAccount = InitiatingProcessAccountName, FileEditDomain = InitiatingProcessAccountDomain, FileEditUpn = InitiatingProcessAccountUpn,
+      DeviceName, FileEdited=FileName, FileEditProcess=InitiatingProcessFileName, timekey= bin(Timestamp, time_window), FileEditTime=Timestamp)
+      // join where build processes and file modifications seen at same time on same host
+      on timekey, DeviceName
+      // Limit to only where the file edit happens after the build process starts
+      | where BuildProcessTime <= FileEditTime
+      | summarize make_set(FileEdited), make_set(FileEditProcess) by timekey, DeviceName, BuildParentProcess, BuildProcess, FileEditAccount, FileEditDomain, FileEditUpn
+      | extend HostName = tostring(split(DeviceName, ".")[0]), DomainIndex = toint(indexof(DeviceName, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(DeviceName, DomainIndex + 1), DeviceName)
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: Potential Build Process Compromise - MDE
+      description: |-
+        'The query looks for source code files being modified immediately after a build process is started. The purpose of this is to look for malicious code injection during the build process. This query uses Microsoft Defender for Endpoint telemetry.
+        More details: https://techcommunity.microsoft.com/t5/azure-sentinel/monitoring-the-software-supply-chain-with-azure-sentinel/ba-p/2176463'
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+        accounts:
+        - id: account1
+          nameColumn: FileEditAccount
+          upnSuffixColumn: FileEditDomain
+      tactics:
+      - tactic: Persistence
+        techniques:
+        - technique: T1554

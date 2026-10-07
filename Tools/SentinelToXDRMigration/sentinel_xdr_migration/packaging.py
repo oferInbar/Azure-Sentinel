@@ -8,7 +8,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from .artifacts import report_directory, repository_root
+from .artifacts import report_directory, repository_root, write_json_artifact, require_solution_conversion_scope
+from .content_paths import content_path
 
 
 PACKAGER_NAME = "V3.1"
@@ -64,7 +65,10 @@ def _xdr_references(solution: Path, document: dict[str, Any]) -> list[Path]:
     for value in values:
         if not isinstance(value, str) or not value.strip():
             raise ValueError("solution data contains an invalid XDR Detection reference")
-        candidate = solution.joinpath(*value.replace("\\", "/").split("/"))
+        normalized = value.replace("\\", "/")
+        if not normalized.startswith("XDR Detections/"):
+            raise ValueError("XDR references must be under XDR Detections, never Logs or Reports")
+        candidate = content_path(solution, normalized)
         if not candidate.is_file():
             raise ValueError(f"referenced XDR Detection does not exist: {candidate}")
         references.append(candidate.resolve())
@@ -82,12 +86,22 @@ def package_solution_v3_1(
     root = Path(solution).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"solution folder does not exist: {root}")
+    require_solution_conversion_scope(root)
+    reports = report_directory(root, create=True)
     data_directory = root / "Data"
     if not data_directory.is_dir():
         raise ValueError(f"solution data folder does not exist: {data_directory}")
 
     data_file = _solution_data_file(data_directory)
     before = _read_json(data_file)
+    for values in before.values():
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, str) and any(
+                    part.lower() in {"logs", "reports", "evidence"}
+                    for part in value.replace("\\", "/").split("/")
+                ):
+                    raise ValueError("solution Data content arrays must never include Logs, Reports or Evidence")
     xdr_files = _xdr_references(root, before)
     repository = repository_root(root)
     script = (
@@ -138,6 +152,11 @@ def package_solution_v3_1(
     ]
     for warning in warnings:
         print(warning, file=sys.stderr)
+    attribution_sources = [
+        line for line in output.splitlines() if "CUSTOMER USAGE ATTRIBUTION SOURCE:" in line
+    ]
+    for source in attribution_sources:
+        print(source, file=sys.stderr)
 
     after = _read_json(data_file)
     version = str(_value(after, "Version") or "").strip()
@@ -161,6 +180,12 @@ def package_solution_v3_1(
     try:
         with zipfile.ZipFile(zip_path) as archive:
             names = {Path(name).name for name in archive.namelist()}
+            if any(
+                part.lower() in {"logs", "reports", "evidence"}
+                for name in archive.namelist()
+                for part in name.replace("\\", "/").split("/")
+            ):
+                raise RuntimeError("generated package ZIP must not contain Logs, Reports or Evidence")
     except (OSError, zipfile.BadZipFile) as exc:
         raise RuntimeError(f"generated package ZIP is invalid: {zip_path}: {exc}") from exc
     missing_entries = {"mainTemplate.json", "createUiDefinition.json"} - names
@@ -175,6 +200,7 @@ def package_solution_v3_1(
         "status": "passed",
         "packager": PACKAGER_NAME,
         "warnings": warnings,
+        "attributionSources": attribution_sources,
         "solution": str(root),
         "version": version,
         "versionBump": version_bump,
@@ -194,9 +220,5 @@ def package_solution_v3_1(
             "zip": str(zip_path),
         },
     }
-    report_path.write_text(
-        json.dumps(result, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    write_json_artifact(root, report_path, result)
     return result

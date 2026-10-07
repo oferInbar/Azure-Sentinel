@@ -1,0 +1,90 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 12134de5-361b-427c-a1a0-d43f40a593c4
+    path: Analytic Rules/Execution/PotentialKerberoastActivities.yaml
+    version: 1.0.0
+    querySha256: 3ccf3b174c2a094c3572ff0983426cbe63c3dc0271bea412978626548958c440
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Account.FullName to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-detect-potential-kerberoast-activities-12134de5' to originating Sentinel template
+      ID '12134de5-361b-427c-a1a0-d43f40a593c4'. No cloud rules were updated, deleted, or migrated. Review existing deployed
+      rules and reconcile their identities before any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - CredentialAccess
+    originalTechniques:
+    - T1558.003
+    identityChange:
+      previousId: xdr-detect-potential-kerberoast-activities-12134de5
+      currentId: 12134de5-361b-427c-a1a0-d43f40a593c4
+      scope: local-artifact-only
+properties:
+  id: 12134de5-361b-427c-a1a0-d43f40a593c4
+  displayName: Detect Potential Kerberoast Activities
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let MaxCount = 70; //Number of requests per 2 minute timeframe, depending on org size.
+      IdentityLogonEvents
+      | where ActionType == "LogonSuccess"
+      | where Protocol == "Kerberos"
+      | extend json = todynamic(parse_json(tostring(AdditionalFields)))
+      | extend SPN = json.Spns,
+             AttackTechniques = json.AttackTechniques
+            | project-away json
+      | where isnotempty(SPN)
+      | where AttackTechniques has "T1558.003"
+      | mv-expand SPN
+              | extend SPNType = tostring(extract(@"^\w+",0,tostring(SPN)))
+      | distinct tostring(SPN), DeviceName, AccountUpn, AccountSid, bin(Timestamp, 2m), ReportId, tostring(AttackTechniques)
+      | summarize count(), SPNS=(make_list(SPN, 100000)),ReportId=tostring((make_list(ReportId, 100000))[0]) by AccountUpn,AccountSid,DeviceName, bin(Timestamp, 2m), tostring(AttackTechniques)
+      | extend SPNS = (replace_regex(tostring(SPNS), @'[^\w+-\/]+', ''))
+      | where count_ >= MaxCount
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+      | extend AccountDomain = tostring(split(AccountUpn, '@')[1]), AccountName = tostring(split(AccountUpn, '@')[0])
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Detect Potential Kerberoast Activities
+      description: "This query aim to detect if someone requests service tickets (where count => maxcount)\nThe query requires\
+        \ trimming to set a baseline level for MaxCount  \nMitre Technique: Kerberoasting (T1558.003)\n@MattiasBorg82"
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+        accounts:
+        - id: account1
+          dnsDomainColumn: AccountDomain
+          nameColumn: AccountName
+      tactics:
+      - tactic: CredentialAccess
+        techniques:
+        - technique: T1558
+          subTechniques:
+          - T1558.003

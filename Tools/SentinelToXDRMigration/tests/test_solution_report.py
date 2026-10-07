@@ -14,6 +14,48 @@ from sentinel_xdr_migration.solution_report import build_solution_report
 
 
 class SolutionReportTests(unittest.TestCase):
+    def test_information_uses_manifest_with_provenance_fallback_without_status_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "Example"
+            analytic = root / "Analytic Rules"
+            analytic.mkdir(parents=True)
+            (analytic / "Rule.yaml").write_text(yaml.safe_dump({
+                "id": "11111111-1111-1111-1111-111111111111", "name": "Example",
+                "description": "Example", "severity": "High", "queryFrequency": "1h", "queryPeriod": "4h",
+                "query": "DeviceEvents | project Timestamp, DeviceId, DeviceName",
+                "entityMappings": [{"entityType": "Host", "fieldMappings": [{"identifier": "HostName", "columnName": "DeviceName"}]}],
+            }), encoding="utf-8")
+            convert_solution(root)
+            reports = report_directory(root)
+            manifest_path = reports / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["results"][0].pop("informational", None)
+            manifest_path.write_text(json.dumps(manifest))
+            draft_path = root / "XDR Detections" / "Rule.yaml"
+            draft = yaml.safe_load(draft_path.read_text())
+            draft["contentProvenance"]["conversion"]["informational"] = ["Provenance fallback"]
+            draft_path.write_text(yaml.safe_dump(draft))
+            fallback = build_solution_report(root)
+            self.assertEqual(fallback["rules"][0]["informational"], ["Provenance fallback"])
+            self.assertEqual(len(fallback["rules"][0]["sourceSha256"]), 64)
+            manifest["results"][0]["informational"] = []
+            manifest_path.write_text(json.dumps(manifest))
+            empty = build_solution_report(root)
+            self.assertEqual(empty["rules"][0]["informational"], [])
+            self.assertEqual(empty["summary"]["informational"], 0)
+            self.assertEqual(fallback["summary"]["informational"], 1)
+            self.assertEqual(fallback["summary"]["rulesWithInformation"], 1)
+            self.assertEqual(
+                {key: value for key, value in empty["summary"].items() if key not in {"informational", "rulesWithInformation"}},
+                {key: value for key, value in fallback["summary"].items() if key not in {"informational", "rulesWithInformation"}},
+            )
+            manifest["results"][0]["informational"] = ["Manifest <information>"]
+            manifest_path.write_text(json.dumps(manifest))
+            explicit = build_solution_report(root)
+            self.assertEqual(explicit["rules"][0]["informational"], ["Manifest <information>"])
+            self.assertEqual(explicit["summary"], fallback["summary"])
+            self.assertIn("Manifest &lt;information&gt;", Path(explicit["htmlReport"]).read_text())
+
     def test_report_renderer_parses_as_python_311(self) -> None:
         source_path = (
             Path(__file__).parents[1]
@@ -36,6 +78,8 @@ class SolutionReportTests(unittest.TestCase):
                 "name": "Example rule",
                 "description": "Example",
                 "severity": "High",
+                "tactics": ["Execution"],
+                "relevantTechniques": ["T1059"],
                 "queryFrequency": "1h",
                 "queryPeriod": "1h",
                 "query": "Example_CL | project User",
@@ -109,6 +153,17 @@ class SolutionReportTests(unittest.TestCase):
 
             self.assertEqual(report["solution"], "Example")
             self.assertEqual(report["summary"]["rules"], 1)
+            self.assertEqual(report["rules"][0]["queries"]["source"], source["query"])
+            self.assertTrue(report["rules"][0]["queries"]["converted"])
+            self.assertIn("workflow", report)
+            classification = report["rules"][0]["attackClassification"]
+            self.assertEqual(classification["sourceTactics"], ["Execution"])
+            self.assertEqual(classification["sourceTechniques"], ["T1059"])
+            self.assertEqual(classification["originalTactics"], ["Execution"])
+            self.assertEqual(classification["originalTechniques"], ["T1059"])
+            self.assertEqual(classification["draftTactics"], [
+                {"tactic": "Execution", "techniques": [{"technique": "T1059"}]}
+            ])
             self.assertEqual(
                 report["rules"][0]["customDetection"]["conversionStatus"],
                 "converted",

@@ -34,7 +34,8 @@ class AttributionTests(unittest.TestCase):
     def run_ps(self, command: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command",
-             "$ErrorActionPreference = 'Stop'; " + command],
+             "$ErrorActionPreference = 'Stop'; $env:SENTINEL_SKIP_ATTRIBUTION_LOOKUP = '1'; "
+             + getattr(self, "ps_prelude", "") + command],
             cwd=self.repository, capture_output=True, text=True,
         )
 
@@ -147,9 +148,12 @@ class AttributionTests(unittest.TestCase):
             "schemaVersion": "1.0.0", "version": "3.1.0",
             "kind": "CustomDetection", "resourceType": "Microsoft.Security/detectionRules",
             "apiVersion": "2025-06-01",
-            "contentProvenance": {"source": {"id": source_id, "version": "1.0.0"}},
+            "contentProvenance": {"source": {
+                "id": source_id, "version": "1.0.0",
+                "platform": "Microsoft Sentinel", "kind": "AnalyticsRule",
+            }},
             "properties": {
-                "id": "22222222-2222-3333-4444-555555555555",
+                "id": source_id,
                 "displayName": "Test detection", "status": "disabled",
                 "queryCondition": {"queryText": "print Test = 1"},
                 "detectionAction": {"alertTemplate": {"tactics": ["Execution"], "entityMappings": {}}},
@@ -173,11 +177,13 @@ class AttributionTests(unittest.TestCase):
         self, entry: Path, pipeline: bool, *,
         version_bump: str = "none", version_mode: str = "local",
         calculated_version: str = "3.1.0",
+        skip_lookup: bool = False,
     ) -> subprocess.CompletedProcess:
+        extra = " -SkipAttributionLookup" if skip_lookup else ""
         if not pipeline:
             return self.run_ps(
                 f"& {ps_literal(entry)} -SolutionDataFolderPath {ps_literal(self.data.parent)} "
-                f"-VersionMode {version_mode} -VersionBump {version_bump}"
+                f"-VersionMode {version_mode} -VersionBump {version_bump}{extra}"
             )
         return self.run_ps(
             f"$data = Get-Content -Raw {ps_literal(self.data)} | ConvertFrom-Json; "
@@ -187,8 +193,294 @@ class AttributionTests(unittest.TestCase):
             "$data | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value } }; "
             f"& {ps_literal(entry)} {ps_literal(self.repository)} 'Sample' $data "
             "'Solution_Sample.json' 'Data Connectors' 'Data' 'test' '1' '1' "
-            f"{ps_literal(calculated_version)} '3.0.0' $false"
+            f"{ps_literal(calculated_version)} '3.0.0' $false{extra}"
         )
+
+    def mock_lookup(self, *, catalog=None, document=None, failure="", mutation="") -> None:
+        if catalog is None:
+            catalog = {"items": [{
+                "publisherId": "testpublisher", "offerId": "test-sentinel",
+                "ocpSolutionId": "must-not-be-used",
+                "plans": [{
+                    "id": "0001", "planId": "different-plan-id",
+                    "artifacts": [{
+                        "type": "Template", "name": "DefaultTemplate",
+                        "uri": "https://catalogartifact.azureedge.net/publicartifacts/test/mainTemplate.json",
+                    }],
+                }],
+            }]}
+        if document is None:
+            document = {
+                "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                "contentVersion": "1.0.0.0", "resources": [self.marker(TRACKING_ID)],
+            }
+            document["resources"][0]["apiVersion"] = "2020-10-01"
+        for name, value in (("catalog.json", catalog), ("published.json", document)):
+            (self.repository / name).write_text(json.dumps(value), encoding="utf-8")
+        self.ps_prelude = (
+            "$env:SENTINEL_SKIP_ATTRIBUTION_LOOKUP = '0'; "
+            "$global:lookupCalls = 0; "
+            "function global:Invoke-WebRequest { param($Uri, $Method, $TimeoutSec, $OperationTimeoutSeconds, $MaximumRedirection) "
+            "if ($TimeoutSec -ne 20 -or $MaximumRedirection -ne 0 -or $Method -ne 'Get') { throw 'Unbounded request' }; "
+            "if ((Get-Command Microsoft.PowerShell.Utility\\Invoke-WebRequest).Parameters.ContainsKey('OperationTimeoutSeconds') "
+            "-and $OperationTimeoutSeconds -ne 20) { throw 'Unbounded read' }; "
+            "$global:lookupCalls++; "
+            + failure
+            + "if ($Uri -like 'https://catalogapi.azure.com/*') { "
+            "if ([uri]::UnescapeDataString($Uri) -notlike \"*publisherId eq 'testpublisher' and offerId eq 'test-sentinel'*\") "
+            "{ throw 'Wrong catalog identity filter' }; "
+            f"$content = Get-Content -Raw {ps_literal(self.repository / 'catalog.json')} "
+            "} else { "
+            + mutation
+            + f"$content = Get-Content -Raw {ps_literal(self.repository / 'published.json')} "
+            "}; [pscustomobject]@{ Content = $content } }; "
+        )
+
+    def lookup_helper(self, extra="") -> subprocess.CompletedProcess:
+        return self.run_ps(
+            f". {ps_literal(PACKAGER / 'common/customerUsageAttribution.ps1')}; "
+            "$template = [pscustomobject]@{ resources = @() }; "
+            f"Add-CustomerUsageAttribution -SolutionMetadataPath {ps_literal(self.metadata)} "
+            f"-Template $template {extra}; "
+            f"$template | ConvertTo-Json -Depth 30 | Set-Content {ps_literal(self.repository / 'result.json')}; "
+            "Write-Host \"LOOKUP_CALLS=$global:lookupCalls\""
+        )
+
+    def test_discovery_persists_exact_id_preserving_bytes_and_replay_is_offline(self) -> None:
+        for value in (ABSENT, None, "", " \t"):
+            with self.subTest(value=value):
+                self.write_metadata(value)
+                metadata = json.loads(self.metadata.read_text())
+                metadata["nested"] = {"trackingId": "never replace é", "text": "line1\nline2"}
+                original = json.dumps(metadata, indent="\t", ensure_ascii=False).replace("\n", "\r\n") + "\r\n"
+                self.metadata.write_bytes(b"\xef\xbb\xbf" + original.encode())
+                self.mock_lookup()
+                result = self.lookup_helper()
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                expected = dict(metadata, trackingId=TRACKING_ID)
+                self.assertEqual(expected, json.loads(self.metadata.read_text(encoding="utf-8-sig")))
+                updated = self.metadata.read_bytes()
+                if value is ABSENT:
+                    expected_text = original.replace('{\r\n\t', '{\r\n\t"trackingId": "' + TRACKING_ID + '",\r\n\t', 1)
+                else:
+                    expected_text = original.replace('"trackingId": ' + json.dumps(value),
+                                                     '"trackingId": "' + TRACKING_ID + '"', 1)
+                self.assertEqual(b"\xef\xbb\xbf" + expected_text.encode(), updated)
+                self.assertEqual({"resources": [self.marker(TRACKING_ID)]},
+                                 json.loads((self.repository / "result.json").read_text()))
+                for text in ("publisherId=testpublisher", "offerId=test-sentinel",
+                             "planId=different-plan-id", "templateURL=https://",
+                             "updated metadata=", "LOOKUP_CALLS=2"):
+                    self.assertIn(text, result.stdout)
+                self.mock_lookup(failure="throw 'NETWORK MUST NOT RUN'; ")
+                result = self.lookup_helper()
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("LOOKUP_CALLS=0", result.stdout)
+                self.assertEqual(updated, self.metadata.read_bytes())
+
+    def test_ambiguous_or_nonconformant_remote_documents_warn_without_writes(self) -> None:
+        self.mock_lookup()
+        catalog = json.loads((self.repository / "catalog.json").read_text())
+        document = json.loads((self.repository / "published.json").read_text())
+        import copy
+        cases = []
+        for label in ("wrong publisher", "wrong offer", "multiple offers", "multiple plans",
+                      "multiple artifacts", "missing uri", "missing plan id", "catalog array",
+                      "pagination"):
+            value = copy.deepcopy(catalog)
+            offer = value["items"][0]
+            if label == "wrong publisher":
+                offer["publisherId"] = "other"
+            elif label == "wrong offer":
+                offer["offerId"] = "other"
+            elif label == "multiple offers":
+                value["items"].append(copy.deepcopy(offer))
+            elif label == "multiple plans":
+                offer["plans"].append(copy.deepcopy(offer["plans"][0]))
+            elif label == "multiple artifacts":
+                offer["plans"][0]["artifacts"] *= 2
+            elif label == "missing uri":
+                del offer["plans"][0]["artifacts"][0]["uri"]
+            elif label == "missing plan id":
+                del offer["plans"][0]["planId"]
+            elif label == "catalog array":
+                value = []
+            else:
+                value["nextLink"] = "https://catalogapi.azure.com/next"
+            cases.append((label, value, document))
+        for label in ("missing marker", "multiple markers", "functional wrapper", "linked template",
+                      "conditional marker", "expression", "bad id", "root array", "unversioned object",
+                      "bad schema", "bad version", "scalar resource", "bad marker api"):
+            value = copy.deepcopy(document)
+            marker = value["resources"][0]
+            if label == "missing marker":
+                value["resources"] = []
+            elif label == "multiple markers":
+                value["resources"].append(copy.deepcopy(marker))
+            elif label == "functional wrapper":
+                marker["properties"]["template"]["resources"] = [{"type": "Microsoft.Security/detectionRules"}]
+            elif label == "linked template":
+                marker["properties"]["templateLink"] = {"uri": "https://example.invalid"}
+            elif label == "conditional marker":
+                marker["condition"] = False
+            elif label == "expression":
+                marker["name"] = "[concat('pid-', 'not-literal')]"
+            elif label == "bad id":
+                marker["name"] = "pid-invalid/name"
+            elif label == "root array":
+                value = [value]
+            elif label == "bad schema":
+                value["$schema"] = "https://schemaXmanagementXazure.com/schemas/2019-04-01/deploymentTemplate.json#"
+            elif label == "bad version":
+                value["contentVersion"] = ""
+            elif label == "scalar resource":
+                value["resources"].append("invalid resource")
+            elif label == "bad marker api":
+                marker["apiVersion"] = "invalid"
+            else:
+                value["resources"] = {"marker": marker}
+            cases.append((label, catalog, value))
+        for label, catalog_value, document_value in cases:
+            with self.subTest(label=label):
+                self.write_metadata()
+                before = self.metadata.read_bytes()
+                self.mock_lookup(catalog=catalog_value, document=document_value)
+                result = self.lookup_helper()
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertIn("CUSTOMER USAGE ATTRIBUTION: Published lookup failed [", result.stdout)
+                self.assertNotIn("ATTRIBUTION SOURCE:", result.stdout)
+                self.assertEqual(before, self.metadata.read_bytes())
+                self.assertEqual({"resources": []}, json.loads((self.repository / "result.json").read_text()))
+
+    def test_symbolic_root_uses_literal_name_not_symbolic_key(self) -> None:
+        self.write_metadata()
+        self.mock_lookup()
+        path = self.repository / "published.json"
+        document = json.loads(path.read_text())
+        document["languageVersion"] = "2.0"
+        document["resources"] = {"symbolicMarker": document["resources"][0]}
+        path.write_text(json.dumps(document))
+        result = self.lookup_helper()
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(TRACKING_ID, json.loads(self.metadata.read_text())["trackingId"])
+
+    def test_network_and_json_failures_are_classified_and_redacted(self) -> None:
+        failures = (
+            ("throw [System.TimeoutException]::new('secret?sig=hidden'); ", "timeout"),
+            ("throw [System.Net.Http.HttpRequestException]::new('secret?sig=hidden'); ", "network/read failure"),
+            ("$e = [Exception]::new('secret?sig=hidden'); "
+             "$e | Add-Member Response ([pscustomobject]@{StatusCode=503}); throw $e; ", "HTTP 503"),
+            ("return [pscustomobject]@{ Content = 'invalid json secret?sig=hidden' }; ", "invalid JSON"),
+        )
+        for stage in ("catalog", "template"):
+            for failure, classification in failures:
+                with self.subTest(stage=stage, classification=classification):
+                    self.write_metadata()
+                    before = self.metadata.read_bytes()
+                    condition = "$global:lookupCalls -eq " + ("1" if stage == "catalog" else "2")
+                    self.mock_lookup(failure=f"if ({condition}) {{ {failure} }}; ")
+                    result = self.lookup_helper()
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    self.assertIn(f"{stage}: {classification}", result.stdout)
+                    self.assertNotIn("hidden", result.stdout + result.stderr)
+                    self.assertEqual(before, self.metadata.read_bytes())
+
+    def test_duplicate_json_properties_are_not_silently_overwritten(self) -> None:
+        self.write_metadata()
+        before = self.metadata.read_bytes()
+        self.mock_lookup()
+        path = self.repository / "published.json"
+        path.write_text(path.read_text().replace(
+            '"resources": [', '"resources": [], "resources": [', 1))
+        result = self.lookup_helper()
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("template: invalid JSON", result.stdout)
+        self.assertEqual(before, self.metadata.read_bytes())
+
+    def test_protected_template_url_query_is_not_logged(self) -> None:
+        self.write_metadata()
+        self.mock_lookup()
+        path = self.repository / "catalog.json"
+        catalog = json.loads(path.read_text())
+        catalog["items"][0]["plans"][0]["artifacts"][0]["uri"] += "?sig=hidden-secret&se=expiry"
+        path.write_text(json.dumps(catalog))
+        result = self.lookup_helper()
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("ATTRIBUTION SOURCE:", result.stdout)
+        self.assertNotIn("hidden-secret", result.stdout + result.stderr)
+        self.assertNotIn("?sig=", result.stdout + result.stderr)
+
+    def test_explicit_values_and_skip_controls_never_lookup(self) -> None:
+        for value, extra in ((TRACKING_ID, ""), ("bad/id", ""), (ABSENT, "-SkipAttributionLookup"),
+                             (ABSENT, "")):
+            with self.subTest(value=value, extra=extra):
+                self.write_metadata(value)
+                before = self.metadata.read_bytes()
+                self.mock_lookup(failure="throw 'NETWORK MUST NOT RUN'; ")
+                if value is ABSENT and not extra:
+                    self.ps_prelude += "$env:SENTINEL_SKIP_ATTRIBUTION_LOOKUP = '1'; "
+                result = self.lookup_helper(extra)
+                if value == "bad/id":
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("Invalid trackingId", result.stderr)
+                else:
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertIn("LOOKUP_CALLS=0", result.stdout)
+                self.assertNotIn("NETWORK MUST NOT RUN", result.stdout + result.stderr)
+                self.assertEqual(before, self.metadata.read_bytes())
+
+    def test_write_failure_and_concurrent_edit_are_hard_errors(self) -> None:
+        for failure in ("write", "concurrent"):
+            with self.subTest(failure=failure):
+                self.write_metadata()
+                before = self.metadata.read_bytes()
+                if failure == "write":
+                    mutation = f"$global:lockedMetadata = [IO.File]::Open({ps_literal(self.metadata)}, 'Open', 'Read', 'None'); "
+                else:
+                    mutation = f"[IO.File]::AppendAllText({ps_literal(self.metadata)}, ' '); "
+                self.mock_lookup(mutation=mutation)
+                result = self.lookup_helper()
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("metadata write failed", result.stderr)
+                self.assertNotIn("ATTRIBUTION SOURCE:", result.stdout)
+                self.assertEqual(before + (b" " if failure == "concurrent" else b""), self.metadata.read_bytes())
+                self.assertEqual([], list(self.solution.glob("*.attribution-*")))
+
+    def test_lookup_local_and_pipeline_use_authoritative_metadata_and_keep_cached_id_on_bump(self) -> None:
+        entry = self.prepare_integration()
+        for pipeline in (False, True):
+            for skip in (False, True):
+                with self.subTest(pipeline=pipeline, skip=skip):
+                    self.write_metadata()
+                    self.mock_lookup()
+                    result = self.package(entry, pipeline, skip_lookup=skip)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    template = json.loads((self.solution / "Package/mainTemplate.json").read_text())
+                    markers = [r for r in template["resources"] if r.get("name") == TRACKING_ID]
+                    self.assertEqual(0 if skip else 1, len(markers))
+                    self.assertEqual(None if skip else TRACKING_ID,
+                                     json.loads(self.metadata.read_text()).get("trackingId"))
+        self.write_metadata()
+        self.mock_lookup()
+        result = self.package(entry, False, version_bump="patch")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        metadata = json.loads(self.metadata.read_text())
+        self.assertEqual("3.1.1", metadata["version"])
+        self.assertEqual(TRACKING_ID, metadata["trackingId"])
+
+    def test_failed_packaging_prerequisite_does_not_persist_discovery(self) -> None:
+        entry = self.prepare_integration()
+        self.write_metadata()
+        before = self.metadata.read_bytes()
+        data = json.loads(self.data.read_text())
+        data["Version"] = "4.0.0"
+        self.data.write_text(json.dumps(data))
+        self.mock_lookup()
+        result = self.package(entry, False)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("V3.1 version policy", result.stdout + result.stderr)
+        self.assertNotIn("ATTRIBUTION SOURCE:", result.stdout)
+        self.assertEqual(before, self.metadata.read_bytes())
 
     def test_local_and_positional_pipeline_preserve_nested_xdr_and_authoritative_id(self) -> None:
         entry = self.prepare_integration()

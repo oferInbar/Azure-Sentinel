@@ -1,0 +1,78 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 32b29155-3fd3-4a9e-a0ca-a67e2593b60b
+    path: Analytic Rules/Ransomware/DEV-0270/DisableSecurityServiceViaRegistry.yaml
+    version: 1.0.0
+    querySha256: 27a3990a04c4f54f8c81d1ce0a529c9409d04bf4914465ebcf7f2637e206ee82
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      lookbacks differ; an event-time filter alone does not configure the target ingestion lookback. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Account.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.ProcessId to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.CommandLine to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-disabling-security-services-via-registry-32b29155' to originating Sentinel template
+      ID '32b29155-3fd3-4a9e-a0ca-a67e2593b60b'. No cloud rules were updated, deleted, or migrated. Review existing deployed
+      rules and reconcile their identities before any separately approved deployment.
+    informational:
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    errors: []
+    originalTactics:
+    - DefenseEvasion
+    originalTechniques:
+    - T1562
+    identityChange:
+      previousId: xdr-disabling-security-services-via-registry-32b29155
+      currentId: 32b29155-3fd3-4a9e-a0ca-a67e2593b60b
+      scope: local-artifact-only
+properties:
+  id: 32b29155-3fd3-4a9e-a0ca-a67e2593b60b
+  displayName: Disabling Security Services via Registry
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents
+      | where InitiatingProcessCommandLine has_all(@'"reg"', 'add', @'"HKLM\SOFTWARE\Policies\', '/v','/t', 'REG_DWORD', '/d', '/f')
+        and InitiatingProcessCommandLine has_any('DisableRealtimeMonitoring', 'UseTPMKey', 'UseTPMKeyPIN', 'UseAdvancedStartup',
+        'EnableBDEWithNoTPM', 'RecoveryKeyMessageSource')
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Disabling Security Services via Registry
+      description: This query checks for processes modifying the registry to disable security features. This is a common technique
+        used by threat actors for defence evasion.
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+        accounts:
+        - id: account1
+          nameColumn: AccountName
+          ntDomainColumn: AccountDomain
+      tactics:
+      - tactic: DefenseEvasion
+        techniques:
+        - technique: T1562

@@ -1,0 +1,2195 @@
+{
+  "baselineDecision": {
+    "availability": "unsupported"
+  },
+  "headerUpdatedAt": "2026-10-07T15:17:57.291035+00:00",
+  "headerRenderer": {
+    "name": "sentinel-xdr-migration",
+    "version": "0.1.0"
+  },
+  "solution": {
+    "name": "Microsoft Defender XDR",
+    "nameAvailability": "available",
+    "nameSource": "solution-folder",
+    "currentVersion": "3.0.18",
+    "versionAvailability": "available",
+    "versionObservation": "header-update",
+    "versionSources": [
+      {
+        "kind": "solution-metadata",
+        "availability": "not-recorded",
+        "version": null,
+        "sha256": "fe7a461c22bc752d1ad59e15a4e9e7879cfe59038baf2892f9b61881eee58b1f"
+      },
+      {
+        "kind": "solution-data",
+        "availability": "available",
+        "version": "3.0.18",
+        "sha256": "cb461834e7bf7c5b88db3b03c3706e0ad2e64d161c53e9f69e016faf81e08b14"
+      }
+    ],
+    "requestedTargetVersion": null,
+    "requestedTargetVersionAvailability": "unsupported"
+  },
+  "exporter": {
+    "command": [
+      "sentinel-xdr-migration",
+      "export-evidence",
+      "--solution",
+      ".",
+      "--run-id",
+      "20261007T135516Z-db8e37e8a72c4b10b7a298469054d108"
+    ],
+    "name": "sentinel-xdr-migration",
+    "pythonVersion": "3.12.7",
+    "version": "0.1.0"
+  },
+  "historicalCommands": {
+    "availability": "unsupported"
+  },
+  "historicalToolVersions": {
+    "availability": "unsupported"
+  },
+  "profile": "authoring",
+  "recordedWorkflowStatus": "blocked",
+  "reports": {
+    "alertParity": {
+      "availability": "missing",
+      "counts": {},
+      "items": [],
+      "itemsAvailability": "missing-or-unsupported",
+      "path": "Logs/sentinel-xdr-migration/20261007T135516Z-db8e37e8a72c4b10b7a298469054d108/alert-parity-report.json",
+      "recordedStatus": "unknown",
+      "sha256": null,
+      "verification": "recorded-only-not-attested"
+    },
+    "conversion": {
+      "availability": "available",
+      "counts": {
+        "conflicts": 0,
+        "converted": 25,
+        "deploymentReady": 25,
+        "excluded": 0,
+        "needsReview": 15,
+        "reviewRequired": 15,
+        "total": 40
+      },
+      "items": [
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 0,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/AVSpringShell.yaml",
+            "sha256": "237ec9f381366988ea3e476ffb2e5ec106cb1fd1d25674eb93aa46db87930bbe"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.3"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/AVSpringShell.yaml",
+            "sha256": "ac862296357d6ae5919f3600ac8a24eb97181eb4ca1df21a5bd6a57cfbc185f3"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 1,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/AVTarrask.yaml",
+            "sha256": "c3cc7db0a9823fd95d008b55642513b867212a7347b84f070cf28820502ce1ed"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.4"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/AVTarrask.yaml",
+            "sha256": "3766080133aa6184ec8d6eec5c076b7401fabde04e2f887c90279d7bc9e0e986"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 2,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/AVdetectionsrelatedtoUkrainebasedthreats.yaml",
+            "sha256": "91828d21fd443d8aaf3eeeaa3b2b943e4a59026c39f5f916bd1e772c9e7bb8c9"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.1.3"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/AVdetectionsrelatedtoUkrainebasedthreats.yaml",
+            "sha256": "8e36e9cb9414a64b7c824a76ab78389de98b0fb88d49db541979423a85ccb606"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 3,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Campaign/Jupyter-Solarmaker/DeimosComponentExecution.yaml",
+            "sha256": "9c9ce16e21a4427a846dd456bf59d8054c11d427a04cf8c79a0002bd10a6a9cf"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Campaign/Jupyter-Solarmaker/DeimosComponentExecution.yaml",
+            "sha256": "4f0afb512a6d4e739102343324fbd2884773393126dc58f91c6e45222b0c40a5"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 4,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Campaign/Macaw Ransomware/ImminentRansomware.yaml",
+            "sha256": "df9543d5fbbe5e4aff2d0dd30f708e07f987988adf869e9a13a064f23c2f25be"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Campaign/Macaw Ransomware/ImminentRansomware.yaml",
+            "sha256": "2192069491fddd0a71d75c07846e1545cc0f3d158d73a1b4bc89df7a147cb31b"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 5,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Campaign/Sysrv-botnet/MaliciousCMDExecutionByJava.yaml",
+            "sha256": "f0191e9eb52466786c45d3903325646a8144f007cb281fea43bd22aea10f684e"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Campaign/Sysrv-botnet/MaliciousCMDExecutionByJava.yaml",
+            "sha256": "aa64158403dddd9416428bf63ff4520715d4feae6ade31ae05a00d496148113c"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 6,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Command and Control/C2-NamedPipe.yaml",
+            "sha256": "3055c18473179a146968d959fff520ef7926d3e100c27fa72b1d1eb7cd6877b6"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Command and Control/C2-NamedPipe.yaml",
+            "sha256": "ad9dd5b0018d81aa794e02a86d5b26287a653ac6c11bb457b249d11a166ee5aa"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 7,
+          "output": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          },
+          "provenance": {
+            "historicalValidationBinding": "unsupported",
+            "sourceQuery": "unavailable"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 8,
+          "output": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          },
+          "provenance": {
+            "historicalValidationBinding": "unsupported",
+            "sourceQuery": "unavailable"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 9,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Defense Evasion/DoppelpaymerStopService.yaml",
+            "sha256": "f0e25b1a1daf12af4b647f7050d1e54eef0b334a48e1a71f5d7f1d3b132d4cae"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Defense Evasion/DoppelpaymerStopService.yaml",
+            "sha256": "b393f681142a253a04fe61758a39512fbff15ea5c44d85bc6c2ef79b44cb524d"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 10,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Defense Evasion/QakbotCampaignSelfDeletion.yaml",
+            "sha256": "4ca30cedd96f789d199e7016ebca07a602625b4e9929cc29932f067b3d4645be"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Defense Evasion/QakbotCampaignSelfDeletion.yaml",
+            "sha256": "f2b729d9d0b87b34d4bc33fa2bbf288194d9a5e3af80b6627e6bdd4d882fe02b"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 11,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Defense Evasion/Regsvr32Rundll32ImageLoadsAbnormalExtension.yaml",
+            "sha256": "d8bdbadd0f26411e1be564131d67e7fe13610a3af0f377edbcb6f068b315d6c9"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Defense Evasion/Regsvr32Rundll32ImageLoadsAbnormalExtension.yaml",
+            "sha256": "eb86ec19abd0750f1ae0620b54c886c166d4a18f1c56bde8139d485b087aba31"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 12,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Defense Evasion/Regsvr32Rundll32WithAnomalousParentProcess.yaml",
+            "sha256": "41d52b94b731f22d22d1dd2bb7e72a821f5e359da6d5c5938e332cc77ea60ee3"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Defense Evasion/Regsvr32Rundll32WithAnomalousParentProcess.yaml",
+            "sha256": "3437a1db2ecaf454c708279392b590be076365dfda4fbd39d1b87957bc8c9f00"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 13,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Discovery/SuspiciousCommandInitiatedByWebServerProcess.yaml",
+            "sha256": "e70e39a9d6445a58d771f0e2371495110c53787861c0354a6a521fb118c6806f"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Discovery/SuspiciousCommandInitiatedByWebServerProcess.yaml",
+            "sha256": "acc523454f1342f3b6a75417faa5d19945de062a1562ae61c98245e10accf534"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 14,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Execution/BITSAdminActivity.yaml",
+            "sha256": "07e29c4a9561145cca9e5b372a23e0b94388dd0e6ae3c6a1cee1e7a08b162a64"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Execution/BITSAdminActivity.yaml",
+            "sha256": "d8f9d3ba241fff178c1a2e263b5e3a72a7cf9d6bf60ec16c49cb1a5786870fe7"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 15,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Execution/OfficeAppsLaunchingWscript.yaml",
+            "sha256": "57e1d2c43e670ac1562e3c80c68d5fedbdb4dd1bd78b3b716b4527a5198bf8af"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Execution/OfficeAppsLaunchingWscript.yaml",
+            "sha256": "b3a35f2f241d833b7dfdd32dcadd3105ed18aac4f35ccb02adea635329e41167"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 16,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Execution/PotentialKerberoastActivities.yaml",
+            "sha256": "e9ffcf5eba1f69db7f2d462bbc2e42a433d2c401b9851bb4a8479b07042005f8"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Execution/PotentialKerberoastActivities.yaml",
+            "sha256": "f994991208ce5f15a85d441058243678d16b665c6d721bffad249a9cb2ef227d"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 17,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Exfiltration/FilesCopiedToUSBDrives.yaml",
+            "sha256": "a091adb08c26d0e6b88d9344d2a027700efb7fab0a7ef095c556bd2f78b1304d"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Exfiltration/FilesCopiedToUSBDrives.yaml",
+            "sha256": "0983ecbf11adb8a06dc4ef943702855cd8d5315c3c0c81cb5ed0819a935f8309"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 18,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Exploits/MosaicLoader.yaml",
+            "sha256": "1da74fd4ab575d6f54d165f04916ade2b78b7079d8fce238663395164260a554"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Exploits/MosaicLoader.yaml",
+            "sha256": "4b899849e5e5e0b93cdc4983a6ca13556d4754ac97cccdf7c519518d2ff4b05c"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 19,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Impact/AnomalousVoulmeOfFileDeletion.yaml",
+            "sha256": "3bb816871e16c5352407af276673a85d0705cb4fdb59051fa5ec2fa9da4deb66"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.3"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Impact/AnomalousVoulmeOfFileDeletion.yaml",
+            "sha256": "e40ee297ad1ce342a5d023c47ed7af60f7957b60d38abed8172afea1048e012a"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 20,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Lateral Movement/RemoteFileCreationWithPsExec.yaml",
+            "sha256": "cd3fd2fa88d0f5780374d078a85a932b519b2d2e035205458f29380a4a0175c6"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Lateral Movement/RemoteFileCreationWithPsExec.yaml",
+            "sha256": "b1a0fc7bff3655b62f7f727902a93d87c1959f8793109a6d175bb30a76ca91fb"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 21,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Lateral Movement/ServiceAccountsPerformingRemotePS.yaml",
+            "sha256": "723039a60c4224e98390c68ba1d4c9ebdc8d66bbdcfd709a47da527df841605c"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Lateral Movement/ServiceAccountsPerformingRemotePS.yaml",
+            "sha256": "f665bb0ea3503b246884b9c42b17201058a592fe15e29c0c8bda76e0e9ecff6c"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 22,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Persistence/AccountCreation.yaml",
+            "sha256": "96ddc8a6997a8cc9fc7c633a07555bbfd234fc711c5b670dcdf74680ba0a92b4"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Persistence/AccountCreation.yaml",
+            "sha256": "0ced7fcf000c998c81f83cc4bacdde3c8719d2fcf10533497ed17b62ce0d3096"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 23,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Persistence/LocalAdminGroupChanges.yaml",
+            "sha256": "6ed914cc49707e1e4301de15b21630965a657db1094ae0fb599b62976409fd42"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.2"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Persistence/LocalAdminGroupChanges.yaml",
+            "sha256": "979991b14435cfeb6f253c300d7701b6fbdf745bf81fd9634bd371f04bc6d77b"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 24,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Persistence/RareProcessAsService.yaml",
+            "sha256": "cd6f2cdbf8f5e733e9a57dc6dd520fd1e5829d8b68d7cf1ee906ab5aca6abfe2"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Persistence/RareProcessAsService.yaml",
+            "sha256": "3bf8b9396a89309eb84ccd14f944695871f2eaba291dd7e43b8092118ebcffca"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 25,
+          "output": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          },
+          "provenance": {
+            "historicalValidationBinding": "unsupported",
+            "sourceQuery": "unavailable"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 26,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/PossibleWebpBufferOverflow.yaml",
+            "sha256": "3465a96fc41a98560af8757fa1edaf0e9edb5c94c36d33bc52feeb8402016873"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.1.3"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/PossibleWebpBufferOverflow.yaml",
+            "sha256": "8112fcab8f4d250e1f7df37c09239a8af4f90873e3633f67ce2eb29d7c519139"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 27,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/PotentialBuildProcessCompromiseMDE.yaml",
+            "sha256": "93a5236a1ff7f9c1390493fc8ade2b6b4b70983dd760cb4fef019ae0cf396cfb"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.1.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/PotentialBuildProcessCompromiseMDE.yaml",
+            "sha256": "fc91b7cf4d7e1803d16d97180739b3d62851aa2c6e9f64c0ddceabe2d259789a"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 28,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Ransomware/DEV-0270/DisableSecurityServiceViaRegistry.yaml",
+            "sha256": "0d8aedafb3f001075318a78f69fb9ca33d5fcc8e4e40c5e4a02acfd093a36cfc"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/DEV-0270/DisableSecurityServiceViaRegistry.yaml",
+            "sha256": "01451d7feb4650ed5467c060430f491470da3ae66cc312721d65537e79ea45e0"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 29,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Ransomware/DataDeletionOnMulipleDrivesUsingCipherExe.yaml",
+            "sha256": "78cac616de92ac2d6f9ac36df274ed46dd51db4a30a908b836c06da4719d6a82"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/DataDeletionOnMulipleDrivesUsingCipherExe.yaml",
+            "sha256": "74d1bea53060035b9174f290a4eb97321e906df25273c39f7b4c68e5321eef70"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 30,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Ransomware/LaZagneCredTheft.yaml",
+            "sha256": "0875946a1e4fec16de5194722f924ce788f5ded9514a3596f92550745d331487"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/LaZagneCredTheft.yaml",
+            "sha256": "e61065622a29eaf5ef286d35d012fafbcd0026214945d6a9db35f9f91c154af7"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 31,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Ransomware/LogDeletionUsingWevtutil.yaml",
+            "sha256": "fd65acf634725abdbda0edfb144ba3103e49eda4f8951854cca748c8d45702ef"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/LogDeletionUsingWevtutil.yaml",
+            "sha256": "83d1fd0f1097c6a024d913d203946a134f2080e3c9385086b699f61996377a8d"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 32,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Ransomware/MultiProcessKillWithTaskKill.yaml",
+            "sha256": "81d3e82422ade646894c52583a3fe43b35cad41355b4886c47a4823888d66053"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/MultiProcessKillWithTaskKill.yaml",
+            "sha256": "2ee7c61458c713cec7d48afa694061e2fce246af928fc50b546078ee0f3668ac"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 33,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Ransomware/PotentialCobaltStrikeRansomwareActivity.yaml",
+            "sha256": "8e539130c00cc546ee3c1b34bac0a793073ed5e2424cb2b80710a565d8ccac33"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.1"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/PotentialCobaltStrikeRansomwareActivity.yaml",
+            "sha256": "dad153e272f0c94136aabbe434a315dc218b159efef9d8e3e7f5ca212b3cf2b5"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 34,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Ransomware/QakbotDiscoveryActivities.yaml",
+            "sha256": "4a35c43c2a18c6b69dfd9f70e7fea38690735b3a08bab0e0b95f9cbfd66fddd9"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/QakbotDiscoveryActivities.yaml",
+            "sha256": "a15177a24049040b326ddce7d560fcbedd19788368d1303ae15b7f6c87409767"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 35,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/Ransomware/ShadowCopyDeletion.yaml",
+            "sha256": "eeee67586a3925aa12f1a5cac200c56283f889f679c62566770c2511e931feae"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.0"
+          },
+          "recordedStatus": "converted",
+          "reviewRequired": false,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/ShadowCopyDeletion.yaml",
+            "sha256": "a2220faa35f02ecfe2fc14f92900975da9079437c7deccc6af501def58d31371"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 36,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/SUNSPOTHashes.yaml",
+            "sha256": "140494342dcba7a1f8a6a44c4b4072657dbd72d5fb7da9914c0dd84bdd958b6a"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.4"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/SUNSPOTHashes.yaml",
+            "sha256": "a984e335274a777265a90e44103017d44ce9bc0536f11ab0d62ac38180f23820"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 37,
+          "output": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          },
+          "provenance": {
+            "historicalValidationBinding": "unsupported",
+            "sourceQuery": "unavailable"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 38,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/SolarWinds_SUNBURST_Network-IOCs.yaml",
+            "sha256": "e82a0165629d9ef5b27704f448f975b199c9489d826bd0c36d23a84eebd09dcc"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.5"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/SolarWinds_SUNBURST_Network-IOCs.yaml",
+            "sha256": "e84141d094665079a069e1e2e666e10b94667aa4c0b8ce1321329f1b0793d64d"
+          }
+        },
+        {
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 39,
+          "output": {
+            "availability": "available",
+            "path": "XDR Detections/SolarWinds_TEARDROP_Process-IOCs.yaml",
+            "sha256": "379d8a861247711c4543754f5414f72cedf906668c8ab8b2e1608f66b27afb40"
+          },
+          "provenance": {
+            "converterVersion": "0.1.0",
+            "historicalValidationBinding": "unsupported",
+            "outputVersion": "3.1.0",
+            "sourceQuery": "matches",
+            "sourceVersion": "1.0.6"
+          },
+          "recordedStatus": "needsReview",
+          "reviewRequired": true,
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/SolarWinds_TEARDROP_Process-IOCs.yaml",
+            "sha256": "3da36561c52ed2bf94a63dc52ff507290e0c6b97eb09173a6311b64988ff4bd2"
+          }
+        }
+      ],
+      "itemsAvailability": "available",
+      "path": "Logs/sentinel-xdr-migration/20261007T135516Z-db8e37e8a72c4b10b7a298469054d108/manifest.json",
+      "recordedStatus": "unknown",
+      "sha256": "68cf2a95dd09e8fee4f5639650cbd67f4ebdf0fd32258486a3c3f00a86326d07",
+      "verification": "recorded-only-not-attested"
+    },
+    "packaging": {
+      "artifacts": {
+        "createUiDefinition": {
+          "availability": "missing",
+          "path": null,
+          "sha256": null
+        },
+        "mainTemplate": {
+          "availability": "missing",
+          "path": null,
+          "sha256": null
+        },
+        "solutionData": {
+          "availability": "missing",
+          "path": null,
+          "sha256": null
+        },
+        "testParameters": {
+          "availability": "missing",
+          "path": null,
+          "sha256": null
+        },
+        "zip": {
+          "availability": "missing",
+          "path": null,
+          "sha256": null
+        }
+      },
+      "availability": "missing",
+      "counts": {},
+      "items": [],
+      "itemsAvailability": "missing-or-unsupported",
+      "packager": "unknown",
+      "path": "Logs/sentinel-xdr-migration/20261007T135516Z-db8e37e8a72c4b10b7a298469054d108/packaging.v3_1.json",
+      "recordedStatus": "unknown",
+      "sha256": null,
+      "verification": "recorded-only-not-attested",
+      "version": null,
+      "versionBump": "unknown",
+      "warningCount": null
+    },
+    "queryParity": {
+      "availability": "missing",
+      "counts": {},
+      "items": [],
+      "itemsAvailability": "missing-or-unsupported",
+      "path": "Logs/sentinel-xdr-migration/20261007T135516Z-db8e37e8a72c4b10b7a298469054d108/mock-query-parity.json",
+      "recordedStatus": "unknown",
+      "sha256": null,
+      "verification": "recorded-only-not-attested"
+    },
+    "runtimeGraph": {
+      "availability": "missing",
+      "counts": {},
+      "items": [],
+      "itemsAvailability": "missing-or-unsupported",
+      "path": "Logs/sentinel-xdr-migration/20261007T135516Z-db8e37e8a72c4b10b7a298469054d108/runtime-validation.graph.json",
+      "recordedStatus": "unknown",
+      "sha256": null,
+      "verification": "recorded-only-not-attested"
+    },
+    "runtimeLogAnalytics": {
+      "availability": "missing",
+      "counts": {},
+      "items": [],
+      "itemsAvailability": "missing-or-unsupported",
+      "path": "Logs/sentinel-xdr-migration/20261007T135516Z-db8e37e8a72c4b10b7a298469054d108/runtime-validation.log-analytics-cli.json",
+      "recordedStatus": "unknown",
+      "sha256": null,
+      "verification": "recorded-only-not-attested"
+    },
+    "runtimeTriage": {
+      "availability": "missing",
+      "counts": {},
+      "items": [],
+      "itemsAvailability": "missing-or-unsupported",
+      "path": "Logs/sentinel-xdr-migration/20261007T135516Z-db8e37e8a72c4b10b7a298469054d108/runtime-validation.triage-mcp.json",
+      "recordedStatus": "unknown",
+      "sha256": null,
+      "verification": "recorded-only-not-attested"
+    },
+    "solutionReport": {
+      "availability": "available",
+      "counts": {},
+      "items": [
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 0,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/AVSpringShell.yaml",
+            "sha256": "ac862296357d6ae5919f3600ac8a24eb97181eb4ca1df21a5bd6a57cfbc185f3"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 1,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/AVTarrask.yaml",
+            "sha256": "3766080133aa6184ec8d6eec5c076b7401fabde04e2f887c90279d7bc9e0e986"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 2,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/AVdetectionsrelatedtoUkrainebasedthreats.yaml",
+            "sha256": "8e36e9cb9414a64b7c824a76ab78389de98b0fb88d49db541979423a85ccb606"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 3,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Campaign/Jupyter-Solarmaker/DeimosComponentExecution.yaml",
+            "sha256": "4f0afb512a6d4e739102343324fbd2884773393126dc58f91c6e45222b0c40a5"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 4,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Campaign/Macaw Ransomware/ImminentRansomware.yaml",
+            "sha256": "2192069491fddd0a71d75c07846e1545cc0f3d158d73a1b4bc89df7a147cb31b"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 5,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Campaign/Sysrv-botnet/MaliciousCMDExecutionByJava.yaml",
+            "sha256": "aa64158403dddd9416428bf63ff4520715d4feae6ade31ae05a00d496148113c"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 6,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Command and Control/C2-NamedPipe.yaml",
+            "sha256": "ad9dd5b0018d81aa794e02a86d5b26287a653ac6c11bb457b249d11a166ee5aa"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 7,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 8,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 9,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Defense Evasion/DoppelpaymerStopService.yaml",
+            "sha256": "b393f681142a253a04fe61758a39512fbff15ea5c44d85bc6c2ef79b44cb524d"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 10,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Defense Evasion/QakbotCampaignSelfDeletion.yaml",
+            "sha256": "f2b729d9d0b87b34d4bc33fa2bbf288194d9a5e3af80b6627e6bdd4d882fe02b"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 11,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Defense Evasion/Regsvr32Rundll32ImageLoadsAbnormalExtension.yaml",
+            "sha256": "eb86ec19abd0750f1ae0620b54c886c166d4a18f1c56bde8139d485b087aba31"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 12,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Defense Evasion/Regsvr32Rundll32WithAnomalousParentProcess.yaml",
+            "sha256": "3437a1db2ecaf454c708279392b590be076365dfda4fbd39d1b87957bc8c9f00"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 13,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Discovery/SuspiciousCommandInitiatedByWebServerProcess.yaml",
+            "sha256": "acc523454f1342f3b6a75417faa5d19945de062a1562ae61c98245e10accf534"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 14,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Execution/BITSAdminActivity.yaml",
+            "sha256": "d8f9d3ba241fff178c1a2e263b5e3a72a7cf9d6bf60ec16c49cb1a5786870fe7"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 15,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Execution/OfficeAppsLaunchingWscript.yaml",
+            "sha256": "b3a35f2f241d833b7dfdd32dcadd3105ed18aac4f35ccb02adea635329e41167"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 16,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Execution/PotentialKerberoastActivities.yaml",
+            "sha256": "f994991208ce5f15a85d441058243678d16b665c6d721bffad249a9cb2ef227d"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 17,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Exfiltration/FilesCopiedToUSBDrives.yaml",
+            "sha256": "0983ecbf11adb8a06dc4ef943702855cd8d5315c3c0c81cb5ed0819a935f8309"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 18,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Exploits/MosaicLoader.yaml",
+            "sha256": "4b899849e5e5e0b93cdc4983a6ca13556d4754ac97cccdf7c519518d2ff4b05c"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 19,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Impact/AnomalousVoulmeOfFileDeletion.yaml",
+            "sha256": "e40ee297ad1ce342a5d023c47ed7af60f7957b60d38abed8172afea1048e012a"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 20,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Lateral Movement/RemoteFileCreationWithPsExec.yaml",
+            "sha256": "b1a0fc7bff3655b62f7f727902a93d87c1959f8793109a6d175bb30a76ca91fb"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 21,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Lateral Movement/ServiceAccountsPerformingRemotePS.yaml",
+            "sha256": "f665bb0ea3503b246884b9c42b17201058a592fe15e29c0c8bda76e0e9ecff6c"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 22,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Persistence/AccountCreation.yaml",
+            "sha256": "0ced7fcf000c998c81f83cc4bacdde3c8719d2fcf10533497ed17b62ce0d3096"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 23,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Persistence/LocalAdminGroupChanges.yaml",
+            "sha256": "979991b14435cfeb6f253c300d7701b6fbdf745bf81fd9634bd371f04bc6d77b"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 24,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Persistence/RareProcessAsService.yaml",
+            "sha256": "3bf8b9396a89309eb84ccd14f944695871f2eaba291dd7e43b8092118ebcffca"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 25,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 26,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/PossibleWebpBufferOverflow.yaml",
+            "sha256": "8112fcab8f4d250e1f7df37c09239a8af4f90873e3633f67ce2eb29d7c519139"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 27,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/PotentialBuildProcessCompromiseMDE.yaml",
+            "sha256": "fc91b7cf4d7e1803d16d97180739b3d62851aa2c6e9f64c0ddceabe2d259789a"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 28,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/DEV-0270/DisableSecurityServiceViaRegistry.yaml",
+            "sha256": "01451d7feb4650ed5467c060430f491470da3ae66cc312721d65537e79ea45e0"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 29,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/DataDeletionOnMulipleDrivesUsingCipherExe.yaml",
+            "sha256": "74d1bea53060035b9174f290a4eb97321e906df25273c39f7b4c68e5321eef70"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 30,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/LaZagneCredTheft.yaml",
+            "sha256": "e61065622a29eaf5ef286d35d012fafbcd0026214945d6a9db35f9f91c154af7"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 31,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/LogDeletionUsingWevtutil.yaml",
+            "sha256": "83d1fd0f1097c6a024d913d203946a134f2080e3c9385086b699f61996377a8d"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 32,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/MultiProcessKillWithTaskKill.yaml",
+            "sha256": "2ee7c61458c713cec7d48afa694061e2fce246af928fc50b546078ee0f3668ac"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 33,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/PotentialCobaltStrikeRansomwareActivity.yaml",
+            "sha256": "dad153e272f0c94136aabbe434a315dc218b159efef9d8e3e7f5ca212b3cf2b5"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 34,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/QakbotDiscoveryActivities.yaml",
+            "sha256": "a15177a24049040b326ddce7d560fcbedd19788368d1303ae15b7f6c87409767"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "converted",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 35,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/Ransomware/ShadowCopyDeletion.yaml",
+            "sha256": "a2220faa35f02ecfe2fc14f92900975da9079437c7deccc6af501def58d31371"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 36,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/SUNSPOTHashes.yaml",
+            "sha256": "a984e335274a777265a90e44103017d44ce9bc0536f11ab0d62ac38180f23820"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 37,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "withheld",
+            "path": null,
+            "sha256": null
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 38,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/SolarWinds_SUNBURST_Network-IOCs.yaml",
+            "sha256": "e84141d094665079a069e1e2e666e10b94667aa4c0b8ce1321329f1b0793d64d"
+          },
+          "structuralStatus": "passed"
+        },
+        {
+          "analyticRule": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-recorded",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "conversionStatus": "needsReview",
+          "customDetection": {
+            "alertStatus": "not-run",
+            "deploymentStatus": "not-run",
+            "runtime": [],
+            "runtimeAvailability": "not-recorded"
+          },
+          "errorCount": 0,
+          "errorDetails": "not-recorded",
+          "index": 39,
+          "recordedStatus": "unknown",
+          "source": {
+            "availability": "available",
+            "path": "Analytic Rules/SolarWinds_TEARDROP_Process-IOCs.yaml",
+            "sha256": "3da36561c52ed2bf94a63dc52ff507290e0c6b97eb09173a6311b64988ff4bd2"
+          },
+          "structuralStatus": "passed"
+        }
+      ],
+      "itemsAvailability": "available",
+      "path": "Logs/sentinel-xdr-migration/20261007T135516Z-db8e37e8a72c4b10b7a298469054d108/migration-report.json",
+      "recordedStatus": "unknown",
+      "sha256": "0fd8319accd01b126a50d68f04e645656d44e3a7cdd0a29160d9fc715a1718f8",
+      "verification": "recorded-only-not-attested"
+    },
+    "structural": {
+      "availability": "missing",
+      "counts": {},
+      "items": [],
+      "itemsAvailability": "missing-or-unsupported",
+      "path": "Logs/sentinel-xdr-migration/20261007T135516Z-db8e37e8a72c4b10b7a298469054d108/structural-validation.json",
+      "recordedStatus": "unknown",
+      "sha256": null,
+      "verification": "recorded-only-not-attested"
+    }
+  },
+  "runId": "20261007T135516Z-db8e37e8a72c4b10b7a298469054d108",
+  "schemaVersion": "1.0.0",
+  "stages": {
+    "alertParity": {
+      "attempts": 0,
+      "details": "withheld",
+      "recordedStatus": "notRequired",
+      "runtimeStatus": "unknown"
+    },
+    "conversion": {
+      "attempts": 2,
+      "details": "withheld",
+      "recordedStatus": "blocked",
+      "runtimeStatus": "unknown"
+    },
+    "deployment": {
+      "attempts": 0,
+      "details": "withheld",
+      "recordedStatus": "notRequired",
+      "runtimeStatus": "unknown"
+    },
+    "discovery": {
+      "attempts": 2,
+      "details": "withheld",
+      "recordedStatus": "passed",
+      "runtimeStatus": "unknown"
+    },
+    "mockIngestion": {
+      "attempts": 0,
+      "details": "withheld",
+      "recordedStatus": "notRequired",
+      "runtimeStatus": "unknown"
+    },
+    "packaging": {
+      "attempts": 0,
+      "details": "not-recorded",
+      "recordedStatus": "pending",
+      "runtimeStatus": "unknown"
+    },
+    "report": {
+      "attempts": 0,
+      "details": "not-recorded",
+      "recordedStatus": "pending",
+      "runtimeStatus": "unknown"
+    },
+    "validation": {
+      "attempts": 0,
+      "details": "not-recorded",
+      "recordedStatus": "pending",
+      "runtimeStatus": "unknown"
+    }
+  },
+  "verification": "recorded-only-not-attested",
+  "versionDecision": "minor",
+  "workflowEvidence": {
+    "availability": "available",
+    "path": "Logs/sentinel-xdr-migration/20261007T135516Z-db8e37e8a72c4b10b7a298469054d108/workflow-state.json",
+    "sha256": "8af3fd83790d2cf32d19b6508bec721b4394665c8164cffb7c7e0e5a61a76357"
+  }
+}

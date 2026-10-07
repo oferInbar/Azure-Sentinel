@@ -1,0 +1,92 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 450f4e56-5bba-4070-b9d9-9204ba9d777d
+    path: Analytic Rules/Persistence/AccountCreation.yaml
+    version: 1.0.0
+    querySha256: 4c5c2b03102df6eee80d0fbac1ef966a317285974385a4966a30df7766519cb6
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.ProcessId to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.CommandLine to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-account-creation-450f4e56' to originating Sentinel template ID '450f4e56-5bba-4070-b9d9-9204ba9d777d'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Persistence
+    originalTechniques:
+    - T1136
+    identityChange:
+      previousId: xdr-account-creation-450f4e56
+      currentId: 450f4e56-5bba-4070-b9d9-9204ba9d777d
+      scope: local-artifact-only
+properties:
+  id: 450f4e56-5bba-4070-b9d9-9204ba9d777d
+  displayName: Account Creation
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents
+      // Pro-tip:
+      // There are many different ways to run a process from a file - e.g. by using full path, env. variables, ~1 annotation, more...
+      // So, to find executions of a known filename, better filter on the filename (and possibly on folder path) than on the commandline.
+      | where FileName in~ ("net.exe", "net1.exe")
+      // Parse the user name from the commandline.
+      // To have case-insensitive parsing use the i flag, to have non-greedy match (e.g. CreatedUser as short as possible), specify U flag:
+      // "kind=regex flags=i"
+      | parse kind=regex flags=iU ProcessCommandLine with * "user " CreatedUser " " * "/ad"
+      // Filter rows where user could not be parsed - e.g. because it was not a user command, or the /add commandline switch was not specified.
+      | where isnotempty(CreatedUser)
+      // Every net.exe executed will run net1.exe with the same commandline.
+      // in this where clause we remove such rows, as they duplicate the number of results we have without adding any value.
+      | where not (FileName =~ "net1.exe" and InitiatingProcessFileName =~ "net.exe" and replace("net", "net1", InitiatingProcessCommandLine) =~ ProcessCommandLine)
+      // If /domain is specified, so the user is created on the domain controller.
+      // Also, any prefix that's longer than 1 char will also do the same, e.g. /do, /dom, /doma, ....
+      | extend CreatedOnLocalMachine=(ProcessCommandLine !contains "/do")
+      | where ProcessCommandLine !contains "/add" or (CreatedOnLocalMachine == 0 and ProcessCommandLine !contains "/domain")
+      | summarize MachineCount=dcount(DeviceName) by CreatedUser, CreatedOnLocalMachine, InitiatingProcessFileName, FileName, ProcessId, ProcessCommandLine, InitiatingProcessCommandLine, DeviceId, DeviceName
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Account Creation
+      description: |-
+        User accounts may be created to achieve persistence on a machine.
+        Read more here: https://attack.mitre.org/wiki/Technique/T1136.
+        Tags: #CreateAccount.
+        Query #1: Query for users being created using "net user" command.
+        "net user" commands are noisy, so needs to be joined with another signal -.
+        E.g. in this example we look for use of uncommon & undocumented commandline switches (e.g. /ad instead of /add).
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: Persistence
+        techniques:
+        - technique: T1136

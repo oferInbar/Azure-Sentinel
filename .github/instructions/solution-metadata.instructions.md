@@ -19,8 +19,19 @@ applyTo: "Solutions/**/SolutionMetadata.json"
   ARM deployment-name characters and 64-character maximum, not GUID-only syntax.
 - Local and pipeline V3.1 read this field from authoritative SolutionMetadata.json,
   even if the Data input already contains consolidated metadata.
-- Absent, null, or blank values allow packaging without an attribution marker.
-  Nested XDR packages warn that Partner Center cannot auto-add tracking for
+- When absent, null, or blank, V3.1 attempts anonymous public Marketplace catalog
+  discovery using exact `publisherId` + `offerId`, one applicable plan and one
+  `Template` / `DefaultTemplate` artifact. A single valid root `pid-` deployment
+  with an empty inline template supplies the full ID; no catalog IDs are used.
+  The packager persists the exact discovered `trackingId` in this same metadata
+  file before emitting the marker. Existing nonblank values always win; invalid
+  explicit values fail without lookup or overwrite.
+- No `planId` metadata field is introduced: ambiguous offers/plans/markers require
+  manual review and an explicit `trackingId`, not inferred plan selection.
+- `-SkipAttributionLookup` or `SENTINEL_SKIP_ATTRIBUTION_LOOKUP=1` disables only
+  attribution discovery. Missing/ambiguous/unavailable published data warns and
+  leaves metadata unchanged. Local persistence failures are hard errors.
+  Nested XDR packages still warn that Partner Center cannot auto-add tracking for
   functional nested deployments. Obtain the ID, add `trackingId`, and rebuild.
   Missing attribution is not proof that Marketplace upload will be rejected.
 - See [official attribution guidance](https://learn.microsoft.com/partner-center/marketplace-offers/azure-partner-customer-usage-attribution#microsoft-marketplace-azure-apps)

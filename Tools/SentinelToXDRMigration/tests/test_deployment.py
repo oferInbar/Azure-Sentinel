@@ -24,9 +24,13 @@ TARGET = {
 }
 
 
-def document(rule_id: str = "test-rule") -> dict:
+RULE_ID = "11111111-2222-3333-4444-555555555555"
+
+
+def document(rule_id: str = RULE_ID) -> dict:
     return {
         "schemaVersion": "1.0.0",
+        "version": "3.1.0",
         "kind": "CustomDetection",
         "resourceType": "Microsoft.Security/detectionRules",
         "apiVersion": "2026-06-01-preview",
@@ -34,7 +38,7 @@ def document(rule_id: str = "test-rule") -> dict:
             "source": {
                 "platform": "Microsoft Sentinel",
                 "kind": "AnalyticsRule",
-                "id": "source-id",
+                "id": rule_id,
                 "path": "Analytic Rules/rule.yaml",
                 "querySha256": "hash",
                 "schedule": {
@@ -81,6 +85,7 @@ class DeploymentTests(unittest.TestCase):
             payload["@odata.type"], "#microsoft.graph.security.detectionRule"
         )
         self.assertEqual(payload["status"], "disabled")
+        self.assertEqual(RULE_ID, payload["id"])
 
     def test_payload_rejects_review_required_detection(self) -> None:
         value = document()
@@ -114,8 +119,8 @@ class DeploymentTests(unittest.TestCase):
     ) -> None:
         request.side_effect = [
             (404, {"error": {"code": "NotFound"}}),
-            (201, {"id": "test-rule"}),
-            (200, {"id": "test-rule", "status": "disabled"}),
+            (201, {"id": RULE_ID}),
+            (200, {"id": RULE_ID, "status": "disabled"}),
         ]
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -131,6 +136,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result["failed"], 0)
         self.assertEqual(result["results"][0]["deployedStatus"], "disabled")
         self.assertEqual(request.call_args_list[1].args[0], "POST")
+        self.assertEqual(RULE_ID, request.call_args_list[1].args[3]["id"])
 
     @mock.patch(
         "sentinel_xdr_migration.deployment._deployment_token",
@@ -145,9 +151,9 @@ class DeploymentTests(unittest.TestCase):
         self, request: mock.Mock, _target: mock.Mock, _token: mock.Mock
     ) -> None:
         request.side_effect = [
-            (200, {"id": "test-rule"}),
-            (200, {"id": "test-rule"}),
-            (200, {"id": "test-rule", "status": "disabled"}),
+            (200, {"id": RULE_ID}),
+            (200, {"id": RULE_ID}),
+            (200, {"id": RULE_ID, "status": "disabled"}),
         ]
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -162,6 +168,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result["succeeded"], 1)
         self.assertEqual(result["results"][0]["deployedStatus"], "disabled")
         self.assertEqual(request.call_args_list[1].args[0], "PATCH")
+        self.assertTrue(request.call_args_list[1].args[1].endswith("/" + RULE_ID))
         update = request.call_args_list[1].args[3]
         self.assertNotIn("id", update)
 

@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from .artifacts import artifact_path
+from .artifacts import artifact_path, write_json_artifact
 from .converter import validate_document, xdr_detection_files
 from .onboarding import (
     GRAPH_CLIENT_ID,
@@ -200,6 +200,7 @@ def deploy_solution(
     state_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     root = Path(solution).expanduser().resolve()
+    report_path = artifact_path(root, "deployment.graph.json", create_parent=True)
     target = require_locked_target(root)
     output = root / "XDR Detections"
     files = xdr_detection_files(output)
@@ -281,7 +282,6 @@ def deploy_solution(
         "failed": sum(not result["success"] for result in results),
         "results": results,
     }
-    report_path = artifact_path(root, "deployment.graph.json", create_parent=True)
     report["reportPath"] = str(report_path)
-    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    write_json_artifact(root, report_path, report)
     return report

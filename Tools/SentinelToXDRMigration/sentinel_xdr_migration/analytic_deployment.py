@@ -6,9 +6,9 @@ from typing import Any
 
 import yaml
 
-from .artifacts import artifact_path
+from .artifacts import artifact_path, write_json_artifact
 from .alert_parity import _arm_request, _arm_token, _sentinel_rule_url
-from .converter import iso_duration, solution_paths
+from .converter import analytic_rule_files, iso_duration, solution_paths
 from .target_context import require_locked_target
 
 
@@ -77,7 +77,8 @@ def deploy_analytic_rules(
     *,
     workspace_resource_id: str | None = None,
 ) -> dict[str, Any]:
-    root, source_dir, output = solution_paths(solution)
+    root, _, output = solution_paths(solution)
+    report_path = artifact_path(root, "deployment.sentinel.json", create_parent=True)
     target = require_locked_target(
         root,
         workspace_resource_id=workspace_resource_id,
@@ -87,7 +88,7 @@ def deploy_analytic_rules(
 
     token = _arm_token()
     results: list[dict[str, Any]] = []
-    source_files = sorted(source_dir.glob("*.yaml")) + sorted(source_dir.glob("*.yml"))
+    source_files = analytic_rule_files(root)
     for source_path in source_files:
         result: dict[str, Any] = {
             "source": str(source_path),
@@ -141,7 +142,6 @@ def deploy_analytic_rules(
         "failed": sum(not item["success"] for item in results),
         "results": results,
     }
-    report_path = artifact_path(root, "deployment.sentinel.json", create_parent=True)
     report["reportPath"] = str(report_path)
-    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    write_json_artifact(root, report_path, report)
     return report

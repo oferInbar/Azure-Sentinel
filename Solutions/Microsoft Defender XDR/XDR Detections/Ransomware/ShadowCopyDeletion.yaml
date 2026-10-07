@@ -1,0 +1,94 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 28c63a44-2d35-48b7-831b-3ed24af17c7e
+    path: Analytic Rules/Ransomware/ShadowCopyDeletion.yaml
+    version: 1.0.0
+    querySha256: a3de286c1dbc727f336d89a64c7ef6405ebdac063d8932c579cad6febe3cb1b7
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - Account.DnsDomain column `AccountDomain` is not produced by the query
+    - Account mapping was completed with projected column `DnsDomain`
+    - converter cannot map Account.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.ProcessId to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.CommandLine to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-shadow-copy-deletions-28c63a44' to originating Sentinel template ID '28c63a44-2d35-48b7-831b-3ed24af17c7e'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Impact
+    originalTechniques:
+    - T1490
+    identityChange:
+      previousId: xdr-shadow-copy-deletions-28c63a44
+      currentId: 28c63a44-2d35-48b7-831b-3ed24af17c7e
+      scope: local-artifact-only
+properties:
+  id: 28c63a44-2d35-48b7-831b-3ed24af17c7e
+  displayName: Shadow Copy Deletions
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let CommonRansomwareExecutionCommands = dynamic([@'vssadmin.exe delete shadows /all /quiet',
+      @'wmic.exe shadowcopy delete', @'wbadmin delete catalog -quiet',
+      @'Get-WmiObject Win32_Shadowcopy | ForEach-Object {$_.Delete();}',
+      @'del /s /f /q c:\*.VHD c:\*.bac c:\*.bak c:\*.wbcat c:\*.bkf c:\Backup*.* c:\backup*.* c:\*.set c:\*.win c:\*.dsk',
+      @'wbadmin delete systemstatebackup -keepVersions:0',
+      @'schtasks.exe /Change /TN "\Microsoft\Windows\SystemRestore\SR" /disable',
+      @'schtasks.exe /Change /TN "\Microsoft\Windows\SystemRestore\SR" /enable >nul 2>&1',
+      @'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\SystemRestore" /v "DisableConfig" /t "REG_DWORD" /d "1" /f',
+      @'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\SystemRestore" /v "DisableSR" /t "REG_DWORD" /d "1" /f',
+      @'reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" /v "DisableConfig" /t "REG_DWORD" /d "1" /f',
+      @'reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" /v "DisableSR" /t "REG_DWORD" /d "1" /f',
+      @'reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\SystemRestore" /v "DisableConfig" /f >nul 2>&1',
+      @'reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\SystemRestore" /v "DisableSR" /f >nul 2>&1',
+      @'reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" /v "DisableConfig" /f >nul 2>&1',
+      @'reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" /v "DisableSR" /f >nul 2>&1']);
+      DeviceProcessEvents
+      | where ProcessCommandLine has_any (CommonRansomwareExecutionCommands)
+      | project-reorder Timestamp, ProcessCommandLine, DeviceName, AccountName
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Shadow Copy Deletions
+      description: "This rule detects when Shadow Copies are being deleted. This is a know actions that is performed by threat\
+        \ actors.\nThis query detects know commands that have been used by the ransomware actors.\nSome information from Mitre\
+        \ Attack: \nhttps://attack.mitre.org/techniques/T1490/"
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+        accounts:
+        - id: account1
+          nameColumn: AccountName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: Impact
+        techniques:
+        - technique: T1490

@@ -1,4 +1,26 @@
 $jsonConversionDepth = 50
+function Assert-NoOperationalContent {
+    param([Parameter(Mandatory = $true)]$Content)
+    foreach ($property in $Content.PSObject.Properties) {
+        $references = $property.Value
+        if ($references -is [string] -and $property.Name -in @(
+            'Parsers', 'Data Connectors', 'DataConnectors', 'Playbooks', 'Workbooks',
+            'Analytic Rules', 'Hunting Queries', 'Watchlists', 'Summary Rules',
+            'SummaryRules', 'XDR Detections', 'Custom Detections'
+        )) {
+            try { $references = @($references | ConvertFrom-Json -ErrorAction Stop) }
+            catch { $references = @($references) }
+        }
+        if ($references -is [array]) {
+            foreach ($reference in $references) {
+                if ($reference -is [string] -and $reference -match '(?i)(^|[\\/])(Logs|Reports|Evidence)([\\/]|$)') {
+                    throw "Solution content arrays must not include Logs, Reports or Evidence."
+                }
+            }
+        }
+    }
+}
+
 $mainTemplateArtifact = [PSCustomObject]@{
     name = "DefaultTemplate";
     type = "Template"
@@ -3075,14 +3097,13 @@ function GeneratePackage(
     $contentToImport,
     $calculatedBuildPipelinePackageVersion = '',
     [bool]$IncludeXdrDetections = $false,
-    [string]$SolutionMetadataPath
+    [string]$SolutionMetadataPath,
+    [switch]$SkipAttributionLookup
 ) {
     Assert-V31SolutionVersion -SolutionName $solutionName -Version $contentToImport.Version -CalculatedVersion $calculatedBuildPipelinePackageVersion
     Assert-V31VersionChecksPassed
     if ($IncludeXdrDetections) {
         $xdrDetectionCount = Add-XdrCustomDetectionsToSolution -SolutionName $solutionName -ContentToImport $contentToImport -Template $global:baseMainTemplate
-        # PrepareSolutionMetadata filters out deployments; add the marker only after that filtering.
-        Add-CustomerUsageAttribution -SolutionMetadataPath $SolutionMetadataPath -Template $global:baseMainTemplate -WarnIfMissing ($xdrDetectionCount -gt 0)
         Update-XdrDescriptionCount -Count $xdrDetectionCount
     }
 
@@ -3138,6 +3159,11 @@ function GeneratePackage(
     }
     $mainTemplateOutputPath = "$solutionFolder/mainTemplate.json"
     $createUiDefinitionOutputPath = "$solutionFolder/createUiDefinition.json"
+
+    if ($IncludeXdrDetections) {
+        # Persist only after content/version preparation, after metadata filtering and before output.
+        Add-CustomerUsageAttribution -SolutionMetadataPath $SolutionMetadataPath -Template $global:baseMainTemplate -WarnIfMissing ($xdrDetectionCount -gt 0) -SkipAttributionLookup:$SkipAttributionLookup
+    }
 
     try {
         $baseMainTemplate | ConvertTo-Json -Depth $jsonConversionDepth | Out-File $mainTemplateOutputPath -Encoding utf8

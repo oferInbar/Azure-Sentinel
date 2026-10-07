@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from .artifacts import artifact_path, existing_artifact_path
+from .artifacts import artifact_path, existing_artifact_path, write_json_artifact
 from .onboarding import CONFIG_NAME, _read_json, _state_dir, configure_workspace
 
 
@@ -105,11 +105,7 @@ def _target_from_context(context: dict[str, Any]) -> dict[str, Any]:
 
 def write_target(solution: str | Path, target: dict[str, Any]) -> Path:
     path = artifact_path(solution, TARGET_FILE_NAME, create_parent=True)
-    path.write_text(
-        json.dumps(target, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    write_json_artifact(solution, path, target)
     return path
 
 
@@ -163,7 +159,7 @@ def require_locked_target(
             raise ValueError(
                 f"{name} does not match the locked qualification target"
             )
-    target_path = artifact_path(solution, TARGET_FILE_NAME)
+    target_path = existing_artifact_path(solution, TARGET_FILE_NAME)
     if target_path.is_file():
         recorded = json.loads(target_path.read_text(encoding="utf-8-sig"))
         for field in (
@@ -324,7 +320,7 @@ def diagnose_target(
     }
     path = artifact_path(solution, DIAGNOSTICS_FILE_NAME, create_parent=True)
     report["reportPath"] = str(path)
-    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    write_json_artifact(solution, path, report)
     return report
 
 
@@ -336,7 +332,7 @@ def repair_target(
 ) -> dict[str, Any]:
     if not approve_target_update:
         raise ValueError("--approve-target-update is required")
-    diagnostics_path = artifact_path(solution, DIAGNOSTICS_FILE_NAME)
+    diagnostics_path = existing_artifact_path(solution, DIAGNOSTICS_FILE_NAME)
     if not diagnostics_path.is_file():
         raise ValueError("qualification diagnostics do not exist")
     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8-sig"))
@@ -409,5 +405,5 @@ def repair_target(
     }
     path = artifact_path(solution, REPAIR_FILE_NAME, create_parent=True)
     report["reportPath"] = str(path)
-    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    write_json_artifact(solution, path, report)
     return report

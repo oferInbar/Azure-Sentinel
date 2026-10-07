@@ -13,11 +13,17 @@
     "stages"
   ],
   "properties": {
+    "runId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$",
+      "description": "Stable run directory identity. Added when initializing or explicitly migrating legacy state; resumption must keep this value."
+    },
     "schemaVersion": {
       "const": "1.1.0"
     },
     "solution": {
       "type": "string",
+      "description": "Solution-relative location (normally '.'); legacy absolute locations remain readable. Artifact references resolve against the selected solution, not the shell cwd.",
       "minLength": 1
     },
     "workflowStatus": {

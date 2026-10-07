@@ -1,0 +1,75 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 47c02e21-3949-4e05-a28e-576cd75ff6f6
+    path: Analytic Rules/Defense Evasion/QakbotCampaignSelfDeletion.yaml
+    version: 1.0.0
+    querySha256: fe73343dd0c5ba601f411925c09a6b07639d52506051093a47118504c1775170
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      lookbacks differ; an event-time filter alone does not configure the target ingestion lookback. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Local detection ID changed from 'xdr-qakbot-campaign-self-deletion-47c02e21' to originating Sentinel template ID '47c02e21-3949-4e05-a28e-576cd75ff6f6'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational:
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    errors: []
+    originalTactics:
+    - DefenseEvasion
+    originalTechniques:
+    - T1070
+    identityChange:
+      previousId: xdr-qakbot-campaign-self-deletion-47c02e21
+      currentId: 47c02e21-3949-4e05-a28e-576cd75ff6f6
+      scope: local-artifact-only
+properties:
+  id: 47c02e21-3949-4e05-a28e-576cd75ff6f6
+  displayName: Qakbot Campaign Self Deletion
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents
+      | where FileName =~ "ping.exe"
+      | where InitiatingProcessFileName =~ "cmd.exe"
+      | where (InitiatingProcessCommandLine has "calc.exe") and (InitiatingProcessCommandLine has "-n 6") and (InitiatingProcessCommandLine has "127.0.0.1")
+      | project Timestamp, ProcessCommandLine, InitiatingProcessCommandLine, InitiatingProcessParentFileName, DeviceId, DeviceName
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Qakbot Campaign Self Deletion
+      description: |-
+        This query was originally published in the threat analytics report, Qakbot blight lingers, seeds ransomware
+        Qakbot is malware that steals login credentials from banking and financial services. It has been deployed against small businesses as well as major corporations. Some outbreaks have involved targeted ransomware campaigns that use a similar set of techniques. Links to related queries are listed under See also.
+        The following query detects if an instance of Qakbot has attempted to overwrite its original binary.
+        Reference - https://www.microsoft.com/security/blog/2017/11/06/mitigating-and-el
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: DefenseEvasion
+        techniques:
+        - technique: T1070

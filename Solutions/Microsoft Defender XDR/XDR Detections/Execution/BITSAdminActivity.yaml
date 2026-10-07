@@ -1,0 +1,99 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 2a1dc4c2-a8d6-4a0e-8539-9b971c851195
+    path: Analytic Rules/Execution/BITSAdminActivity.yaml
+    version: 1.0.0
+    querySha256: c7078358702bf47778754bd0d0ef58acb45d6f8ce0dbb0d54360a42dd4e0692c
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      lookbacks differ; an event-time filter alone does not configure the target ingestion lookback. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.ProcessId to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.CommandLine to a documented Custom Detection field; this source identifier is not represented
+    - multiple source tactics were resolved by the configured per-rule override
+    - Local detection ID changed from 'xdr-bitsadmin-activity-2a1dc4c2' to originating Sentinel template ID '2a1dc4c2-a8d6-4a0e-8539-9b971c851195'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Persistence
+    - CommandAndControl
+    - Exfiltration
+    originalTechniques:
+    - T1197
+    - T1105
+    - T1048
+    identityChange:
+      previousId: xdr-bitsadmin-activity-2a1dc4c2
+      currentId: 2a1dc4c2-a8d6-4a0e-8539-9b971c851195
+      scope: local-artifact-only
+properties:
+  id: 2a1dc4c2-a8d6-4a0e-8539-9b971c851195
+  displayName: Bitsadmin Activity
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents
+      | where
+          (FileName =~ "bitsadmin.exe" or column_ifexists('ProcessVersionInfoOriginalFileName','ColumnNotAvailable') =~ 'bitsadmin.exe')
+          and ProcessCommandLine has_any ('/Transfer','/AddFile', '/AddFileSet','/AddFileWithRanges')
+      | extend
+          ParsedCommandLine = parse_command_line(ProcessCommandLine,'windows')
+      | extend
+          RemoteUrl = tostring(ParsedCommandLine[-2]),
+          LocalFile= tostring(ParsedCommandLine[-1]),
+          Direction = iff(ProcessCommandLine has "/Upload", 'Upload', 'Download')
+      | project-reorder
+          Timestamp,
+          DeviceId,
+          DeviceName,
+          Direction,
+          RemoteUrl,
+          LocalFile,
+          InitiatingProcessFolderPath,
+          InitiatingProcessAccountDomain,
+          InitiatingProcessAccountName,
+          InitiatingProcessSHA256,
+          ProcessId,
+          ProcessCommandLine
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Bitsadmin Activity
+      description: "Background Intelligent Transfer Service (BITS) is a way to reliably download files from webservers or\
+        \ SMB servers. \nThis service is commonly used for legitimate purposes, but can also be used as part of a malware\
+        \ downloader. \nAdditionally, bitsadmin can be used to upload files and therefore can be used for data exfiltration.\
+        \ This\nquery will identify use of bitsadmin.exe for either purpose and will identify directionality file transfer\n\
+        directionality."
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: Persistence
+        techniques:
+        - technique: T1197

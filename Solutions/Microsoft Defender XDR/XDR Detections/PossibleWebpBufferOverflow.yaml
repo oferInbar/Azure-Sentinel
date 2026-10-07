@@ -1,0 +1,83 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 26e81021-2de6-4442-a74a-a77885e96911
+    path: Analytic Rules/PossibleWebpBufferOverflow.yaml
+    version: 1.1.3
+    querySha256: 7e7a9c73f15d42dd023b3bc97a055faba311776b37180b2d6a29a33698d3ba8b
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Account.FullName to a documented Custom Detection field; this source identifier is not represented
+    - IP.Address column `LocalIP` is not produced by the query
+    - converter cannot map Process.ProcessId to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.ProcessId to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.CommandLine to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-execution-of-software-vulnerable-to-webp-buffer-overflow-of-cve-2023-486-26e81021'
+      to originating Sentinel template ID '26e81021-2de6-4442-a74a-a77885e96911'. No cloud rules were updated, deleted, or
+      migrated. Review existing deployed rules and reconcile their identities before any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Execution
+    originalTechniques:
+    - T1203
+    identityChange:
+      previousId: xdr-execution-of-software-vulnerable-to-webp-buffer-overflow-of-cve-2023-486-26e81021
+      currentId: 26e81021-2de6-4442-a74a-a77885e96911
+      scope: local-artifact-only
+properties:
+  id: 26e81021-2de6-4442-a74a-a77885e96911
+  displayName: Execution of software vulnerable to webp buffer overflow of CVE-2023-4863
+  status: disabled
+  queryCondition:
+    queryText: |-
+      //CVE-2023-4863 Process activity with .webp files on devices where CVE-2023-4863 is unpatched
+      //This query shows all process activity with .webp files on vulnerable machines and is not an indicator of malicious activity
+      let VulnDevices = DeviceTvmSoftwareVulnerabilities
+          | where CveId == "CVE-2023-4863"
+          | distinct DeviceId;
+      union DeviceProcessEvents, DeviceNetworkEvents, DeviceEvents
+      | where DeviceId in (VulnDevices) and (InitiatingProcessCommandLine has(".webp") or ProcessCommandLine has(".webp"))
+      | extend Name = tostring(split(AccountUpn, "@")[0]), UPNSuffix = tostring(split(AccountUpn, "@")[1])
+      | extend HostName = tostring(split(DeviceName, ".")[0]), DomainIndex = toint(indexof(DeviceName, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(DeviceName, DomainIndex + 1), DeviceName)
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Execution of software vulnerable to webp buffer overflow of CVE-2023-4863
+      description: '''This query looks at device, process, and network events from Defender for Endpoint that may be vulnerable
+        to buffer overflow defined in CVE-2023-4863. Results are not an indicator of malicious activity.'''
+      severity: informational
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+        accounts:
+        - id: account1
+          nameColumn: Name
+          upnSuffixColumn: UPNSuffix
+      tactics:
+      - tactic: Execution
+        techniques:
+        - technique: T1203

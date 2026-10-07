@@ -7,7 +7,11 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from .artifacts import artifact_path, existing_artifact_path, migrate_legacy_artifact
+from .artifacts import (
+    artifact_path, existing_artifact_path, resolve_artifact_reference, write_json_artifact,
+    create_run, requested_run_id, solution_for_artifact, using_run, RUN_MARKER,
+    conversion_scope, require_solution_conversion_scope,
+)
 from .target_context import build_target, write_target
 
 STATE_FILE_NAME = "workflow-state.json"
@@ -52,7 +56,7 @@ def _paths(solution: str | Path) -> tuple[Path, Path]:
     root = Path(solution).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"solution folder does not exist: {root}")
-    return root, artifact_path(root, STATE_FILE_NAME, create_parent=True)
+    return root, artifact_path(root, STATE_FILE_NAME)
 
 
 def _schema() -> dict[str, Any]:
@@ -71,14 +75,14 @@ def _validate(state: dict[str, Any]) -> None:
 
 
 def _write(path: Path, state: dict[str, Any]) -> None:
+    root = solution_for_artifact(path)
+    destination = artifact_path(root, STATE_FILE_NAME, create_parent=True)
+    if path != destination:
+        raise ValueError("workflow state path does not belong to the selected run")
+    state["runId"] = destination.parent.name
     state["updatedAt"] = _utc_now()
     _validate(state)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(state, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    write_json_artifact(root, path, state)
 
 
 def _load(solution: str | Path) -> tuple[Path, dict[str, Any]]:
@@ -95,8 +99,9 @@ def _load(solution: str | Path) -> tuple[Path, dict[str, Any]]:
     if isinstance(context, dict):
         context.setdefault("profileSelectionConfirmed", False)
     _validate(state)
-    path = migrate_legacy_artifact(root, STATE_FILE_NAME)
-    return path, state
+    if (path.parent / RUN_MARKER).is_file() and state.get("runId") != path.parent.name:
+        raise ValueError("workflow state runId does not match its run directory")
+    return artifact_path(root, STATE_FILE_NAME), state
 
 
 def _stage_result(name: str, *, required: bool = True) -> dict[str, Any]:
@@ -121,8 +126,11 @@ def initialize_workflow(
     workspace_customer_id: str | None = None,
     version_bump: str | None = None,
     workflow_profile: str | None = None,
+    new_run: bool = False,
 ) -> dict[str, Any]:
-    root, path = _paths(solution)
+    root = Path(solution).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"solution folder does not exist: {root}")
     if version_bump not in (None, "none", "patch", "minor", "major"):
         raise ValueError("version bump must be none, patch, minor, or major")
     if workflow_profile is None:
@@ -166,9 +174,20 @@ def initialize_workflow(
         "targetContextLocked": bool(target),
         "versionBump": version_bump,
     }
+    if new_run:
+        if requested_run_id(root):
+            raise ValueError("--new-run and --run-id cannot be combined")
+        run = create_run(root)
+        with using_run(root, run.name):
+            return initialize_workflow(
+                root, tenant_id=tenant_id, subscription_id=subscription_id,
+                workspace_resource_id=workspace_resource_id,
+                workspace_customer_id=workspace_customer_id, version_bump=version_bump,
+                workflow_profile=workflow_profile,
+            )
     existing_path = existing_artifact_path(root, STATE_FILE_NAME)
     if existing_path.exists():
-        _, state = _load(root)
+        path, state = _load(root)
         context = state["context"]
         for key, value in requested_context.items():
             if key == "targetContextLocked":
@@ -194,6 +213,7 @@ def initialize_workflow(
         }
 
     now = _utc_now()
+    path = artifact_path(root, STATE_FILE_NAME, create_parent=True)
     state = {
         "schemaVersion": SCHEMA_VERSION,
         "solution": str(root),
@@ -251,13 +271,14 @@ def _select_workflow_profile(state: dict[str, Any], workflow_profile: str) -> No
 def _validate_packaging_evidence(
     state: dict[str, Any],
     artifacts: dict[str, str],
+    solution: str | Path,
 ) -> None:
     if artifacts.get("packager") != "V3.1":
         raise ValueError("passed packaging stage requires packager=V3.1; rebuild old packages")
     report_value = artifacts.get("packageReport")
     if not report_value:
         raise ValueError("passed packaging stage requires a V3.1 packageReport artifact")
-    report_path = Path(report_value).expanduser().resolve()
+    report_path = resolve_artifact_reference(solution, report_value)
     if not report_path.is_file():
         raise ValueError(f"V3.1 package report does not exist: {report_path}")
     try:
@@ -268,7 +289,7 @@ def _validate_packaging_evidence(
         raise ValueError(f"package report does not prove V3.1 packaging: {report_path}")
     for name in ("mainTemplate", "createUiDefinition", "testParameters", "zip"):
         value = artifacts.get(name) or report.get(name)
-        if not value or not Path(value).expanduser().resolve().is_file():
+        if not value or not resolve_artifact_reference(solution, value).is_file():
             raise ValueError(f"V3.1 packaging evidence is missing artifact: {name}")
     requested_bump = state["context"].get("versionBump")
     if requested_bump is not None and report.get("versionBump") != requested_bump:
@@ -280,7 +301,24 @@ def _validate_packaging_evidence(
 
 def workflow_status(solution: str | Path) -> dict[str, Any]:
     path, state = _load(solution)
-    return {**state, "statePath": str(path), "next": _next_stage_name(state)}
+    return {**state, "conversionScope": conversion_scope(solution), "statePath": str(existing_artifact_path(solution, STATE_FILE_NAME)), "next": _next_stage_name(state)}
+
+
+def invalidate_scoped_completion(solution: str | Path) -> None:
+    """Retain historical evidence, but never reuse passed stages after a partial refresh."""
+    if not existing_artifact_path(solution, STATE_FILE_NAME).is_file():
+        return
+    path, state = _load(solution)
+    for name in STAGES[1:]:
+        current = state["stages"][name]
+        if current["status"] == "passed":
+            current["status"] = "blocked"
+            current["message"] = (
+                "Rule-scoped conversion invalidated full-solution completion. "
+                "Retained artifacts/evidence are historical; reconvert and revalidate the solution."
+            )
+    state["workflowStatus"] = "blocked"
+    _write(path, state)
 
 
 def _dependencies(state: dict[str, Any], stage: str) -> tuple[str, ...]:
@@ -323,8 +361,10 @@ def next_workflow_stage(solution: str | Path) -> dict[str, Any]:
             if blocked_by:
                 break
     return {
+        "runId": state.get("runId"),
+        "conversionScope": conversion_scope(solution),
         "solution": state["solution"],
-        "statePath": str(path),
+        "statePath": str(existing_artifact_path(solution, STATE_FILE_NAME)),
         "workflowStatus": state["workflowStatus"],
         "next": name,
         "blockedBy": blocked_by,
@@ -334,6 +374,8 @@ def next_workflow_stage(solution: str | Path) -> dict[str, Any]:
 def start_workflow_stage(solution: str | Path, stage: str) -> dict[str, Any]:
     if stage not in STAGES:
         raise ValueError(f"unknown workflow stage: {stage}")
+    if stage in STAGES[3:]:
+        require_solution_conversion_scope(solution)
     path, state = _load(solution)
     current = state["stages"][stage]
     if current["status"] == "notRequired":
@@ -387,6 +429,8 @@ def complete_workflow_stage(
         raise ValueError("stage status must be passed, failed, or blocked")
     if status in {"failed", "blocked"} and not str(message or "").strip():
         raise ValueError(f"{status} workflow stages require a message")
+    if status == "passed" and stage != "discovery":
+        require_solution_conversion_scope(solution)
 
     path, state = _load(solution)
     current = state["stages"][stage]
@@ -394,7 +438,7 @@ def complete_workflow_stage(
         raise ValueError(f"workflow stage is not running: {stage}")
     final_artifacts = artifacts or {}
     if stage == "packaging" and status == "passed":
-        _validate_packaging_evidence(state, final_artifacts)
+        _validate_packaging_evidence(state, final_artifacts, solution)
     current.update(
         {
             "status": status,

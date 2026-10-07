@@ -33,6 +33,28 @@ DETECTION = {
 
 
 class QueryExtractionTests(unittest.TestCase):
+    def test_nested_rule_and_detection_selection_preserves_relative_identity(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+            root = Path(temp)
+            solution = root / "Solutions" / "Example"
+            for index, relative in enumerate(("Execution/Deep/rule.yml", "Persistence/rule.yml", "ROOT.YAML")):
+                rule = dict(RULE, id=f"source-{index}")
+                detection = dict(DETECTION, sourceRuleId=rule["id"])
+                _write_yaml(solution / "Analytic Rules" / relative, rule)
+                _write_yaml(solution / "XDR Detections" / relative, detection)
+            with mock.patch.object(generator, "REPOSITORY_ROOT", root):
+                source, rule = generator.find_analytic_rule("Example", "Execution\\Deep\\rule.yml")
+                detection, _ = generator.find_custom_detection("Example", None, rule)
+                self.assertEqual("Execution/Deep/rule.yml", source.relative_to(solution / "Analytic Rules").as_posix())
+                self.assertEqual("Execution/Deep/rule.yml", detection.relative_to(solution / "XDR Detections").as_posix())
+                selected, _ = generator.find_custom_detection("Example", "Execution/Deep/rule.yml", rule)
+                self.assertEqual(detection, selected)
+                self.assertEqual("ROOT.YAML", generator.find_analytic_rule("Example", "source-2")[0].name)
+                with self.assertRaisesRegex(generator.ScenarioError, "ambiguous"):
+                    generator.find_analytic_rule("Example", "rule")
+                with self.assertRaisesRegex(generator.ScenarioError, "Multiple"):
+                    generator.find_custom_detection("Example", "rule", rule)
+
     def test_reads_converted_custom_detection_query(self) -> None:
         document = {
             "properties": {

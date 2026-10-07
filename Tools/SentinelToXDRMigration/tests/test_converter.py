@@ -9,8 +9,10 @@ from subprocess import CompletedProcess
 from unittest import mock
 
 import yaml
+from sentinel_xdr_migration.artifacts import artifact_path
 
 from sentinel_xdr_migration.converter import (
+    convert_query,
     convert_solution,
     inspect_solution,
     runtime_validation_plan,
@@ -100,6 +102,9 @@ class ConverterTests(unittest.TestCase):
             "11111111-2222-3333-4444-555555555555",
         )
         self.assertEqual(
+            document["contentProvenance"]["source"]["id"], document["properties"]["id"],
+        )
+        self.assertEqual(
             document["contentProvenance"]["conversion"]["requiredWorkloads"], ["sentinel"]
         )
         self.assertFalse(document["contentProvenance"]["conversion"]["reviewRequired"])
@@ -125,6 +130,20 @@ class ConverterTests(unittest.TestCase):
                 self.assertEqual(original["properties"]["id"], updated["properties"]["id"])
                 self.assertEqual(RULE.replace("version: 1.0.0", "version: 1.0.3"), source.read_text())
                 original = updated
+
+    def test_conversion_information_round_trips_yaml_and_manifest(self) -> None:
+        source = self.solution / "Analytic Rules/SampleRule.yaml"
+        source.write_text(RULE.replace("queryPeriod: 1h", "queryPeriod: 4h"), encoding="utf-8")
+        summary = convert_solution(self.solution)
+        document = yaml.safe_load((self.solution / "XDR Detections/SampleRule.yaml").read_text())
+        conversion = document["contentProvenance"]["conversion"]
+        manifest = json.loads(Path(summary["manifest"]).read_text())
+        self.assertEqual("converted", conversion["status"])
+        self.assertFalse(conversion["reviewRequired"])
+        self.assertFalse(conversion["errors"])
+        self.assertTrue(conversion["informational"])
+        self.assertEqual(conversion["informational"], summary["results"][0]["informational"])
+        self.assertEqual(conversion["informational"], manifest["results"][0]["informational"])
 
     def test_xdr_release_boundaries_in_schema_and_structural_validation(self) -> None:
         convert_solution(self.solution)
@@ -190,6 +209,44 @@ class ConverterTests(unittest.TestCase):
         self.assertEqual(result["valid"], 1)
         self.assertEqual(result["invalid"], 0)
 
+    def test_conversion_does_not_require_event_time_output(self) -> None:
+        queries = (
+            "DeviceEvents",
+            "DeviceEvents | project DeviceName",
+            "DeviceEvents | summarize Events=count() by DeviceName",
+            "DeviceEvents | project EventTime=Timestamp, DeviceName",
+            "DeviceEvents | where Timestamp > ago(1h) | project DeviceName",
+            "DeviceEvents | project-away Timestamp",
+            "SecurityEvent | project Computer",
+        )
+        for query in queries:
+            with self.subTest(query=query):
+                converted, warnings, errors = convert_query(query, {})
+                self.assertEqual(query, converted)
+                self.assertEqual([], errors)
+                self.assertEqual([], warnings)
+
+    def test_detection_without_event_time_passes_conversion_and_structure(self) -> None:
+        source = self.solution / "Analytic Rules/SampleRule.yaml"
+        rule = yaml.safe_load(RULE)
+        rule["query"] = "DeviceEvents | project AccountUpn, IPAddress"
+        source.write_text(yaml.safe_dump(rule), encoding="utf-8")
+
+        result = convert_solution(self.solution)
+        self.assertEqual(1, result["converted"])
+        self.assertEqual(0, result["needsReview"])
+        output = self.solution / "XDR Detections/SampleRule.yaml"
+        document = yaml.safe_load(output.read_text(encoding="utf-8"))
+        self.assertEqual(rule["query"], document["properties"]["queryCondition"]["queryText"])
+        self.assertEqual([], validate_document(document))
+        self.assertEqual(1, validate_solution(self.solution)["valid"])
+
+    def test_other_query_blockers_remain_without_event_time(self) -> None:
+        _, _, errors = convert_query(
+            'workspace("other").DeviceEvents | project DeviceName', {}
+        )
+        self.assertEqual(["cross-workspace queries require manual redesign"], errors)
+
     def test_convert_generates_self_contained_html_report(self) -> None:
         result = convert_solution(self.solution)
         report = Path(result["transformationReport"])
@@ -200,7 +257,9 @@ class ConverterTests(unittest.TestCase):
         self.assertIn("Suspicious test activity", content)
         self.assertIn("SampleRule.yaml", content)
         self.assertIn("converted", content)
-        self.assertNotIn("https://", content)
+        self.assertNotRegex(content, r"(?is)<(?:script|img|iframe|source|video|audio|embed)\b[^>]*\bsrc\s*=")
+        self.assertNotRegex(content, r"(?is)<link\b[^>]*\brel\s*=\s*[\"'](?:stylesheet|preload|modulepreload)")
+        self.assertNotRegex(content, r"(?i)@import\b|url\s*\(")
 
     def test_convert_keeps_xdr_detections_yaml_only(self) -> None:
         result = convert_solution(self.solution)
@@ -230,7 +289,7 @@ class ConverterTests(unittest.TestCase):
     def test_explicit_mappings_are_applied(self) -> None:
         output = self.solution / "XDR Detections"
         output.mkdir()
-        (output / "migration-config.yaml").write_text(
+        artifact_path(self.solution, "migration-config.yaml", create_parent=True).write_text(
             """\
 schemaVersion: 1.0.0
 tableMappings:
@@ -530,11 +589,10 @@ AzureActivity
         )
 
     def test_config_can_exclude_a_sentinel_only_rule(self) -> None:
+        convert_solution(self.solution)
         output = self.solution / "XDR Detections"
-        output.mkdir()
         generated = output / "SampleRule.yaml"
-        generated.write_text("stale generated output", encoding="utf-8")
-        config = output / "migration-config.yaml"
+        config = artifact_path(self.solution, "migration-config.yaml", create_parent=True)
         config.write_text(
             yaml.safe_dump(
                 {
@@ -662,7 +720,7 @@ AzureActivity
     ) -> None:
         output = self.solution / "XDR Detections"
         output.mkdir()
-        (output / "migration-config.yaml").write_text(
+        artifact_path(self.solution, "migration-config.yaml", create_parent=True).write_text(
             "schemaVersion: 1.0.0\n",
             encoding="utf-8",
         )

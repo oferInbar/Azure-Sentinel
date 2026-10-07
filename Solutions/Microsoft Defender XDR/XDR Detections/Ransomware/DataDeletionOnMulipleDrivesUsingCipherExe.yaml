@@ -1,0 +1,75 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 03caa992-477f-4b19-8e2a-8cd58f8f9652
+    path: Analytic Rules/Ransomware/DataDeletionOnMulipleDrivesUsingCipherExe.yaml
+    version: 1.0.0
+    querySha256: 7f8bc26efe9a04bbb4fd473bd3c22711e880aa0d7f9c797686cc62cd6408cd69
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      lookbacks differ; an event-time filter alone does not configure the target ingestion lookback. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Local detection ID changed from 'xdr-deletion-of-data-on-multiple-drives-using-cipher-exe-03caa992' to originating Sentinel
+      template ID '03caa992-477f-4b19-8e2a-8cd58f8f9652'. No cloud rules were updated, deleted, or migrated. Review existing
+      deployed rules and reconcile their identities before any separately approved deployment.
+    informational:
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    errors: []
+    originalTactics:
+    - Impact
+    originalTechniques:
+    - T1485
+    identityChange:
+      previousId: xdr-deletion-of-data-on-multiple-drives-using-cipher-exe-03caa992
+      currentId: 03caa992-477f-4b19-8e2a-8cd58f8f9652
+      scope: local-artifact-only
+properties:
+  id: 03caa992-477f-4b19-8e2a-8cd58f8f9652
+  displayName: Deletion of data on multiple drives using cipher exe
+  status: disabled
+  queryCondition:
+    queryText: |-
+      // Look for cipher.exe deleting data from multiple drives
+      DeviceProcessEvents
+      | where FileName =~ "cipher.exe"
+      // cipher.exe /w flag used for deleting data
+      | where ProcessCommandLine has "/w"
+      | summarize CipherCount = dcount(ProcessCommandLine), CipherList = make_set(ProcessCommandLine, 1000) by DeviceId, DeviceName, bin(Timestamp, 1m)
+      // cipher.exe accessing multiple drives in a short timeframe
+      | where CipherCount > 1
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Deletion of data on multiple drives using cipher exe
+      description: This query checks for attempts to delete data on multiple drives using cipher.exe. This activity is typically
+        done by ransomware to prevent recovery of data after encryption.
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: Impact
+        techniques:
+        - technique: T1485

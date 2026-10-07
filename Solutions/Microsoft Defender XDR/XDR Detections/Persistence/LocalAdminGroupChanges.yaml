@@ -1,0 +1,120 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - IdentityInfo
+  - DeviceEvents
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 63aa43c2-e88e-4102-aea5-0432851c541a
+    path: Analytic Rules/Persistence/LocalAdminGroupChanges.yaml
+    version: 1.0.2
+    querySha256: d499a1eb3af774602695537e68aceddae6e758731ed4201310d521294e737846
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Account.FullName to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-local-admin-group-changes-63aa43c2' to originating Sentinel template ID '63aa43c2-e88e-4102-aea5-0432851c541a'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Persistence
+    originalTechniques:
+    - T1098
+    identityChange:
+      previousId: xdr-local-admin-group-changes-63aa43c2
+      currentId: 63aa43c2-e88e-4102-aea5-0432851c541a
+      scope: local-artifact-only
+properties:
+  id: 63aa43c2-e88e-4102-aea5-0432851c541a
+  displayName: Local Admin Group Changes
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let machineAccountSIDs = dynamic([
+        "S-1-5-18",
+        "S-1-5-20",
+        "S-1-5-19"]);
+      let ADAZUsers =  IdentityInfo
+      | extend DirectoryDomain = AccountDomain
+      | extend DirectoryAccount = AccountName
+      | extend OnPremSid = AccountSID
+      | distinct DirectoryDomain , DirectoryAccount , OnPremSid , AccountCloudSID, AccountUpn, GivenName, Surname;
+       // check for any new created or modified local accounts
+      let NewUsers =  DeviceEvents
+      | where ActionType contains "UserAccountCreated" or ActionType contains "UserAccountModified"
+      | extend lUserAdded = AccountName
+      | extend NewUserSID = AccountSid
+      | extend laccountdomain = AccountDomain
+      | distinct NewUserSID, lUserAdded,laccountdomain;
+      // Check for any local group changes and enrich the data with the account name obtained from the previous query
+      DeviceEvents
+      | where ActionType == 'UserAccountAddedToLocalGroup'
+      // Exclude machine and wellknown SIDs
+      | where (AccountSid !in (machineAccountSIDs)) and (AccountSid matches regex @"S-\d-\d+-\d+-(\d+-){1,5}\d+")
+      | extend LocalGroupSID = tostring(parse_json(AdditionalFields).GroupSid)
+      | extend LocalGroup = tostring(parse_json(AdditionalFields).GroupName)
+      | extend AddedAccountSID = AccountSid
+      | extend Actor = trim(@"[^\w]+",InitiatingProcessAccountName)
+      // limit to local administrators group
+      // | where LocalGroupSID contains "S-1-5-32-544"
+      | join kind=leftouter    (NewUsers)
+      on $left.AddedAccountSID == $right.NewUserSID
+      | project TimeGenerated, DeviceName, LocalGroup,LocalGroupSID, AddedAccountSID, lUserAdded , Actor, ActionType , laccountdomain
+      | join kind=innerunique  (ADAZUsers)
+      on $left.AddedAccountSID == $right.OnPremSid
+      | extend UserAdded = iff(isnotempty(lUserAdded),strcat(laccountdomain,"\\", lUserAdded), strcat(DirectoryDomain,"\\", DirectoryAccount))
+      | extend AccountName = iff(isnotempty(lUserAdded), lUserAdded, DirectoryAccount)
+      | project TimeGenerated, DeviceName, LocalGroup, LocalGroupSID, AddedAccountSID, UserAdded ,Actor, ActionType, AccountName, laccountdomain
+      | where DeviceName !contains Actor
+      // Provide details on actors that added users
+      // | summarize count()  by Actor
+      // | join ADAZUsers
+      // on $left.Actor == $right.DirectoryAccount
+      // | render piechart
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Local Admin Group Changes
+      description: |-
+        This query searches for changes to the local administrators group.
+        Blogpost: https://www.verboon.info/2020/09/hunting-for-local-group-membership-changes.
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+        accounts:
+        - id: account1
+          nameColumn: AccountName
+          ntDomainColumn: laccountdomain
+      tactics:
+      - tactic: Persistence
+        techniques:
+        - technique: T1098

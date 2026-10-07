@@ -8,7 +8,8 @@ param(
     [string]$EntryPointName = "Local",
     [string]$DefaultInputPath = $null,
     [bool]$IncludeXdrDetections = $false,
-    [bool]$EnforceV31Versions = $false
+    [bool]$EnforceV31Versions = $false,
+    [switch]$SkipAttributionLookup
 )
 
 Write-Host "=======Starting Package Creation using $EntryPointName tool========="
@@ -269,6 +270,7 @@ try {
     foreach ($inputFile in $(Get-ChildItem -Path "$solutionFolderBasePath\$dataFolderName\$dataFileName")) {
         #$inputJsonPath = Join-Path -Path $path -ChildPath "$($inputFile.Name)"
         $contentToImport = Get-Content -Raw $inputFile | Out-String | ConvertFrom-Json
+        Assert-NoOperationalContent -Content $contentToImport
 
         $has1PConnectorProperty = [bool]($contentToImport.PSobject.Properties.Name -match "Is1PConnector")
         if ($has1PConnectorProperty) {
@@ -526,7 +528,7 @@ try {
         updateDescriptionCount $global:functionAppList.Count                           "**Function Apps:** "                       "{{FunctionAppsCount}}"             $(checkResourceCounts @($global:playbookCounter))
         updateDescriptionCount ($global:playbookCounter - $global:customConnectorsList.Count - $global:functionAppList.Count)  "**Playbooks:** "   "{{PlaybookCount}}"       $false
 
-        GeneratePackage -solutionName $solutionName -contentToImport $contentToImport -calculatedBuildPipelinePackageVersion $contentToImport.Version -IncludeXdrDetections $IncludeXdrDetections -SolutionMetadataPath (Join-Path $solutionFolderBasePath 'SolutionMetadata.json');
+        GeneratePackage -solutionName $solutionName -contentToImport $contentToImport -calculatedBuildPipelinePackageVersion $contentToImport.Version -IncludeXdrDetections $IncludeXdrDetections -SolutionMetadataPath (Join-Path $solutionFolderBasePath 'SolutionMetadata.json') -SkipAttributionLookup:$SkipAttributionLookup;
         if ($EnforceV31Versions -and $VersionMode -eq 'local' -and $VersionBump -ne 'none') {
             Save-V31LocalPackageVersion -DataFilePath $inputFile.FullName -Version $contentToImport.Version
         }

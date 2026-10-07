@@ -1,0 +1,82 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 3bd33158-3f0b-47e3-a50f-7c20a1b88038
+    path: Analytic Rules/AVSpringShell.yaml
+    version: 1.0.3
+    querySha256: 8a72c25e5acc323b85ec51f306882a0dde596a2f729b90cc8065b2b2dc0b1dbe
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 1d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-av-detections-related-to-springshell-vulnerability-3bd33158' to originating Sentinel
+      template ID '3bd33158-3f0b-47e3-a50f-7c20a1b88038'. No cloud rules were updated, deleted, or migrated. Review existing
+      deployed rules and reconcile their identities before any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - InitialAccess
+    originalTechniques:
+    - T1190
+    identityChange:
+      previousId: xdr-av-detections-related-to-springshell-vulnerability-3bd33158
+      currentId: 3bd33158-3f0b-47e3-a50f-7c20a1b88038
+      scope: local-artifact-only
+properties:
+  id: 3bd33158-3f0b-47e3-a50f-7c20a1b88038
+  displayName: AV detections related to SpringShell Vulnerability
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let SpringShell_threats = dynamic(["Trojan:Python/SpringShellExpl", "Exploit:Python/SpringShell", "Backdoor:PHP/Remoteshell.V", "SpringShell"]);
+      DeviceInfo
+      | extend DeviceName = tolower(DeviceName)
+      | join kind=inner ( SecurityAlert
+      | where ProviderName =~ "MDATP"
+      | extend ThreatName = tostring(parse_json(ExtendedProperties).ThreatName)
+      | extend ThreatFamilyName = tostring(parse_json(ExtendedProperties).ThreatFamilyName)
+      | where ThreatName in~ (SpringShell_threats) or ThreatFamilyName in~ (SpringShell_threats)
+      | extend CompromisedEntity = tolower(CompromisedEntity)
+      ) on $left.DeviceName == $right.CompromisedEntity
+      | summarize by DisplayName, ThreatName, ThreatFamilyName, PublicIP, AlertSeverity, Description, tostring(LoggedOnUsers), DeviceId, TenantId , bin(Timestamp, 1d), CompromisedEntity, tostring(LoggedOnUsers), ProductName, Entities
+      | extend HostName = tostring(split(CompromisedEntity, ".")[0]), DomainIndex = toint(indexof(CompromisedEntity, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(CompromisedEntity, DomainIndex + 1), CompromisedEntity)
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: AV detections related to SpringShell Vulnerability
+      description: |-
+        'This query looks for Microsoft Defender AV detections related to the SpringShell vulnerability. In Microsoft Sentinel, the SecurityAlerts table includes only the Device Name of the affected device.
+          This query joins the DeviceInfo table to clearly connect other information such as device group, IP, logged-on users, etc. This would allow the Microsoft Sentinel analyst to have more context related to the alert, if available.
+          Reference: https://www.microsoft.com/security/blog/2022/04/04/springshell-rce-vulnerability-guidance-for-protecting-against-and-detecting-cve-2022-22965/'
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+        ips:
+        - id: ip1
+          addressColumn: PublicIP
+      tactics:
+      - tactic: InitialAccess
+        techniques:
+        - technique: T1190

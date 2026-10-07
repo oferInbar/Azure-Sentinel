@@ -112,7 +112,7 @@ requests it and the live resource provider is known to support registration.
    wrapper invokes
    `Tools\Create-Azure-Sentinel-Solution\V3\createSolutionV3_1.ps1` with local
    version mode, validates every required output and the ZIP, and writes
-   `Reports\<solution>\sentinel-xdr-migration\packaging.v3_1.json`.
+   `Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\packaging.v3_1.json`.
 
    Never reuse pre-existing package artifacts as proof that this stage ran.
    Complete the workflow stage only with the wrapper's `workflowArtifacts`

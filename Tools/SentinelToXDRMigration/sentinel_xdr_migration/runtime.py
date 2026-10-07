@@ -10,9 +10,10 @@ from typing import Any
 
 import yaml
 
-from .artifacts import report_directory
+from .artifacts import report_directory, portable_artifact, write_json_artifact
 from .catalog import referenced_catalog_tables, referenced_custom_tables
 from .converter import xdr_detection_files
+from .content_paths import yaml_files
 from .onboarding import (
     AUTH_RECORD_NAME,
     CONFIG_NAME,
@@ -50,7 +51,7 @@ def _referenced_solution_functions(root: Path, query: str) -> set[str]:
     parser_root = root / "Parsers"
     if not parser_root.exists():
         return functions
-    for path in sorted([*parser_root.rglob("*.yaml"), *parser_root.rglob("*.yml")]):
+    for path in yaml_files(parser_root):
         try:
             document = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
         except (OSError, yaml.YAMLError):
@@ -88,17 +89,8 @@ def _write_runtime_artifacts(
     html_path = output / f"runtime-validation.{provider}.html"
     summary["jsonReport"] = str(json_path)
     summary["htmlReport"] = str(html_path)
-    json_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    write_runtime_validation_report(summary, html_path)
-
-    local_report = (
-        Path(__file__).resolve().parents[1]
-        / "Data"
-        / "reports"
-        / "last-runtime-validation.json"
-    )
-    local_report.parent.mkdir(parents=True, exist_ok=True)
-    local_report.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    write_json_artifact(root, json_path, summary)
+    write_runtime_validation_report(portable_artifact(root, summary), html_path)
     return summary
 
 
@@ -228,7 +220,7 @@ def validate_advanced_hunting(
         if unavailable:
             results.append(
                 {
-                    "detection": path.name,
+                    "detection": path.relative_to(output).as_posix(),
                     "status": "blocked",
                     "valid": False,
                     "statusCode": 0,
@@ -245,7 +237,7 @@ def validate_advanced_hunting(
         runtime = run_advanced_hunting_query(query, _token=token)
         results.append(
             {
-                "detection": path.name,
+                "detection": path.relative_to(output).as_posix(),
                 "status": "passed" if runtime["ok"] else "failed",
                 "valid": runtime["ok"],
                 "statusCode": runtime["statusCode"],
@@ -283,7 +275,7 @@ def record_runtime_validation(
         )
     root = Path(solution).expanduser().resolve()
     output = root / "XDR Detections"
-    expected = {path.name for path in _detection_files(output)}
+    expected = {path.relative_to(output).as_posix() for path in _detection_files(output)}
     raw = json.loads(Path(results_path).expanduser().read_text(encoding="utf-8"))
     entries = raw.get("results") if isinstance(raw, dict) else raw
     if not isinstance(entries, list):
@@ -297,6 +289,7 @@ def record_runtime_validation(
         detection = str(entry.get("detection") or "").strip()
         if not detection:
             raise ValueError("each runtime result requires a detection filename")
+        detection = detection.replace("\\", "/")
         if detection in names:
             raise ValueError(f"duplicate runtime result for {detection}")
         names.add(detection)

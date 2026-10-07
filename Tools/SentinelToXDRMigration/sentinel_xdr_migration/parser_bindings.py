@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import yaml
+from .content_paths import yaml_files
 
 
 KQL_HELPER = Path(__file__).resolve().parents[1] / "kql" / "rename-parser-bindings.cjs"
@@ -14,7 +15,7 @@ KQL_HELPER = Path(__file__).resolve().parents[1] / "kql" / "rename-parser-bindin
 def solution_parser_names(solution: Path) -> list[str]:
     names: set[str] = set()
     root = solution / "Parsers"
-    for path in sorted([*root.rglob("*.yaml"), *root.rglob("*.yml")]):
+    for path in yaml_files(root):
         document = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
         if not isinstance(document, dict):
             raise ValueError(f"parser must contain a YAML object: {path}")

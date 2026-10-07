@@ -31,7 +31,10 @@ param (
     [string]$VersionMode = "catalog",
     [Parameter(ParameterSetName = "Local")]
     [ValidateSet("none", "patch", "minor", "major")]
-    [string]$VersionBump = "patch"
+    [string]$VersionBump = "patch",
+    [Parameter(ParameterSetName = "Local")]
+    [Parameter(ParameterSetName = "Pipeline")]
+    [switch]$SkipAttributionLookup
 )
 
 if ($PSCmdlet.ParameterSetName -eq "Local") {
@@ -43,7 +46,8 @@ if ($PSCmdlet.ParameterSetName -eq "Local") {
         -EntryPointName "V3.1" `
         -DefaultInputPath (Join-Path $PSScriptRoot "input") `
         -IncludeXdrDetections $true `
-        -EnforceV31Versions $true
+        -EnforceV31Versions $true `
+        -SkipAttributionLookup:$SkipAttributionLookup
     return
 }
 
@@ -75,6 +79,7 @@ try {
 
     foreach ($inputFile in Get-ChildItem $path) {
         $contentToImport = $pipelineDataFileRawContent
+        Assert-NoOperationalContent -Content $contentToImport
         $basePath = Join-Path -Path $pipelineBasePath -ChildPath "Solutions/$pipelineSolutionName/"
         $solutionName = $pipelineSolutionName
         $baseMetadata = $pipelineDataFileRawContent
@@ -336,7 +341,7 @@ try {
         updateDescriptionCount $global:customConnectorsList.Count                      "**Custom Azure Logic Apps Connectors:** "  "{{LogicAppCustomConnectorCount}}"  $(checkResourceCounts @($global:playbookCounter))
         updateDescriptionCount $global:functionAppList.Count                           "**Function Apps:** "                       "{{FunctionAppsCount}}"             $(checkResourceCounts @($global:playbookCounter))
         updateDescriptionCount ($global:playbookCounter - $global:customConnectorsList.Count - $global:functionAppList.Count)  "**Playbooks:** "  "{{PlaybookCount}}"  $false
-        GeneratePackage -solutionName $solutionName -contentToImport $contentToImport -calculatedBuildPipelinePackageVersion $calculatedPackageVersion -IncludeXdrDetections $true -SolutionMetadataPath (Join-Path $solutionFolderBasePath 'SolutionMetadata.json')
+        GeneratePackage -solutionName $solutionName -contentToImport $contentToImport -calculatedBuildPipelinePackageVersion $calculatedPackageVersion -IncludeXdrDetections $true -SolutionMetadataPath (Join-Path $solutionFolderBasePath 'SolutionMetadata.json') -SkipAttributionLookup:$SkipAttributionLookup
         Write-Host "Package Generated Successfully!!"
         $solutionFolderBasePath = Join-Path $pipelineBasePath "Solutions/$pipelineSolutionName"
         CheckJsonIsValid $solutionFolderBasePath

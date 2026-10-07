@@ -14,6 +14,8 @@ from .converter import (
     runtime_validation_plan,
     validate_solution,
 )
+from .artifacts import migrate_reports, select_run, reset_run_selection, list_runs
+from .evidence import export_evidence
 from .onboarding import configure_workspace, doctor, setup
 from .packaging import package_solution_v3_1
 from .deployment import deploy_solution, setup_deployment_authentication
@@ -75,6 +77,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Convert Microsoft Sentinel analytic rules into XDR Custom Detection YAML."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    migration = subparsers.add_parser("migrate-reports", help="Plan a non-destructive copy of legacy reports into solution Logs.")
+    migration.add_argument("--solution", required=True)
+    migration.add_argument("--apply", action="store_true", help="Copy after reviewing the dry-run; originals are preserved.")
+    evidence = subparsers.add_parser("export-evidence", help="Explicitly export immutable, curated local PR evidence; no cloud writes.")
+    evidence.add_argument("--solution", required=True)
     for command in (
         "inspect",
         "convert",
@@ -87,6 +94,10 @@ def main(argv: list[str] | None = None) -> int:
         if command == "convert":
             subparser.add_argument("--overwrite", action="store_true")
             subparser.add_argument("--config")
+            subparser.add_argument(
+                "--rule-id", action="append",
+                help="Convert exactly one source template GUID; does not establish solution readiness.",
+            )
     setup_parser = subparsers.add_parser(
         "setup", help="Initialize the toolkit and optionally launch guided authentication."
     )
@@ -276,12 +287,33 @@ def main(argv: list[str] | None = None) -> int:
         help="Evidence path or reference; repeat for multiple values.",
     )
 
+    runs_parser = subparsers.add_parser("workflow-runs", help="List run IDs without selecting or modifying state.")
+    runs_parser.add_argument("--solution", required=True)
+    for subparser in subparsers.choices.values():
+        if any(action.dest == "solution" for action in subparser._actions):
+            subparser.add_argument("--run-id", help="Select an existing run; required when multiple runs exist.")
+    subparsers.choices["workflow-init"].add_argument(
+        "--new-run", action="store_true", help="Create an isolated new workflow instead of resuming."
+    )
     args = parser.parse_args(argv)
-    tool_root = Path(__file__).resolve().parents[1]
-    configure_logging(tool_root)
-
+    if args.command == "convert" and args.rule_id and len(args.rule_id) != 1:
+        parser.error("--rule-id accepts exactly one GUID; repeated selectors are not supported")
+    selection = None
     try:
-        if args.command == "setup":
+        if getattr(args, "solution", None):
+            selection = select_run(args.solution, args.run_id)
+        # Read-only status and migration planning must not initialize or change artifacts.
+        if args.command not in {"migrate-reports", "workflow-status", "workflow-next", "workflow-init", "workflow-runs", "export-evidence"} and not (
+            args.command == "convert" and args.rule_id
+        ):
+            configure_logging(getattr(args, "solution", None))
+        if args.command == "workflow-runs":
+            result = {"runs": list_runs(args.solution)}
+        elif args.command == "export-evidence":
+            result = export_evidence(args.solution)
+        elif args.command == "migrate-reports":
+            result = migrate_reports(args.solution, apply=args.apply)
+        elif args.command == "setup":
             result = setup(
                 interactive=not args.non_interactive,
                 tenant_id=args.tenant_id,
@@ -359,8 +391,11 @@ def main(argv: list[str] | None = None) -> int:
             result = inspect_solution(args.solution)
         elif args.command == "convert":
             result = convert_solution(
-                args.solution, overwrite=args.overwrite, config_path=args.config
+                args.solution, overwrite=args.overwrite, config_path=args.config,
+                rule_id=args.rule_id[0] if args.rule_id else None,
             )
+            if args.rule_id:
+                configure_logging(args.solution)
         elif args.command == "validate":
             result = validate_solution(args.solution)
         elif args.command == "validate-advanced-hunting":
@@ -393,6 +428,7 @@ def main(argv: list[str] | None = None) -> int:
                 workspace_customer_id=args.workspace_customer_id,
                 version_bump=args.version_bump,
                 workflow_profile=args.workflow_profile,
+                new_run=args.new_run,
             )
         elif args.command == "workflow-status":
             result = workflow_status(args.solution)
@@ -414,6 +450,9 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, RuntimeError, ValueError, yaml.YAMLError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    finally:
+        if selection is not None:
+            reset_run_selection(selection)
 
     _print(result)
     if args.command == "validate" and result["invalid"]:

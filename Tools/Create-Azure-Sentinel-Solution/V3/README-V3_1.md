@@ -44,7 +44,21 @@ package automation calls it through:
 .script\package-automation\package-generator.ps1
 ```
 
-The positional pipeline parameter contract is unchanged.
+The 12 positional pipeline parameters (positions 0–11) are unchanged.
+The optional named `-SkipAttributionLookup` switch is available in both local
+and pipeline parameter sets. For CI callers that do not forward optional
+arguments, set `SENTINEL_SKIP_ATTRIBUTION_LOOKUP=1` in the process environment.
+
+## Operational and PR evidence exclusions
+
+Solution content references must not include `Logs`, `Reports`, or `Evidence`
+path components (case-insensitive, either slash separator). Local V3/V3.1 and
+the V3.1 pipeline reject these references before processing content, including
+legacy string-encoded content lists. The ZIP writer uses only
+`mainTemplate.json` and `createUiDefinition.json`, never solution-directory
+recursion. The migration CLI additionally checks ZIP entries for these folders.
+Optional curated `Evidence/<run-id>` snapshots are PR review material, not
+Marketplace content or resumable operational state.
 
 ## Content-count summary
 
@@ -62,6 +76,16 @@ and the API/schema kind remains `CustomDetection`. Legacy V3 and
 `pipeline/createSolutionV4.ps1` descriptions are unchanged.
 
 ## Release-version bounds (V3.1 only)
+
+Sentinel-derived Custom Detections use the full originating analytic rule template
+GUID as `properties.id`, exactly equal to `contentProvenance.source.id`. Packaging
+checks this when provenance declares Microsoft Sentinel / AnalyticsRule or the
+`sentinel-to-xdr-migration` converter; unrelated Custom Detection identity
+contracts are unchanged. Legacy generated name IDs require reviewed, explicit
+reconversion with `--overwrite`, not an automatic packaging rewrite. This changes
+local artifacts only; reconcile previously deployed identities before any new
+deployment. Both install and registration templates retain the existing
+`[if(true(), '<GUID>', '<GUID>')]` wrapper around the inner detection ID.
 
 V3.1 applies these hard guards in local, catalog, and positional pipeline modes:
 
@@ -140,11 +164,59 @@ language-version-1 template with a resources array; functional XDR deployments
 retain their nested language-version-2 templates. The marker is added after
 metadata resource filtering and is included in mainTemplate.json and the ZIP.
 
-If `trackingId` is absent, null, or blank, packaging continues without a marker.
-For nested XDR packages it emits a prominent warning: Partner Center cannot
-automatically add tracking when deployments are used for functional purposes.
-Obtain the ID, add `trackingId`, and rebuild. This is a **missing attribution**
-warning, not a claim that Marketplace will necessarily reject the upload.
+If `trackingId` is absent, null, or blank, V3.1 automatically attempts to recover
+it from the **published Marketplace template**:
+
+1. An anonymous public GET to `https://catalogapi.azure.com/offers?api-version=2018-08-01-beta`
+   filters on exact `publisherId` and `offerId` from the authoritative metadata.
+   Exactly one matching offer and one applicable plan are required.
+2. The plan must contain exactly one artifact with type `Template`, name
+   `DefaultTemplate`, and one HTTPS URI. The packager downloads that JSON with
+   another anonymous GET. This is **not the authenticated Partner Center API**;
+   no Azure/Graph tokens, credentials, or interactive authentication are used.
+3. The published ARM document must contain exactly one literal root `pid-`
+   deployment with a valid complete ID and an unconditional, empty inline
+   template (`resources: []`). Functional wrappers, linked templates, conditional
+   markers, malformed documents and ambiguous markers are rejected. Root
+   `resources` arrays and language-version-2 symbolic resource objects are
+   supported; symbolic keys are not interpreted as deployment names.
+4. After content/version preparation and before package output, the exact ID is
+   persisted into the same `SolutionMetadata.json`, then emitted using the
+   packager's current `2025-04-01` marker shape (not the published API version).
+   Only the root JSON value is edited; other bytes, nested fields, Unicode,
+   UTF-8 BOM and newline formatting are preserved. A same-directory atomic
+   replacement checks the original snapshot for concurrent edits. A local
+   read/write/conflict failure is a **hard error**, never a successful cache.
+   Subsequent runs use the saved ID without lookup; local version bump saving
+   rereads metadata and retains the ID.
+
+An existing nonblank ID always wins and is validated without network access.
+There is no fallback to `ocpSolutionId`, a catalog ID, GUID synthesis, or an
+assumption that `offerId` equals `planId`. No plan-selection metadata field is
+introduced: multiple applicable plans require manual review and an explicit ID.
+Version catalog lookup and `GetPackageVersion` behavior are unchanged.
+
+Attribution requests use a 20-second request/connection timeout and, on
+PowerShell 7.4+, an explicit 20-second stalled-read timeout, with no retries or
+redirects (continuous downloads are not capped at 20 seconds).
+HTTP status, timeout, network/read, JSON, selection and marker failures produce
+classified `CUSTOMER USAGE ATTRIBUTION:` warnings and continue **without**
+attribution or metadata changes. A successful lookup logs publisher, offer,
+plan ID, template URL (without query credentials), tracking ID and updated path
+as `CUSTOMER USAGE ATTRIBUTION SOURCE:`. It is not reported as a warning.
+
+For offline attribution, use `-SkipAttributionLookup` or set
+`SENTINEL_SKIP_ATTRIBUTION_LOOKUP=1`; explicit IDs still emit markers. Use
+`-VersionMode local` as well to avoid the **independent** version-catalog lookup.
+These controls do not disable other packaging prerequisites or validators.
+The migration CLI inherits the same environment control, so no redundant CLI
+flag is required. Its packaging report preserves lookup failures in `warnings`
+and successful source messages in `attributionSources`.
+
+If no ID is available, nested XDR packaging still warns that Partner Center
+cannot automatically add tracking for functional nested deployments.
+Obtain the ID from offer > plan > Technical configuration, add `trackingId`,
+and rebuild. Missing attribution does not imply Marketplace upload rejection.
 See [Microsoft Marketplace Azure apps customer usage attribution](https://learn.microsoft.com/partner-center/marketplace-offers/azure-partner-customer-usage-attribution#microsoft-marketplace-azure-apps).
 
 The migration CLI uses `package-v3-1` and writes `packaging.v3_1.json` with
@@ -161,7 +233,13 @@ PYTHONPATH=Tools/SentinelToXDRMigration:Tools/SentinelToXDRMigration/tests pytho
 
 The attribution tests exercise both local and positional pipeline entry points
 with isolated synthetic solutions, verify generated JSON and ZIP contents, and
-cover missing/invalid IDs and nested XDR preservation. They stub the unrelated
+cover missing/invalid IDs and nested XDR preservation. Catalog/template requests
+are mocked; default test subprocesses disable lookup, so unit tests never depend
+on live Marketplace availability or mutate real solution metadata. Cases include
+automatic persistence/replay, explicit overrides, ambiguous identities/plans/
+markers, remote failures, offline controls, byte preservation, local write
+failures/concurrent edits and cached-ID retention during version bumps.
+They stub the unrelated
 full repository validators and isolate repository-root resolution. They do not
 build existing solution packages, deploy to Azure, or prove Marketplace upload
 acceptance. Version tests also cover boundaries, catalog-result guards, effective

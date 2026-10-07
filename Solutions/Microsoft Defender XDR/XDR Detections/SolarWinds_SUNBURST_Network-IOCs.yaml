@@ -1,0 +1,90 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: ce1e7025-866c-41f3-9b08-ec170e05e73e
+    path: Analytic Rules/SolarWinds_SUNBURST_Network-IOCs.yaml
+    version: 1.0.5
+    querySha256: e174355855c3b7d089f0b5f4e8aa00d528ccb6c6196d0eb3bf458547f8b226f2
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 1d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Account.FullName to a documented Custom Detection field; this source identifier is not represented
+    - 'converter cannot map FileHash.Algorithm/Value: requires a query-proven constant SHA1 or SHA256 algorithm and an available
+      hash value column; MD5, unknown algorithms and linked file/process references are not inferred'
+    - multiple source tactics were resolved by the configured per-rule override
+    - Local detection ID changed from 'xdr-sunburst-network-beacons-ce1e7025' to originating Sentinel template ID 'ce1e7025-866c-41f3-9b08-ec170e05e73e'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Execution
+    - Persistence
+    - InitialAccess
+    originalTechniques:
+    - T1195
+    - T1059
+    - T1546
+    identityChange:
+      previousId: xdr-sunburst-network-beacons-ce1e7025
+      currentId: ce1e7025-866c-41f3-9b08-ec170e05e73e
+      scope: local-artifact-only
+properties:
+  id: ce1e7025-866c-41f3-9b08-ec170e05e73e
+  displayName: SUNBURST network beacons
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let SunburstURL=dynamic(["panhardware.com","databasegalore.com","avsvmcloud.com","freescanonline.com","thedoccloud.com","deftsecurity.com"]);
+      DeviceNetworkEvents
+      | where ActionType == "ConnectionSuccess"
+      | where RemoteUrl in(SunburstURL)
+      | extend HashAlgorithm = 'MD5'
+      | extend HostName = tostring(split(DeviceName, ".")[0]), DomainIndex = toint(indexof(DeviceName, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(DeviceName, DomainIndex + 1), DeviceName)
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: SUNBURST network beacons
+      description: |-
+        Identifies SolarWinds SUNBURST domain beacon IOCs in DeviceNetworkEvents
+        References:
+        - https://www.fireeye.com/blog/threat-research/2020/12/evasive-attacker-leverages-solarwinds-supply-chain-compromises-with-sunburst-backdoor.html
+        - https://gist.github.com/olafhartong/71ffdd4cab4b6acd5cbcd1a0691ff82f
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+        accounts:
+        - id: account1
+          nameColumn: InitiatingProcessAccountName
+          upnSuffixColumn: InitiatingProcessAccountDomain
+        ips:
+        - id: ip1
+          addressColumn: RemoteIP
+        urls:
+        - id: url1
+          addressColumn: RemoteUrl
+      tactics:
+      - tactic: CommandAndControl

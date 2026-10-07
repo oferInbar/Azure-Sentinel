@@ -77,7 +77,7 @@ Run from the Azure-Sentinel repository root:
 
 ```powershell
 python Tools\SolutionMigration\ingest_to_dcr.py `
-  --target-context "Reports\<solution>\sentinel-xdr-migration\qualification-target.json" `
+  --target-context "Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\qualification-target.json" `
   --stream "<Custom-StreamName_CL>" `
   --solution "<solution-name-or-folder>" `
   --discover-only `
@@ -135,7 +135,7 @@ package defines the exact table schema, add a fourth action:
 
    ```powershell
    python Tools\SolutionMigration\ingest_to_dcr.py `
-     --target-context "Reports\<solution>\sentinel-xdr-migration\qualification-target.json" `
+     --target-context "Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\qualification-target.json" `
      --stream "<Custom-StreamName_CL>" `
      --solution "<solution-name-or-folder>" `
      --deploy-missing-table `
@@ -298,7 +298,7 @@ Only after approval, run:
 
 ```powershell
 python Tools\SolutionMigration\ingest_to_dcr.py `
-  --target-context "Reports\<solution>\sentinel-xdr-migration\qualification-target.json" `
+  --target-context "Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\qualification-target.json" `
   --stream "<Custom-StreamName_CL>" `
   --solution "<solution-folder>" `
   --rule-id "<rule-id>" `
@@ -323,7 +323,7 @@ When the default fixture is not present, use the folder supplied by the user:
 
 ```powershell
 python Tools\SolutionMigration\ingest_to_dcr.py `
-  --target-context "Reports\<solution>\sentinel-xdr-migration\qualification-target.json" `
+  --target-context "Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\qualification-target.json" `
   --stream "<Custom-StreamName_CL>" `
   --solution "<solution-folder>" `
   --rule-id "<rule-id>" `
@@ -344,7 +344,7 @@ After Azure accepts the payload:
 5. If alert validation was approved, verify alert creation separately.
 6. Perform and verify the stated cleanup.
 
-Store evidence under the migration run's versioned `Reports` directory. Mark
+Store evidence under the solution's ignored migration `Logs` directory. Mark
 results as `accepted`, `visible`, `query-matched`, and `alert-created`
 independently; never collapse them into a single success status.
 
@@ -354,5 +354,5 @@ receipts, query results, parity captures, cleanup evidence, JSON, and HTML
 artifacts under:
 
 ```text
-Reports\<solution>\<version>\<run-id>\
+Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\<version>\
 ```

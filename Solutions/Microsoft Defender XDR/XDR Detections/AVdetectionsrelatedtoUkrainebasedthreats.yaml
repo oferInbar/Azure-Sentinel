@@ -1,0 +1,72 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: b6685757-3ed1-4b05-a5bd-2cacadc86c2a
+    path: Analytic Rules/AVdetectionsrelatedtoUkrainebasedthreats.yaml
+    version: 1.1.3
+    querySha256: 1e8d86dddd8ffdd9be3060f36e53f09d9d94ba2db36daa44c8a6d7f1f2e9a8f8
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 1d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-av-detections-related-to-ukraine-threats-b6685757' to originating Sentinel template
+      ID 'b6685757-3ed1-4b05-a5bd-2cacadc86c2a'. No cloud rules were updated, deleted, or migrated. Review existing deployed
+      rules and reconcile their identities before any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Impact
+    originalTechniques:
+    - T1485
+    identityChange:
+      previousId: xdr-av-detections-related-to-ukraine-threats-b6685757
+      currentId: b6685757-3ed1-4b05-a5bd-2cacadc86c2a
+      scope: local-artifact-only
+properties:
+  id: b6685757-3ed1-4b05-a5bd-2cacadc86c2a
+  displayName: AV detections related to Ukraine threats
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let UA_threats = dynamic(["FoxBlade", "WhisperGate", "Lasainraw", "SonicVote", "CaddyWiper", "AprilAxe", "FiberLake", "Industroyer", "DesertBlade"]);
+      SecurityAlert
+      | where ProviderName =~ "MDATP"
+      | extend ThreatFamilyName = tostring(parse_json(ExtendedProperties).ThreatFamilyName)
+      | where ThreatFamilyName in~ (UA_threats)
+      | extend HostName = tostring(split(CompromisedEntity, ".")[0]), DomainIndex = toint(indexof(CompromisedEntity, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(CompromisedEntity, DomainIndex + 1), CompromisedEntity)
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: AV detections related to Ukraine threats
+      description: |-
+        'This query looks for Microsoft Defender AV detections for malware observed in relation to the war in Ukraine.
+          Ref: https://msrc-blog.microsoft.com/2022/02/28/analysis-resources-cyber-threat-activity-ukraine/ '
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+      tactics:
+      - tactic: Impact
+        techniques:
+        - technique: T1485

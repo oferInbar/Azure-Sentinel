@@ -1,0 +1,131 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 6c3a1258-bcdd-4fcd-b753-1a9bc826ce12
+    path: Analytic Rules/PossiblePhishingwithCSL&NetworkSession.yaml
+    version: 1.1.2
+    querySha256: 56f0be8495bf066a535a7c4f22faa4a9b682f8b9fc9adf6aae732af8e9448dc9
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 1d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation
+    - 'Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Account.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Account.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - multiple source tactics were resolved by the configured per-rule override
+    - Local detection ID changed from 'xdr-possible-phishing-with-csl-and-network-sessions-6c3a1258' to originating Sentinel
+      template ID '6c3a1258-bcdd-4fcd-b753-1a9bc826ce12'. No cloud rules were updated, deleted, or migrated. Review existing
+      deployed rules and reconcile their identities before any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - InitialAccess
+    - CommandAndControl
+    originalTechniques:
+    - T1566
+    - T1102
+    identityChange:
+      previousId: xdr-possible-phishing-with-csl-and-network-sessions-6c3a1258
+      currentId: 6c3a1258-bcdd-4fcd-b753-1a9bc826ce12
+      scope: local-artifact-only
+properties:
+  id: 6c3a1258-bcdd-4fcd-b753-1a9bc826ce12
+  displayName: Possible Phishing with CSL and Network Sessions
+  status: disabled
+  queryCondition:
+    queryText: |-
+      //SuspiciousUrlClicked
+      AlertEvidence
+      | where ServiceSource =~ "Microsoft Defender for Office 365"
+      | where EntityType =~ "Url"
+      | project AlertId, RemoteUrl
+      | join kind=inner (
+      AlertEvidence
+      | where ServiceSource =~ "Microsoft Defender for Office 365"
+      | where EntityType =~ "MailMessage"
+      | project AlertId, NetworkMessageId
+      )
+      on AlertId
+      | distinct RemoteUrl, NetworkMessageId
+      | join EmailEvents on NetworkMessageId
+      | distinct RemoteUrl, NetworkMessageId, RecipientEmailAddress, RecipientObjectId
+      | join kind = inner IdentityInfo on $left.RecipientObjectId  == $right.AccountObjectId
+      | distinct RemoteUrl, NetworkMessageId, RecipientEmailAddress , RecipientObjectId, AccountSID
+      | join kind = inner
+      (DeviceEvents
+      | where ActionType =~ "BrowserLaunchedToOpenUrl"| where isnotempty(RemoteUrl)
+      | project  UrlClickedByUserSid = RemoteUrl,
+      InitiatingProcessAccountSid, DeviceName, DeviceId, InitiatingProcessFileName,
+      InitiatingProcessAccountUpn, InitiatingProcessAccountName, InitiatingProcessAccountDomain
+      )
+      on $left.AccountSID == $right.InitiatingProcessAccountSid and $left.RemoteUrl == $right.UrlClickedByUserSid
+      | distinct  RemoteUrl, NetworkMessageId, RecipientEmailAddress, RecipientObjectId,
+       AccountSID, UrlClickedByUserSid, DeviceName, DeviceId, InitiatingProcessFileName,
+       InitiatingProcessAccountUpn, InitiatingProcessAccountName, InitiatingProcessAccountDomain
+      |  join kind=inner
+      (
+      //Suspicious url clicked found in common security logs
+      CommonSecurityLog
+      | project TimeGenerated, DeviceVendor, DeviceProduct, DeviceAction, DestinationDnsDomain, DestinationIP, RequestURL, SourceIP, SourceHostName, RequestClientApplication
+      ) on $left.RemoteUrl== $right.RequestURL
+      |  join kind=inner
+      (
+      //Find the relevant network sessions
+      _Im_NetworkSession
+      | where isnotempty(DstIpAddr)
+      | where not(ipv4_is_private(DstIpAddr))
+      | project TimeGenerated, SrcIpAddr, SrcPortNumber, DstIpAddr, DstPortNumber, DstBytes, SrcBytes
+      ) on  $left.DestinationIP == $right.DstIpAddr //The relevant network session being projected
+      | summarize count() by TimeGenerated, RecipientEmailAddress, UrlClickedByUserSid, InitiatingProcessAccountUpn, InitiatingProcessAccountName, InitiatingProcessAccountDomain,
+      DeviceName, InitiatingProcessFileName, DeviceProduct, DeviceAction, SourceIP, DestinationIP, RequestClientApplication
+      | extend HostName = tostring(split(DeviceName, ".")[0]), DomainIndex = toint(indexof(DeviceName, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(DeviceName, DomainIndex + 1), DeviceName)
+      | extend RecipientEmailName = tostring(split(RecipientEmailAddress,'@',0)[0]), RecipientEmailUPNSuffix = tostring(split(RecipientEmailAddress,'@',1)[0])
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: Possible Phishing with CSL and Network Sessions
+      description: "'This query looks for malicious URL clicks in phishing email recognized by MDO in correlation with CommonSecurityLogs(CSL)\
+        \ & NetworkSession events. \nIf your workspace doesnt have one of the many data sources required for ASIM it may give\
+        \ informational error which can be safely ignored.'"
+      severity: medium
+      entityMappings:
+        accounts:
+        - id: account1
+          nameColumn: InitiatingProcessAccountName
+          upnSuffixColumn: InitiatingProcessAccountDomain
+        - id: account2
+          nameColumn: RecipientEmailName
+          upnSuffixColumn: RecipientEmailUPNSuffix
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+        ips:
+        - id: ip1
+          addressColumn: SourceIP
+        - id: ip2
+          addressColumn: DestinationIP
+      tactics:
+      - tactic: InitialAccess
+        techniques:
+        - technique: T1566

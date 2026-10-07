@@ -93,6 +93,40 @@ class PackagingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not exist"):
             package_solution_v3_1(self.solution, version_bump="none")
 
+    def test_rejects_logs_as_detection_content(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        document = json.loads(data.read_text())
+        document["XDR Detections"] = ["Logs/sentinel-xdr-migration/config.yaml"]
+        data.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, "never include Logs"):
+            package_solution_v3_1(self.solution, version_bump="none")
+
+    def test_rejects_evidence_in_any_content_array(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        document = json.loads(data.read_text())
+        document["Playbooks"] = ["Evidence/run/evidence.json"]
+        data.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, "Evidence"):
+            package_solution_v3_1(self.solution, version_bump="none")
+
+    @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
+    @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
+    def test_rejects_evidence_in_marketplace_zip(self, run, which) -> None:
+        run.return_value = CompletedProcess([], 0, "Starting Package Creation using V3.1 tool", "")
+        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip", "a") as archive:
+            archive.writestr("eViDeNcE/run/evidence.json", "{}")
+        with self.assertRaisesRegex(RuntimeError, "Evidence"):
+            package_solution_v3_1(self.solution, version_bump="none")
+
+    @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
+    @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
+    def test_rejects_runtime_logs_in_marketplace_zip(self, run, which) -> None:
+        run.return_value = CompletedProcess([], 0, "Starting Package Creation using V3.1 tool", "")
+        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip", "a") as archive:
+            archive.writestr("Logs/sentinel-xdr-migration/workflow-state.json", "{}")
+        with self.assertRaisesRegex(RuntimeError, "must not contain Logs"):
+            package_solution_v3_1(self.solution, version_bump="none")
+
     @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
     @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
     def test_old_entry_point_output_is_not_relabelled(self, run, which) -> None:
@@ -123,6 +157,26 @@ class PackagingTests(unittest.TestCase):
         run.return_value = CompletedProcess([], 1, "", "Invalid trackingId")
         with self.assertRaisesRegex(RuntimeError, "Invalid trackingId"):
             package_solution_v3_1(self.solution, version_bump="none")
+
+    @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
+    @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
+    def test_attribution_source_is_reported_separately_from_warnings(self, run, which) -> None:
+        source = (
+            "CUSTOMER USAGE ATTRIBUTION SOURCE: publisherId=test; offerId=sentinel; "
+            "planId=plan; templateURL=https://catalogartifact.azureedge.net/publicartifacts/test.json; "
+            "trackingId=pid-test-partnercenter; updated metadata=SolutionMetadata.json"
+        )
+        run.return_value = CompletedProcess(
+            [], 0, f"Starting Package Creation using V3.1 tool\n{source}", ""
+        )
+        with mock.patch("sys.stderr") as stderr:
+            result = package_solution_v3_1(self.solution, version_bump="none")
+        self.assertEqual([], result["warnings"])
+        self.assertEqual([source], result["attributionSources"])
+        self.assertTrue(stderr.write.called)
+        self.assertEqual(
+            [source], json.loads(Path(result["packageReport"]).read_text())["attributionSources"]
+        )
 
 
 if __name__ == "__main__":

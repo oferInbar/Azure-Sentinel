@@ -90,7 +90,7 @@ detection. It:
 2. enables both through Azure Resource Manager and Microsoft Graph;
 3. ingests the payload through `azure-monitor-logs-ingestion`;
 4. writes
-   `Reports/<solution>/sentinel-xdr-migration/alert-parity-state.json`; and
+   `Solutions/<solution>/Logs/sentinel-xdr-migration/<run-id>/alert-parity-state.json`; and
 5. emits Sentinel and Advanced Hunting capture queries.
 
 ## Capture alerts

@@ -83,13 +83,6 @@ def referenced_custom_tables(query: str) -> set[str]:
     )
 
 
-def query_requires_timestamp(query: str) -> bool:
-    tables = referenced_catalog_tables(query)
-    return bool(tables & NATIVE_XDR_TABLES) and not bool(
-        tables & PASSTHROUGH_TABLES.keys()
-    )
-
-
 def query_has_mixed_time_semantics(query: str) -> bool:
     tables = referenced_catalog_tables(query)
     return bool(tables & NATIVE_XDR_TABLES) and bool(

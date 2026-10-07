@@ -1,0 +1,84 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: a3c144f9-8051-47d4-ac29-ffb0c312c910
+    path: Analytic Rules/SolarWinds_SUNBURST_&_SUPERNOVA_File-IOCs.yaml
+    version: 1.0.7
+    querySha256: 021c7309d7415367b2e02b31ce579a90406b1840a118b4b8424ffb8a65253e52
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 1d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Account.FullName to a documented Custom Detection field; this source identifier is not represented
+    - 'converter cannot map FileHash.Algorithm/Value: requires a query-proven constant SHA1 or SHA256 algorithm and an available
+      hash value column; MD5, unknown algorithms and linked file/process references are not inferred'
+    - multiple source tactics were resolved by the configured per-rule override
+    - Local detection ID changed from 'xdr-sunburst-and-supernova-backdoor-hashes-a3c144f9' to originating Sentinel template
+      ID 'a3c144f9-8051-47d4-ac29-ffb0c312c910'. No cloud rules were updated, deleted, or migrated. Review existing deployed
+      rules and reconcile their identities before any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Execution
+    - Persistence
+    - InitialAccess
+    originalTechniques:
+    - T1195
+    - T1059
+    - T1546
+    identityChange:
+      previousId: xdr-sunburst-and-supernova-backdoor-hashes-a3c144f9
+      currentId: a3c144f9-8051-47d4-ac29-ffb0c312c910
+      scope: local-artifact-only
+properties:
+  id: a3c144f9-8051-47d4-ac29-ffb0c312c910
+  displayName: SUNBURST and SUPERNOVA backdoor hashes
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let SunburstMD5=dynamic(["b91ce2fa41029f6955bff20079468448","02af7cec58b9a5da1c542b5a32151ba1","2c4a910a1299cdae2a4e55988a2f102e","846e27a652a5e1bfbd0ddd38a16dc865","4f2eb62fa529c0283b28d05ddd311fae"]);
+      let SupernovaMD5="56ceb6d0011d87b6e4d7023d7ef85676";
+      DeviceFileEvents
+      | where MD5 in(SunburstMD5) or MD5 in(SupernovaMD5)
+      | extend HashAlgorithm = "MD5"
+      | extend HostName = tostring(split(DeviceName, ".")[0]), DomainIndex = toint(indexof(DeviceName, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(DeviceName, DomainIndex + 1), DeviceName)
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: SUNBURST and SUPERNOVA backdoor hashes
+      description: |-
+        Identifies SolarWinds SUNBURST and SUPERNOVA backdoor file hash IOCs in DeviceFileEvents
+        References:
+        - https://www.fireeye.com/blog/threat-research/2020/12/evasive-attacker-leverages-solarwinds-supply-chain-compromises-with-sunburst-backdoor.html
+        - https://gist.github.com/olafhartong/71ffdd4cab4b6acd5cbcd1a0691ff82f
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+        accounts:
+        - id: account1
+          nameColumn: InitiatingProcessAccountName
+          upnSuffixColumn: InitiatingProcessAccountDomain
+      tactics:
+      - tactic: Persistence

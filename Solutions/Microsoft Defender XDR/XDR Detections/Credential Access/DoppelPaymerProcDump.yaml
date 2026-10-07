@@ -1,0 +1,76 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 1be34fb9-f81b-47ae-84fb-465e6686d76c
+    path: Analytic Rules/Credential Access/DoppelPaymerProcDump.yaml
+    version: 1.0.0
+    querySha256: 21647b6b3f61711899c466453001f0c9a4e903a05396622754734867e84b2002
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      lookbacks differ; an event-time filter alone does not configure the target ingestion lookback. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Local detection ID changed from 'xdr-dopplepaymer-procdump-1be34fb9' to originating Sentinel template ID '1be34fb9-f81b-47ae-84fb-465e6686d76c'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational:
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    errors: []
+    originalTactics:
+    - CredentialAccess
+    originalTechniques:
+    - T1003
+    identityChange:
+      previousId: xdr-dopplepaymer-procdump-1be34fb9
+      currentId: 1be34fb9-f81b-47ae-84fb-465e6686d76c
+      scope: local-artifact-only
+properties:
+  id: 1be34fb9-f81b-47ae-84fb-465e6686d76c
+  displayName: DopplePaymer Procdump
+  status: disabled
+  queryCondition:
+    queryText: |-
+      // Dumping of LSASS memory using procdump
+      DeviceProcessEvents
+      // Command lines that include "lsass" and -accepteula or -ma flags used in procdump
+      | where (ProcessCommandLine has "lsass" and (ProcessCommandLine has "-accepteula" or
+      ProcessCommandLine contains "-ma"))
+      // Omits possible FPs where the full command is just "procdump.exe lsass"
+      or (FileName in~ ('procdump.exe','procdump64.exe') and ProcessCommandLine has 'lsass')
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: DopplePaymer Procdump
+      description: |-
+        This query was originally published in the threat analytics report, Doppelpaymer: More human-operated ransomware. There is also a related blog.
+        DoppelPaymer is ransomware that is spread manually by human operators. These operators have exhibited extensive knowledge of system administration and common network security misconfigurations. For example, they use SysInternal utilities such as ProcDump to dump credentials from LSASS. They often use these stolen credentials to turn off security software, run malicious commands, and spread malware throughout an organization.
+        The following query detects
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: CredentialAccess
+        techniques:
+        - technique: T1003

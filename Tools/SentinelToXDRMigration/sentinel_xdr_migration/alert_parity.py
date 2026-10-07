@@ -15,8 +15,9 @@ from typing import Any
 
 import yaml
 
-from .artifacts import artifact_path, migrate_legacy_artifact
+from .artifacts import artifact_path, migrate_legacy_artifact, write_json_artifact
 from .converter import validate_document, xdr_detection_files
+from .content_paths import detection_reference
 from .deployment import DEPLOYMENT_ENDPOINT, _deployment_token, _graph_request
 from .target_context import require_locked_target
 
@@ -86,10 +87,13 @@ def _load_pairs(
 ) -> tuple[Path, list[dict[str, Any]]]:
     root = Path(solution).expanduser().resolve()
     output = root / "XDR Detections"
-    wanted = set(selected or [])
+    files = xdr_detection_files(output)
+    available = [path.relative_to(output).as_posix() for path in files]
+    wanted = {detection_reference(name, available) for name in selected or []}
     pairs: list[dict[str, Any]] = []
-    for path in xdr_detection_files(output):
-        if wanted and path.name not in wanted and path.stem not in wanted:
+    for path in files:
+        detection_name = path.relative_to(output).as_posix()
+        if wanted and detection_name not in wanted:
             continue
         document = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
         errors = validate_document(document)
@@ -97,12 +101,12 @@ def _load_pairs(
         if conversion.get("status") != "converted" or conversion.get("reviewRequired"):
             errors.append("detection must be converted with no review required")
         if errors:
-            raise ValueError(f"{path.name}: {'; '.join(errors)}")
+            raise ValueError(f"{detection_name}: {'; '.join(errors)}")
         source = (document.get("contentProvenance") or {}).get("source") or {}
         source_id = str(source.get("id") or "").strip()
         detection_id = str((document.get("properties") or {}).get("id") or "").strip()
         if not source_id or not detection_id:
-            raise ValueError(f"{path.name}: source and detection IDs are required")
+            raise ValueError(f"{detection_name}: source and detection IDs are required")
         alert = (
             ((document.get("properties") or {}).get("detectionAction") or {}).get(
                 "alertTemplate"
@@ -111,7 +115,7 @@ def _load_pairs(
         )
         pairs.append(
             {
-                "detection": path.name,
+                "detection": detection_name,
                 "displayName": str(
                     (document.get("properties") or {}).get("displayName") or path.stem
                 ),
@@ -120,13 +124,6 @@ def _load_pairs(
                 "entityMappings": alert.get("entityMappings") or {},
             }
         )
-    if wanted:
-        found = {pair["detection"] for pair in pairs} | {
-            Path(pair["detection"]).stem for pair in pairs
-        }
-        missing = sorted(wanted - found)
-        if missing:
-            raise ValueError(f"unknown detections: {', '.join(missing)}")
     if not pairs:
         raise ValueError(f"no converted detections selected under {output}")
     return root, pairs
@@ -413,7 +410,7 @@ def start_alert_parity(
         "payload": str(Path(payload).expanduser().resolve()),
         "rules": pairs,
     }
-    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    write_json_artifact(root, state_path, state)
 
     enabled: list[dict[str, Any]] = []
     try:
@@ -440,7 +437,7 @@ def start_alert_parity(
             }
             for pair in pairs
         ]
-        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        write_json_artifact(root, state_path, state)
         return {
             "status": state["status"],
             "runId": state["runId"],
@@ -450,7 +447,7 @@ def start_alert_parity(
             "capturePlan": state["capturePlan"],
             "nextCommand": (
                 "sentinel-xdr-migration complete-alert-parity "
-                f'--solution "{root}" --results "<normalized-results.json>"'
+                f'--solution "{root}" --run-id "{state_path.parent.name}" --results "<normalized-results.json>"'
             ),
         }
     except Exception:
@@ -461,7 +458,7 @@ def start_alert_parity(
             graph_token=graph_token,
             state_dir=state_dir,
         )
-        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        write_json_artifact(root, state_path, state)
         raise
 
 
@@ -485,15 +482,12 @@ def start_alert_parity_batch(
 
     root, pairs = _load_pairs(solution)
     pairs_by_name = {pair["detection"]: pair for pair in pairs}
-    pairs_by_stem = {Path(pair["detection"]).stem: pair for pair in pairs}
     fixture_by_detection: dict[str, dict[str, Any]] = {}
     for fixture in fixtures:
         if not isinstance(fixture, dict):
             raise ValueError("each batch parity fixture must be an object")
         requested = str(fixture.get("detection") or "").strip()
-        pair = pairs_by_name.get(requested) or pairs_by_stem.get(requested)
-        if pair is None:
-            raise ValueError(f"unknown detection in batch parity plan: {requested}")
+        pair = pairs_by_name[detection_reference(requested, list(pairs_by_name))]
         detection = pair["detection"]
         if detection in fixture_by_detection:
             raise ValueError(f"duplicate batch parity fixture: {detection}")
@@ -559,7 +553,7 @@ def start_alert_parity_batch(
         },
         "rules": pairs,
     }
-    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    write_json_artifact(root, state_path, state)
 
     try:
         for pair in pairs:
@@ -602,7 +596,7 @@ def start_alert_parity_batch(
             }
             for pair in pairs
         ]
-        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        write_json_artifact(root, state_path, state)
         return {
             "status": state["status"],
             "runId": state["runId"],
@@ -613,7 +607,7 @@ def start_alert_parity_batch(
             "capturePlan": state["capturePlan"],
             "nextCommand": (
                 "sentinel-xdr-migration complete-alert-parity "
-                f'--solution "{root}" --results "<normalized-results.json>"'
+                f'--solution "{root}" --run-id "{state_path.parent.name}" --results "<normalized-results.json>"'
             ),
         }
     except Exception:
@@ -624,7 +618,7 @@ def start_alert_parity_batch(
             graph_token=graph_token,
             state_dir=state_dir,
         )
-        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        write_json_artifact(root, state_path, state)
         raise
 
 
@@ -805,12 +799,12 @@ def complete_alert_parity(
     }
     report_path = artifact_path(root, REPORT_FILE_NAME, create_parent=True)
     report["reportPath"] = str(report_path)
-    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    write_json_artifact(root, report_path, report)
     state["status"] = "completed" if passed else "failed"
     state["completedAt"] = report["completedAt"]
     state["reportPath"] = str(report_path)
     state["cleanup"] = cleanup
-    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    write_json_artifact(root, state_path, state)
     return report
 
 
@@ -832,7 +826,7 @@ def abort_alert_parity(
     state["status"] = "aborted" if success else "cleanup-failed"
     state["abortedAt"] = _utc_now()
     state["cleanup"] = cleanup
-    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    write_json_artifact(root, state_path, state)
     return {
         "status": state["status"],
         "runId": state["runId"],

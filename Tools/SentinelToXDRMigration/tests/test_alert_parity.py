@@ -221,7 +221,7 @@ class AlertParityTests(unittest.TestCase):
                 "target": TARGET,
                 "rules": [{"detection": "Rule.yaml"}],
             }
-            (output / "alert-parity-state.json").write_text(
+            artifact_path(root, "alert-parity-state.json", create_parent=True).write_text(
                 json.dumps(state), encoding="utf-8"
             )
             results = root / "results.json"

@@ -1,0 +1,73 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 7d0d3050-8dac-4b83-bfae-902f7dc0c21c
+    path: Analytic Rules/Ransomware/LaZagneCredTheft.yaml
+    version: 1.0.0
+    querySha256: 9161e3a49d4d8ab46fd96bd42c91b95cac6d0bdd520a93da170a607200b4aa3e
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      lookbacks differ; an event-time filter alone does not configure the target ingestion lookback. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Process.ProcessId to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.CommandLine to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-lazagne-credential-theft-7d0d3050' to originating Sentinel template ID '7d0d3050-8dac-4b83-bfae-902f7dc0c21c'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational:
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    errors: []
+    originalTactics:
+    - CredentialAccess
+    originalTechniques:
+    - T1003
+    identityChange:
+      previousId: xdr-lazagne-credential-theft-7d0d3050
+      currentId: 7d0d3050-8dac-4b83-bfae-902f7dc0c21c
+      scope: local-artifact-only
+properties:
+  id: 7d0d3050-8dac-4b83-bfae-902f7dc0c21c
+  displayName: LaZagne Credential Theft
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents
+      | where FileName =~ 'reg.exe'
+      | where ProcessCommandLine has_all('save','hklm','sam')
+      | project DeviceId, DeviceName, Timestamp, InitiatingProcessId, InitiatingProcessFileName, ProcessId, FileName, ProcessCommandLine
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: LaZagne Credential Theft
+      description: LaZagne is a popular open-source tool used to recover passwords stored on a local computer. It has been
+        used in ransomware attacks to steal credentials and escalate privileges. This query looks for the execution of LaZagne.
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: CredentialAccess
+        techniques:
+        - technique: T1003

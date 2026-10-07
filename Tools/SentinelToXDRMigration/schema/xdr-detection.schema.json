@@ -2,6 +2,71 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Azure/Azure-Sentinel/Tools/SentinelToXDRMigration/schema/xdr-detection.schema.json",
   "title": "Defender XDR Custom Detection source",
+  "$defs": {
+    "sentinelTemplateId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["contentProvenance"],
+        "properties": {
+          "contentProvenance": {
+            "anyOf": [
+              {
+                "required": ["source"],
+                "properties": {
+                  "source": {
+                    "required": ["platform", "kind"],
+                    "properties": {
+                      "platform": {"const": "Microsoft Sentinel"},
+                      "kind": {"const": "AnalyticsRule"}
+                    }
+                  }
+                }
+              },
+              {
+                "required": ["conversion"],
+                "properties": {
+                  "conversion": {
+                    "required": ["tool"],
+                    "properties": {
+                      "tool": {"const": "sentinel-to-xdr-migration"}
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "contentProvenance": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "id": {"$ref": "#/$defs/sentinelTemplateId"}
+                }
+              }
+            }
+          },
+          "properties": {
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/sentinelTemplateId",
+                "description": "Exact originating Sentinel template GUID, equal to contentProvenance.source.id. Cross-field equality is enforced by structural validation and packaging."
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "type": "object",
   "required": [
     "schemaVersion",
@@ -31,6 +96,22 @@
       "type": "string",
       "minLength": 1
     },
+    "requiredDataConnectors": {
+      "description": "Source authoring dependencies preserved unchanged, not Graph or ARM detection-rule properties. Omitted when absent in the source; an explicit empty array is preserved.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["connectorId", "dataTypes"],
+        "properties": {
+          "connectorId": {"type": "string"},
+          "dataTypes": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "additionalProperties": true
+      }
+    },
     "contentProvenance": {
       "type": "object",
       "required": [
@@ -51,6 +132,25 @@
         },
         "conversion": {
           "type": "object",
+          "properties": {
+            "identityChange": {
+              "description": "Persisted local-only legacy ID transition; not evidence of deployed rule migration.",
+              "type": "object",
+              "required": ["previousId", "currentId", "scope"],
+              "properties": {
+                "previousId": {"type": "string"},
+                "currentId": {"$ref": "#/$defs/sentinelTemplateId"},
+                "scope": {"const": "local-artifact-only"}
+              }
+            },
+            "informational": {
+              "description": "Nonblocking explanations of proven preserved equivalents; never review reasons or errors.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
           "required": [
             "tool",
             "version",

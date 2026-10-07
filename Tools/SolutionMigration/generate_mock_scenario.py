@@ -92,6 +92,22 @@ def _detection_source_id(document: dict) -> str:
     return str(source.get("id") or "")
 
 
+def _content_yaml_files(folder: Path) -> List[Path]:
+    if folder.is_symlink():
+        raise ScenarioError(f"Symlink content paths are not supported: {folder}")
+    files = []
+    for path in folder.rglob("*"):
+        if any(part.lower() in {"logs", "reports"} for part in path.relative_to(folder).parts):
+            continue
+        if path.is_symlink():
+            raise ScenarioError(f"Symlink content paths are not supported: {path}")
+        if path.is_file() and path.suffix.lower() in {".yaml", ".yml"}:
+            if not path.resolve().is_relative_to(folder.resolve()):
+                raise ScenarioError(f"Content path escapes its root: {path}")
+            files.append(path)
+    return sorted(files, key=lambda path: path.relative_to(folder).as_posix())
+
+
 def find_analytic_rule(solution: str, selector: str) -> Tuple[Path, dict]:
     solution_root = REPOSITORY_ROOT / "Solutions" / solution
     supplied = Path(selector)
@@ -103,13 +119,15 @@ def find_analytic_rule(solution: str, selector: str) -> Tuple[Path, dict]:
         folder = solution_root / folder_name
         if not folder.is_dir():
             continue
-        for path in sorted(folder.glob("*.y*ml")):
+        for path in _content_yaml_files(folder):
             rule = _load_yaml(path)
             if (
                 selector == str(rule.get("id"))
                 or selector == str(rule.get("name"))
                 or selector == path.name
                 or selector == path.stem
+                or selector.replace("\\", "/") == path.relative_to(folder).as_posix()
+                or selector.replace("\\", "/") == path.relative_to(solution_root).as_posix()
             ):
                 candidates.append((path, rule))
     if not candidates:
@@ -140,7 +158,9 @@ def find_custom_detection(
     source_id = str(source_rule.get("id") or "")
     source_name = str(source_rule.get("name") or "")
     matches: List[Tuple[Path, dict]] = []
-    for path in sorted(folder.glob("*.yaml")):
+    for path in _content_yaml_files(folder):
+        if path.name.lower() in {"migration-config.yaml", "migration-config.yml"}:
+            continue
         detection = _load_yaml(path)
         identifiers = {
             _detection_source_id(detection),
@@ -148,9 +168,11 @@ def find_custom_detection(
             str(_detection_property(detection, "name") or ""),
             path.name,
             path.stem,
+            path.relative_to(folder).as_posix(),
+            path.relative_to(folder.parent).as_posix(),
         }
-        wanted = selector or source_id or source_name
-        if wanted in identifiers or source_id in identifiers or source_name in identifiers:
+        wanted = selector.replace("\\", "/") if selector else source_id or source_name
+        if wanted in identifiers:
             matches.append((path, detection))
     if not matches:
         raise ScenarioError(
@@ -236,7 +258,7 @@ def load_solution_contract(solution: str) -> dict:
     parsers: Dict[str, str] = {}
     parser_root = solution_root / "Parsers"
     if parser_root.is_dir():
-        for path in parser_root.rglob("*.y*ml"):
+        for path in _content_yaml_files(parser_root):
             document = _load_yaml(path)
             alias = document.get("FunctionAlias") or document.get("FunctionName")
             query = document.get("FunctionQuery")

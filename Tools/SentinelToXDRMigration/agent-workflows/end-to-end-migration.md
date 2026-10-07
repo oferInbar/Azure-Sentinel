@@ -116,6 +116,16 @@ sentinel-xdr-migration workflow-status --solution "<solution-path>"
 sentinel-xdr-migration workflow-next --solution "<solution-path>"
 ```
 
+Every workflow run stores its reports, configuration, operational state, and logs
+under `Solutions/<solution>/Logs/sentinel-xdr-migration/<run-id>/`. New workflows
+get collision-safe timestamp/UUID IDs; resuming keeps the same ID. Use
+`workflow-runs --solution "<solution-path>"` to list runs and pass
+`--run-id "<id>"` to all solution commands when more than one exists.
+Never select the newest run heuristically. `workflow-init --new-run` explicitly
+creates an isolated workflow rather than resuming; obtain the normal profile
+selection first. Content YAML and package files remain shared solution content,
+not per-run snapshots.
+
 When workflow context contains a full `workspaceResourceId`, it is authoritative
 for the rest of that run. Pass it explicitly to every Azure command and never
 list, rediscover, rank, or scan other workspaces. A Log Analytics customer-ID
@@ -124,7 +134,7 @@ persisted. A tenant mismatch is an authentication blocker for the selected
 workspace, not a reason to choose another workspace.
 
 All live stages must load
-`Reports\<solution>\sentinel-xdr-migration\qualification-target.json` and
+`Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\qualification-target.json` and
 verify the tenant, subscription, workspace ARM ID, and workspace customer ID
 before proceeding. Specialist tools must not independently discover or infer
 any of them.
@@ -137,10 +147,52 @@ running `qualification-repair-target --approve-target-update`. No repair may
 change tenant, subscription, or customer ID.
 
 The ignored local file
-`Reports\<solution>\sentinel-xdr-migration\workflow-state.json` records stage status, attempts,
+`Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\workflow-state.json` records stage status, attempts,
 timestamps, artifacts, evidence, profile, workspace, and version action. Never
 store credentials or tokens in it and never mark a stage passed without
 evidence.
+
+Prior flat solution Logs and legacy `Reports/<solution>/sentinel-xdr-migration` (including the old
+`AZURE_SENTINEL_REPORTS_ROOT` override) and report files in `XDR Detections`
+are read-only fallback locations. Status reads never move or initialize state.
+Before resuming writes, run `migrate-reports --solution "<solution-path>"`,
+review the file list, and obtain approval for
+`migrate-reports --solution "<solution-path>" --run-id "<preview-run-id>" --apply`.
+This copies artifacts into that run, preserves originals, and records their hashes.
+Honor any prior flat migration receipt before treating newer flat state as
+authoritative over archived root Reports. Never import one run's archived
+evidence into a new workflow. Conflicting copies,
+changed legacy originals after migration, and missing migrated files block
+resumption; reconcile explicitly rather than selecting stale evidence.
+Never delete legacy state or initialize a replacement to bypass this gate.
+
+All solution Logs are Git-ignored and excluded from content/package inputs.
+They may contain raw provider responses and lab identifiers, and must not be
+force-added to a PR. An optional, explicit local-only PR evidence export is available:
+
+```powershell
+sentinel-xdr-migration export-evidence --solution "<solution-path>" --run-id "<run-id>"
+```
+
+Run it only after the selected run is stable. It writes trackable
+`Evidence/<run-id>/{summary.md,evidence.json}`, never overwrites an existing
+snapshot and does not change operational state, rerun tests or perform cloud
+writes. No environment-write approval is needed for this explicit local export.
+The header identifies the checked public solution name, profile, recorded status,
+current observed solution version, requested version action and actual export
+time/tool version. Missing target versions and original export times remain
+unknown. An explicitly authorized header-only edit of an older snapshot must
+preserve its results/hashes and distinguish new header observations from
+historical export facts; `export-evidence` still refuses overwrites.
+All recorded statuses, including failures, blocks and not-run results, are
+preserved through a fixed allowlist; raw provider data/free-text messages and
+tenant identifiers are omitted. Missing and unsupported evidence is explicit.
+Hashes anchor current local bytes, not trusted attestation or historical test
+binding. Review the snapshot before committing; see the toolkit README for
+allowlists and filename-sanitization limits. Evidence is never loaded as resume
+state or included in solution content inputs or Marketplace ZIPs.
+Persisted filesystem references are solution-relative where possible; resolve
+them against the selected solution, not the current shell directory.
 
 Start and complete each stage:
 
@@ -154,7 +206,7 @@ sentinel-xdr-migration workflow-complete-stage `
   --stage discovery `
   --status passed `
   --message "Reviewed source inventory" `
-  --artifact inspection="Reports\<solution>\sentinel-xdr-migration\inspection.json" `
+  --artifact inspection="Logs\sentinel-xdr-migration\<run-id>\inspection.json" `
   --evidence "Analytic Rules\Example.yaml"
 ```
 
@@ -169,6 +221,22 @@ Run `sentinel-xdr-migration inspect`. Account for every source rule, ID, table,
 query, and existing XDR artifact. Reject duplicate IDs, ambiguous provenance,
 and content without defensible attacker behavior or observable telemetry.
 
+For content-creator Authoring, assume source-referenced Sentinel tables are
+expected to be available in XDR; do not ask whether the target resolves both
+tables or directory fields. This is not a deployment-environment guarantee.
+The tool owns standard schema resolution: use actually advertised official
+schema MCP/API capabilities when authorized, or authoritative Microsoft
+documentation, with source/target query-surface and table/alias context.
+Do not ask customers to choose `Timestamp`/`TimeGenerated` or field casing.
+For custom `_CL` tables, infer only from actual available connector, DCR, or
+table definitions; distinguish inferred, schema-verified, and runtime-validated
+evidence. Missing/conflicting metadata is a tool/evidence limitation, never
+permission to fabricate a schema from the suffix.
+
+This is approved authoring policy; the current finite rename catalog is not a
+general schema resolver. See the README's
+[current-versus-pending capability matrix](../README.md#content-creator-authoring-policy-and-pending-implementation).
+
 ### Conversion
 
 Run `sentinel-xdr-migration convert`. Preserve source Analytic Rules. Generated
@@ -176,14 +244,60 @@ files belong under `XDR Detections`, remain disabled, and contain source
 provenance. Pass only with no conflicts and no unresolved `needsReview` item.
 Only deployable detection YAML belongs under `XDR Detections`; conversion
 manifests, reports, configuration, validation evidence, and state belong under
-`Reports\<solution>\sentinel-xdr-migration`.
+`Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>`.
+
+For an explicitly selected pilot, `convert --rule-id "<source-template-guid>"`
+limits writes to one rule while retaining global identity/provenance checks.
+Pass the locked `--run-id` and reviewed `--config`; use `--overwrite` only for
+the reviewed selected draft. Unknown, malformed, duplicated or excluded selected
+IDs fail before writes. Unselected drafts, including config exclusions, are
+never changed or deleted. The run's manifest/report are replaced with explicit
+rule scope, not merged into full-solution coverage. Earlier passed conversion
+and downstream stages are blocked with historical evidence retained.
+Do not pass solution conversion/validation stages or package from scoped results:
+the workflow and toolkit packager reject them. Full-solution conversion and the
+normal gates are required before proceeding. Structural validation of existing
+files alone is not conversion coverage. No scoped runtime/deployment or waiver
+is introduced; run-local evidence cannot authorize reuse of stale evidence from
+other runs sharing the same content. See the README's
+[single-rule CLI contract](../README.md#single-rule-conversion).
+
+Explain entity mapping differences using the restricted target mapping contract:
+identify retained identifiers, actual lost information, and query-proven
+equivalence separately. An unsupported FullName property is not automatically
+identity loss. Existing source SID joins are not migration regressions unless
+conversion changes their semantics. The README includes a
+[concrete Local Admin Group Changes review](../README.md#worked-review-local-admin-group-changes).
+Source `requiredDataConnectors` is preserved in optional top-level XDR authoring
+metadata, outside deployment `properties`, with exact presence/empty-list and
+extensible-entry fidelity. Malformed metadata remains a conversion/structural
+failure, not a silently dropped declaration. Older artifacts require an
+explicit conversion refresh; no automatic rewrite or gate waiver is implied.
+See [dependency preservation](../README.md#connector-dependency-preservation-and-deployment-boundary).
+Target registration/dependency translation remains pending design; do not add
+an undocumented field to Graph or inner detection-rule properties.
 
 ### Validation
 
-Run structural validation, then validate original Sentinel and converted
-Advanced Hunting queries. Prefer capabilities advertised by the official
-Sentinel Triage MCP. Fall back to Log Analytics for Sentinel queries and
-Microsoft Graph for Advanced Hunting only for provider-level failures.
+If the user declines runtime validation, do not authenticate or run live
+queries. Present this disclosure while retaining actual static/schema checks:
+
+> KQL has not been validated because this migration runs without runtime validation. Enable full validation, or review/accept the specific migration checks below.
+
+This is presentation policy, not a new completion mode or waiver. A supported
+specific review acceptance is not runtime verification. Report unexecuted
+checks as not run; keep failed, blocked, and unresolved-review results visible.
+No optional-runtime gate/state implementation is introduced by this policy.
+Do not complete an unmet stage, silently bypass it, or treat declined runtime
+checks as an environment-only error. The existing validation procedure and
+Authoring exception below remain unchanged; if their evidence cannot be
+obtained, report the unmet gate and pending implementation rather than success.
+
+Run structural validation. When runtime validation is authorized, validate
+original Sentinel and converted Advanced Hunting queries. Prefer capabilities
+advertised by the official Sentinel Triage MCP. Fall back to Log Analytics for
+Sentinel queries and Microsoft Graph for Advanced Hunting only for provider-level
+failures.
 
 Unavailable workload tables are blocked environment results. Zero rows prove
 query execution, not behavioral parity. Entity mappings require review.

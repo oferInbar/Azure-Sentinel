@@ -99,7 +99,7 @@ provider.
    ```
 
 8. Both providers create normalized JSON and self-contained HTML reports under
-   `Reports\<solution>\sentinel-xdr-migration`. Treat `blocked` as an
+   `Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>`. Treat `blocked` as an
    environment gap, not a conversion failure.
 9. For every rule:
    - execute the original `sentinelQuery`;

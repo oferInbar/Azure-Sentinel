@@ -1,0 +1,90 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 36fbd4e7-5630-4414-aa42-702a7fdded21
+    path: Analytic Rules/Defense Evasion/Regsvr32Rundll32ImageLoadsAbnormalExtension.yaml
+    version: 1.0.0
+    querySha256: 51455f0ef56a6c63b89b65993e357d6f8c73f9d5653ca9620d43b3dc3a15ea52
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-regsvr32-rundll32-image-loads-abnormal-extension-36fbd4e7' to originating Sentinel
+      template ID '36fbd4e7-5630-4414-aa42-702a7fdded21'. No cloud rules were updated, deleted, or migrated. Review existing
+      deployed rules and reconcile their identities before any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - DefenseEvasion
+    originalTechniques:
+    - T1218.010
+    - T1218.011
+    identityChange:
+      previousId: xdr-regsvr32-rundll32-image-loads-abnormal-extension-36fbd4e7
+      currentId: 36fbd4e7-5630-4414-aa42-702a7fdded21
+      scope: local-artifact-only
+properties:
+  id: 36fbd4e7-5630-4414-aa42-702a7fdded21
+  displayName: Regsvr32 Rundll32 Image Loads Abnormal Extension
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceImageLoadEvents
+      | where InitiatingProcessFileName has_any ("rundll32.exe","regsvr32.exe")
+      | where FileName !endswith ".dll"
+      | join (
+      DeviceNetworkEvents
+      | where InitiatingProcessFileName has_any ("rundll32.exe","regsvr32.exe")
+      | where RemoteIPType == "Public"
+      ) on InitiatingProcessFileName, InitiatingProcessId, InitiatingProcessCreationTime, InitiatingProcessCommandLine
+      | project Timestamp, DeviceName, FileName, FolderPath, SHA1, InitiatingProcessFileName, InitiatingProcessCommandLine, LocalIP, LocalPort, RemoteIP, RemoteUrl, RemotePort, InitiatingProcessParentFileName
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Regsvr32 Rundll32 Image Loads Abnormal Extension
+      description: |-
+        This query is looking for regsvr32.exe or rundll32.exe loading DLL images with other extensions than .dll.
+        Joins the data to public network events.
+        References:
+        https://threathunt.blog/running-live-malware-for-threat-hunting-purposes/
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+        ips:
+        - id: ip1
+          addressColumn: LocalIP
+        - id: ip2
+          addressColumn: RemoteIP
+        urls:
+        - id: url1
+          addressColumn: RemoteUrl
+      tactics:
+      - tactic: DefenseEvasion
+        techniques:
+        - technique: T1218
+          subTechniques:
+          - T1218.010
+          - T1218.011

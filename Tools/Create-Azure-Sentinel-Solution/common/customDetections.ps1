@@ -420,6 +420,16 @@ function Add-XdrCustomDetectionsToSolution {
         if ([string]::IsNullOrWhiteSpace($sourceId) -or [string]::IsNullOrWhiteSpace($detectionId)) {
             throw "Custom Detection '$configuredPath' must contain contentProvenance.source.id and properties.id."
         }
+        $sentinelDerived = (
+            ($detectionDocument.contentProvenance.source.platform -ceq 'Microsoft Sentinel' -and
+             $detectionDocument.contentProvenance.source.kind -ceq 'AnalyticsRule') -or
+            $detectionDocument.contentProvenance.conversion.tool -ceq 'sentinel-to-xdr-migration'
+        )
+        if ($sentinelDerived -and (
+                $sourceId -cnotmatch '\A[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\z' -or
+                $detectionId -cne $sourceId)) {
+            throw "Sentinel-derived Custom Detection '$configuredPath' properties.id must equal the full originating Sentinel template GUID in contentProvenance.source.id. Review and reconvert generated legacy IDs with --overwrite; this changes local artifacts only, not deployed rules."
+        }
         if ($seenIds.ContainsKey($detectionId)) {
             throw "Duplicate Custom Detection id '$detectionId'."
         }

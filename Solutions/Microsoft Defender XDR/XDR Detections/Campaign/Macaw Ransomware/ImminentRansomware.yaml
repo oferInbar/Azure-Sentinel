@@ -1,0 +1,96 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: bb46dd86-e642-48a4-975c-44f5ac2b5033
+    path: Analytic Rules/Campaign/Macaw Ransomware/ImminentRansomware.yaml
+    version: 1.0.0
+    querySha256: 512c3c430a0e38794e6b9658835c40140e1a383e535d8d1e4e93d5ffe7c1df2d
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - multiple source tactics were resolved by the configured per-rule override
+    - Local detection ID changed from 'xdr-imminent-ransomware-bb46dd86' to originating Sentinel template ID 'bb46dd86-e642-48a4-975c-44f5ac2b5033'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - DefenseEvasion
+    - Persistence
+    originalTechniques:
+    - T1562
+    - T1547
+    identityChange:
+      previousId: xdr-imminent-ransomware-bb46dd86
+      currentId: bb46dd86-e642-48a4-975c-44f5ac2b5033
+      scope: local-artifact-only
+properties:
+  id: bb46dd86-e642-48a4-975c-44f5ac2b5033
+  displayName: Imminent Ransomware
+  status: disabled
+  queryCondition:
+    queryText: |-
+      _ASim_ProcessEvent
+      // Pivot on specific commands
+      | where CommandLine has_any("-ExclusionPath", "Set-MpPreference", "advfirewall", "-ExclusionExtension",
+      "-EnableControlledFolderAccess", "windefend", "onstart", "bcdedit", "Startup")
+      // Making list of found commands
+      | summarize CommandLine = make_set(CommandLine, 10000) by DvcId, Dvc, bin(TimeGenerated, 6h)
+      // Extending columns for later aggregration, based on TTP
+      | extend StartUpExclusionPath = iff(CommandLine has_all("-ExclusionPath", "Startup"), 1, 0)
+      | extend DefenderTamp = iff(CommandLine has "Set-MpPreference"
+      and CommandLine has_any(
+      "-SevereThreatDefaultAction 6"
+      "-HighThreatDefaultAction 6",
+      "-ModerateThreatDefaultAction 6",
+      "-LowThreatDefaultAction 6"
+      "-ScanScheduleDay 8"), 1, 0)
+      | extend NetshFirewallTampering = iff(CommandLine has_all( "netsh", "advfirewall", "allprofiles state off"), 1, 0)
+      | extend BatExclusion = iff(CommandLine has_all("-ExclusionExtension", ".bat"), 1, 0)
+      | extend ExeExclusion = iff(CommandLine has_all("-ExclusionExtension", ".exe"), 1, 0)
+      | extend DisableControlledFolderAccess = iff(CommandLine has_all("-EnableControlledFolderAccess", "Disabled"), 1, 0)
+      | extend ScDeleteDefend = iff(CommandLine has_all("sc", "delete", "windefend"), 1, 0)
+      | extend BootTampering = iff(CommandLine has_all("bcdedit", "default") and CommandLine has_any ("recoveryenabled No", "bootstatuspolicy ignoreallfailures"), 1, 0)
+      | extend SchTasks = iff(CommandLine has_all("/sc", "onstart", "system", "/create", "/delay"), 1, 0)
+      // Summarizing found commands
+      | summarize by NetshFirewallTampering ,BatExclusion, ExeExclusion, DisableControlledFolderAccess, ScDeleteDefend, SchTasks, BootTampering, DefenderTamp, StartUpExclusionPath, DvcId, Dvc, TimeGenerated
+      // Adding up each piece of evidence
+      | extend EvidenceCount = NetshFirewallTampering + BatExclusion + ExeExclusion + DisableControlledFolderAccess + ScDeleteDefend + SchTasks + BootTampering + DefenderTamp + StartUpExclusionPath
+      | where EvidenceCount > 4
+      | extend HostName = iff(Dvc has '.', substring(Dvc, 0, indexof(Dvc, '.')), Dvc)
+      | extend DnsDomain = iff(Dvc has '.', substring(Dvc, indexof(Dvc, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Imminent Ransomware
+      description: This query checks for a series of commands that are commonly used by attackers to disable security tools
+        and system recovery tools before deploying Macaw ransomware in an organization.
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: DefenseEvasion
+        techniques:
+        - technique: T1562

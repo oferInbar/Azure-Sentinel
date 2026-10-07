@@ -1,0 +1,79 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 174de33b-107b-4cd8-a85d-b4025a35453f
+    path: Analytic Rules/Execution/OfficeAppsLaunchingWscript.yaml
+    version: 1.0.0
+    querySha256: 3a8240af1bc6fe4aece7311f88b37d1244e2362d30a5919da4508f11035c8a79
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      lookbacks differ; an event-time filter alone does not configure the target ingestion lookback. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Process.ProcessId to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Process.CommandLine to a documented Custom Detection field; this source identifier is not represented
+    - multiple source tactics were resolved by the configured per-rule override
+    - Local detection ID changed from 'xdr-office-apps-launching-wscipt-174de33b' to originating Sentinel template ID '174de33b-107b-4cd8-a85d-b4025a35453f'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational:
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    errors: []
+    originalTactics:
+    - Execution
+    - Collection
+    - CommandAndControl
+    originalTechniques:
+    - T1059
+    - T1105
+    - T1203
+    identityChange:
+      previousId: xdr-office-apps-launching-wscipt-174de33b
+      currentId: 174de33b-107b-4cd8-a85d-b4025a35453f
+      scope: local-artifact-only
+properties:
+  id: 174de33b-107b-4cd8-a85d-b4025a35453f
+  displayName: Office Apps Launching Wscipt
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents
+      | where InitiatingProcessFileName in~ ('winword.exe', 'excel.exe', 'outlook.exe')
+      | where FileName =~ "wscript.exe" and ProcessCommandLine has ".jse"
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Office Apps Launching Wscipt
+      description: |-
+        This query was originally published in the threat analytics report, Trickbot: Pervasive & underestimated.
+        Trickbot is a very prevalent piece of malware with an array of malicious capabilities. Originally designed to steal banking credentials, it has since evolved into a modular trojan that can deploy other malware, disable security software, and perform command-and-control (C2) operations.
+        Trickbot is frequently spread through email. An attacker will send a target a message with an attachment containing a malicious macro. If the target enables the macro, it will write a JScript Encoded (JSE) f
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: Execution
+        techniques:
+        - technique: T1059

@@ -1,0 +1,81 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 53e936c6-6c30-4d12-8343-b8a0456e8429
+    path: Analytic Rules/SUNSPOTHashes.yaml
+    version: 1.0.4
+    querySha256: 10f2fcfee7ed9ef01e4e9c039d53ee1ba2e2db15d72473bc0f055ba401b1c86b
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 1d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - isfuzzy unions can still fail semantic binding in Advanced Hunting
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - isfuzzy unions can still fail semantic binding in Advanced Hunting
+    - 'Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
+    - converter cannot map Account.FullName to a documented Custom Detection field; this source identifier is not represented
+    - Local detection ID changed from 'xdr-sunspot-malware-hashes-53e936c6' to originating Sentinel template ID '53e936c6-6c30-4d12-8343-b8a0456e8429'.
+      No cloud rules were updated, deleted, or migrated. Review existing deployed rules and reconcile their identities before
+      any separately approved deployment.
+    informational: []
+    errors: []
+    originalTactics:
+    - Persistence
+    originalTechniques:
+    - T1554
+    identityChange:
+      previousId: xdr-sunspot-malware-hashes-53e936c6
+      currentId: 53e936c6-6c30-4d12-8343-b8a0456e8429
+      scope: local-artifact-only
+properties:
+  id: 53e936c6-6c30-4d12-8343-b8a0456e8429
+  displayName: SUNSPOT malware hashes
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let SUNSPOT_Hashes = dynamic(["c45c9bda8db1d470f1fd0dcc346dc449839eb5ce9a948c70369230af0b3ef168", "0819db19be479122c1d48743e644070a8dc9a1c852df9a8c0dc2343e904da389"]);
+      union isfuzzy=true(
+      DeviceEvents
+      | where InitiatingProcessSHA256 in (SUNSPOT_Hashes)),
+      (DeviceImageLoadEvents
+      | where InitiatingProcessSHA256 in (SUNSPOT_Hashes))
+      | extend timestamp=Timestamp
+      | extend HostName = tostring(split(DeviceName, ".")[0]), DomainIndex = toint(indexof(DeviceName, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(DeviceName, DomainIndex + 1), DeviceName)
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: SUNSPOT malware hashes
+      description: "'This query uses Microsoft Defender for Endpoint data to look for IoCs associated with the SUNSPOT malware\
+        \ shared by Crowdstrike.\nMore details: \n  - https://www.crowdstrike.com/blog/sunspot-malware-technical-analysis/\n\
+        \  - https://techcommunity.microsoft.com/blog/microsoftsentinelblog/monitoring-the-software-supply-chain-with-azure-sentinel/2176463/'"
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+        accounts:
+        - id: account1
+          nameColumn: InitiatingProcessAccountName
+          upnSuffixColumn: InitiatingProcessAccountDomain
+      tactics:
+      - tactic: Persistence
+        techniques:
+        - technique: T1554

@@ -38,9 +38,9 @@ sentinel-xdr-migration deploy --solution "<solution-path>"
 ```
 
 The first command writes
-`Reports\<solution>\sentinel-xdr-migration\deployment.sentinel.json`. The
+`Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\deployment.sentinel.json`. The
 second writes
-`Reports\<solution>\sentinel-xdr-migration\deployment.graph.json`.
+`Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\deployment.graph.json`.
 
 ## Safety gates
 

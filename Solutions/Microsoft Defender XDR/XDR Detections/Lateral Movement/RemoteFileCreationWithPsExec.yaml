@@ -1,0 +1,90 @@
+schemaVersion: 1.0.0
+version: 3.1.0
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+contentProvenance:
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 35ab0d58-baab-4154-87ed-fa2f69797e9e
+    path: Analytic Rules/Lateral Movement/RemoteFileCreationWithPsExec.yaml
+    version: 1.0.0
+    querySha256: 4ee27ae62266a83eab8b875f2f3f662ba6fd4d31c1d8d25ab64b468bfd22b419
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      lookbacks differ; an event-time filter alone does not configure the target ingestion lookback. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Local detection ID changed from 'xdr-remote-file-creation-with-psexec-35ab0d58' to originating Sentinel template ID
+      '35ab0d58-baab-4154-87ed-fa2f69797e9e'. No cloud rules were updated, deleted, or migrated. Review existing deployed
+      rules and reconcile their identities before any separately approved deployment.
+    informational:
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    errors: []
+    originalTactics:
+    - LateralMovement
+    originalTechniques:
+    - T1570
+    identityChange:
+      previousId: xdr-remote-file-creation-with-psexec-35ab0d58
+      currentId: 35ab0d58-baab-4154-87ed-fa2f69797e9e
+      scope: local-artifact-only
+properties:
+  id: 35ab0d58-baab-4154-87ed-fa2f69797e9e
+  displayName: Remote File Creation with PsExec
+  status: disabled
+  queryCondition:
+    queryText: |-
+      // Find PsExec creating multiple files on remote machines in a 10-minute window
+      DeviceFileEvents
+      // Looking for PsExec by accepteula command flag
+      | where InitiatingProcessCommandLine has "accepteula"
+      // Remote machines and file is exe
+      | where FolderPath has "\\\\" and FileName endswith ".exe"
+      | extend Exe = countof(InitiatingProcessCommandLine, ".exe")
+      // Checking to see if command line has 2 .exe or .bat
+      | where InitiatingProcessCommandLine !has ".ps1" and Exe > 1 or
+      InitiatingProcessCommandLine has ".bat"
+      // Exclusions: Remove the following line to widen scope of AHQ
+      | where not(InitiatingProcessCommandLine has_any("batch", "auditpol",
+      "script", "scripts", "illusive", "rebootrequired"))
+      | summarize FileCount = dcount(FolderPath), make_set(SHA1, 100000), make_set(FolderPath, 100000),
+      make_set(FileName, 100000), make_set(InitiatingProcessCommandLine, 100000) by DeviceId, DeviceName,
+      TimeWindow=bin(Timestamp, 10m), InitiatingProcessFileName
+      | where FileCount > 4
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Remote File Creation with PsExec
+      description: |-
+        This query was originally published in the threat analytics report, Ryuk ransomware. There is also a related blog.
+        Ryuk is human-operated ransomware. Much like DoppelPaymer ransomware, Ryuk is spread manually, often on networks that are already infected with Trickbot.
+        Ryuk operators use PsExec to manually spread the ransomware to other devices.
+        The following query detects remote file creation events that might indicate an active attack.
+        The See also section below lists links to other queries associated with Ryuk ransomware.
+        References:
+        https://www.microsoft.com/security/blog/2020/03/05/human-o
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: LateralMovement
+        techniques:
+        - technique: T1570
