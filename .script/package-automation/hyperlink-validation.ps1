@@ -1,4 +1,4 @@
-param($runId, $pullRequestNumber, $instrumentationKey, $baseFolderPath)
+param($runId, $pullRequestNumber, $instrumentationKey, $baseFolderPath, $SolutionPath)
 Write-Host "Starting execution of Hyperlink Validation"
 $global:counterInvalid =0
 $global:counterTimeout =0
@@ -13,17 +13,37 @@ try {
     $baseFolderPath = $baseFolderPath + "/"
     $baseFolderPath = $baseFolderPath.replace("//", "/")
 
-	Write-Host "====Identifying Solution Name===="
-  #Get Solution Name
-  . $PSScriptRoot/getSolutionName.ps1 $runId $pullRequestNumber $instrumentationKey
-  #outputs: solutionName
-
-  if ($solutionName -eq '')
-  {
-    exit 0
+  if ($SolutionPath) {
+    $solutionsRoot = [System.IO.Path]::GetFullPath((Join-Path $baseFolderPath "Solutions")).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $resolvedSolutionPath = [System.IO.Path]::GetFullPath($SolutionPath)
+    if ([System.IO.Path]::GetDirectoryName($resolvedSolutionPath) -ne $solutionsRoot -or
+        -not (Test-Path $resolvedSolutionPath -PathType Container) -or
+        ((Get-Item $resolvedSolutionPath).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+      throw "Invalid solution folder '$SolutionPath'. Expected an existing direct child of '$solutionsRoot'."
+    }
+    $filesList = @(Get-ChildItem $resolvedSolutionPath -Recurse -File |
+      ForEach-Object { [System.IO.Path]::GetRelativePath($baseFolderPath, $_.FullName).Replace('\', '/') } |
+      Where-Object {
+        $_ -notlike 'Solutions/Images/*' -and
+        $_ -notlike 'Solutions/*.md' -and
+        $_ -notlike '*/Package/*' -and
+        $_ -notlike '*system_generated_metadata.json' -and
+        $_ -notlike '*testParameters.json'
+      })
+    Write-Host "Hyperlink validation scoped to current files under $resolvedSolutionPath"
   }
-
-  Write-Host "SolutionName is $solutionName"
+  else {
+    Write-Host "====Identifying Solution Name===="
+    # Preserve CI's commit-diff based solution discovery when no folder scope is supplied.
+    . $PSScriptRoot/getSolutionName.ps1 $runId $pullRequestNumber $instrumentationKey
+    if ($solutionName -eq '') {
+      exit 0
+    }
+    Write-Host "SolutionName is $solutionName"
+    $prFiles = git diff --diff-filter=d --name-only --first-parent HEAD^ HEAD
+    $solutionFolderPath = 'Solutions/' + $solutionName + "/"
+    $filesList = $prFiles | Where-Object { $_ -like "$solutionFolderPath*" }
+  }
   function ReadFileContent($filePath) {
     try {
         if (!(Test-Path -Path "$filePath")) {
@@ -92,9 +112,6 @@ function validateLink($urlList,$filePath)
 		$urlDetailList.Add($objURlDetail)
 	}
 }
-$prFiles = git diff --diff-filter=d --name-only --first-parent HEAD^ HEAD
-$solutionFolderPath = 'Solutions/' + $solutionName + "/"
-$filesList =$prFiles| Where-Object { $_ -like "$solutionFolderPath*" }
 $filteredFiles = $filesList | Where-Object {$_ -match "Solutions/"} | Where-Object {$_ -notlike "Solutions/Images/*"} | Where-Object {$_ -notlike "Solutions/*.md"} | Where-Object { $_ -notlike '*system_generated_metadata.json' } | Where-Object { $_ -notlike '*testParameters.json' } | Where-Object { $_ -notmatch ('Package') }
 
 $finalFilteredFiles = @()

@@ -1,4 +1,26 @@
 $jsonConversionDepth = 50
+function Assert-NoOperationalContent {
+    param([Parameter(Mandatory = $true)]$Content)
+    foreach ($property in $Content.PSObject.Properties) {
+        $references = $property.Value
+        if ($references -is [string] -and $property.Name -in @(
+            'Parsers', 'Data Connectors', 'DataConnectors', 'Playbooks', 'Workbooks',
+            'Analytic Rules', 'Hunting Queries', 'Watchlists', 'Summary Rules',
+            'SummaryRules', 'XDR Detections', 'Custom Detections'
+        )) {
+            try { $references = @($references | ConvertFrom-Json -ErrorAction Stop) }
+            catch { $references = @($references) }
+        }
+        if ($references -is [array]) {
+            foreach ($reference in $references) {
+                if ($reference -is [string] -and $reference -match '(?i)(^|[\\/])(Logs|Reports|Evidence)([\\/]|$)') {
+                    throw "Solution content arrays must not include Logs, Reports or Evidence."
+                }
+            }
+        }
+    }
+}
+
 $mainTemplateArtifact = [PSCustomObject]@{
     name = "DefaultTemplate";
     type = "Template"
@@ -10,6 +32,11 @@ $baseCreateUiDefinitionPath = "$PSScriptRoot/templating/baseCreateUiDefinition.j
 
 $global:baseMainTemplate = Get-Content -Raw $baseMainTemplatePath | Out-String | ConvertFrom-Json
 $global:baseCreateUiDefinition = Get-Content -Raw $baseCreateUiDefinitionPath | Out-String | ConvertFrom-Json
+. "$PSScriptRoot/customDetections.ps1"
+. "$PSScriptRoot/contentDeploymentParameters.ps1"
+. "$PSScriptRoot/customerUsageAttribution.ps1"
+. "$PSScriptRoot/versionPolicy.ps1"
+$v31VersionPolicy = $null
 
 # Content Counters - (for adding numbering to each item)
 $global:analyticRuleCounter = 1
@@ -436,6 +463,27 @@ function updateDescriptionCount($counter, $emplaceString, $replaceString, $count
     }
 }
 
+function Update-XdrDescriptionCount([int]$Count) {
+    if ($Count -le 0) { return }
+
+    # Target only the generated count paragraph, before substituting author-supplied text.
+    # XDR follows analytics (or the preceding nonempty category), ahead of hunting.
+    $pattern = '(\{\{SolutionDescription\}\}\r?\n\r?\n)(?<before>(?:\*\*(?:Data Connectors|Parsers|Workbooks|Analytic Rules):\*\* \d+(?:, )?)*)(?<after>[^\r\n]*)'
+    $global:baseCreateUiDefinition.parameters.config.basics.description = [regex]::Replace(
+        $global:baseCreateUiDefinition.parameters.config.basics.description,
+        $pattern,
+        [System.Text.RegularExpressions.MatchEvaluator]{
+            param($match)
+            $counts = @(
+                $match.Groups['before'].Value.TrimEnd(', '),
+                "**XDR Detections:** $Count",
+                $match.Groups['after'].Value.TrimEnd(', ')
+            ) | Where-Object { $_ -ne '' }
+            return $match.Groups[1].Value + ($counts -join ', ')
+        }
+    )
+}
+
 function GetContentSchemaVersion($defaultPackageVersion, $dataInputVersion) {
     # DEPENDING OF VERSION WE SHOULD SET THE CONTENTSCHEMAVERSION
     if ($null -eq $defaultPackageVersion -and $null -eq $dataInputVersion) {
@@ -838,6 +886,7 @@ function GetWorkbookDataMetadata($file, $isPipelineRun, $contentResourceDetails,
         }
 
         $workbookNameParameter = [PSCustomObject] @{ type = "string"; defaultValue = $dependencies.title; minLength = 1; metadata = [PSCustomObject] @{ description = "Name for the workbook" }; }
+        Assert-V31ReleaseVersion -Version "$($dependencies.version)" -ContentKind Workbook -ContentPath $file
         $global:baseMainTemplate.variables | Add-Member -NotePropertyName "workbookVersion$global:workbookCounter" -NotePropertyValue "$($dependencies.version)"
         $global:baseMainTemplate.variables | Add-Member -NotePropertyName "workbookContentId$global:workbookCounter" -NotePropertyValue "$($dependencies.workbookKey)"
         $global:baseMainTemplate.parameters | Add-Member -MemberType NoteProperty -Name $workbookNameParameterName -Value $workbookNameParameter
@@ -1506,6 +1555,7 @@ function GetPlaybookDataMetadata($file, $contentToImport, $contentResourceDetail
     }
 
     if ($contentToImport.TemplateSpec) {
+        Assert-V31ReleaseVersion -Version $playbookVersion -ContentKind $(if ($IsLogicAppsCustomConnector) { 'LogicAppsCustomConnector' } elseif ($IsFunctionAppResource) { 'AzureFunction' } else { 'Playbook' }) -ContentPath $file
         $global:baseMainTemplate.variables | Add-Member -NotePropertyName "playbookVersion$global:playbookCounter" -NotePropertyValue $playbookVersion
         $global:baseMainTemplate.variables | Add-Member -NotePropertyName "playbookContentId$global:playbookCounter" -NotePropertyValue $fileName
         $global:baseMainTemplate.variables | Add-Member -NotePropertyName "_playbookContentId$global:playbookCounter" -NotePropertyValue "[variables('playbookContentId$global:playbookCounter')]"
@@ -1721,6 +1771,7 @@ function GetPlaybookDataMetadata($file, $contentToImport, $contentResourceDetail
         $global:baseMainTemplate.resources += $playbookTemplateSpecContent;
     }
     else {
+        Register-SolutionResourceKind -Resources $playbookResources -Kind Playbook
         $global:baseMainTemplate.resources += $playbookResources;
     }
 
@@ -1874,6 +1925,7 @@ function GetDataConnectorMetadata($file, $contentResourceDetails, $dataFileMetad
         }
 
         $global:baseMainTemplate.variables | Add-Member -NotePropertyName "dataConnectorVersion$global:connectorCounter" -NotePropertyValue (($null -ne $templateSpecConnectorData.metadata) ? "$($templateSpecConnectorData.metadata.version)" : "1.0.0")
+        Assert-V31ReleaseVersion -Version $global:baseMainTemplate.variables."dataConnectorVersion$global:connectorCounter" -ContentKind DataConnector -ContentPath $file
         if (!$contentToImport.TemplateSpec) {
             $global:baseMainTemplate.variables | Add-Member -NotePropertyName "parentId" -NotePropertyValue $global:solutionId
             $global:baseMainTemplate.variables | Add-Member -NotePropertyName "_parentId" -NotePropertyValue "[variables('parentId')]"
@@ -2271,6 +2323,7 @@ function GetHuntingDataMetadata($file, $rawData, $contentResourceDetails) {
     }
 
     $calculatedHuntingQueryVersion = ($null -ne $yaml.version) ? "$($yaml.version)" : "1.0.0"
+    Assert-V31ReleaseVersion -Version $calculatedHuntingQueryVersion -ContentKind HuntingQuery -ContentPath $file
 
     $objHuntingQueryVariables = [pscustomobject]@{}
     $objHuntingQueryVariables | Add-Member -NotePropertyName "huntingQueryVersion$global:huntingQueryCounter" -NotePropertyValue "$calculatedHuntingQueryVersion"
@@ -2510,6 +2563,7 @@ function GetHuntingDataMetadata($file, $rawData, $contentResourceDetails) {
             return;
         }
         else {
+            Register-SolutionResourceKind -Resources $huntingQueryObj -Kind HuntingQuery
             $global:baseMainTemplate.resources[$(getQueryResourceLocation)].resources += $huntingQueryObj
         }
     }
@@ -2598,6 +2652,7 @@ function GenerateAlertRule($file, $contentResourceDetails) {
     }
 
     $calculatedAnalyticRuleVersion = ($null -ne $yaml.version) ? "$($yaml.version)" : "1.0.0"
+    Assert-V31ReleaseVersion -Version $calculatedAnalyticRuleVersion -ContentKind AnalyticsRule -ContentPath $file
     $objAnalyticRulesVariables = [pscustomobject]@{}
     $objAnalyticRulesVariables | Add-Member -NotePropertyName "analyticRuleVersion$global:analyticRuleCounter" -NotePropertyValue "$calculatedAnalyticRuleVersion"
 
@@ -2881,6 +2936,7 @@ function GenerateAlertRule($file, $contentResourceDetails) {
 }
 
 function GenerateWatchList($json, $isPipelineRun, $watchListFileName) {
+    Assert-V31ReleaseVersion -Version $contentToImport.Version -ContentKind Watchlist -ContentPath $watchListFileName
     $watchlistData = $json.resources[0]
 
     $watchlistName = $watchlistData.properties.displayName;
@@ -3039,7 +3095,22 @@ function CheckJsonIsValid($solutionFolderBasePath) {
     }
 }
 
-function GeneratePackage($solutionName, $contentToImport, $calculatedBuildPipelinePackageVersion = '') {
+function GeneratePackage(
+    $solutionName,
+    $contentToImport,
+    $calculatedBuildPipelinePackageVersion = '',
+    [bool]$IncludeXdrDetections = $false,
+    [string]$SolutionMetadataPath,
+    [switch]$SkipAttributionLookup
+) {
+    Assert-V31SolutionVersion -SolutionName $solutionName -Version $contentToImport.Version -CalculatedVersion $calculatedBuildPipelinePackageVersion
+    Assert-V31VersionChecksPassed
+    if ($IncludeXdrDetections) {
+        $xdrDetectionCount = Add-XdrCustomDetectionsToSolution -SolutionName $solutionName -ContentToImport $contentToImport -Template $global:baseMainTemplate
+        Update-XdrDescriptionCount -Count $xdrDetectionCount
+        Add-SolutionContentDeploymentParameters -Template $global:baseMainTemplate -UiDefinition $global:baseCreateUiDefinition
+    }
+
     if ($contentToImport.Description) {
         $global:baseCreateUiDefinition.parameters.config.basics.description = $global:baseCreateUiDefinition.parameters.config.basics.description -replace "{{SolutionDescription}}", $contentToImport.Description
             
@@ -3092,6 +3163,11 @@ function GeneratePackage($solutionName, $contentToImport, $calculatedBuildPipeli
     }
     $mainTemplateOutputPath = "$solutionFolder/mainTemplate.json"
     $createUiDefinitionOutputPath = "$solutionFolder/createUiDefinition.json"
+
+    if ($IncludeXdrDetections) {
+        # Persist only after content/version preparation, after metadata filtering and before output.
+        Add-CustomerUsageAttribution -SolutionMetadataPath $SolutionMetadataPath -Template $global:baseMainTemplate -WarnIfMissing ($xdrDetectionCount -gt 0) -SkipAttributionLookup:$SkipAttributionLookup
+    }
 
     try {
         $baseMainTemplate | ConvertTo-Json -Depth $jsonConversionDepth | Out-File $mainTemplateOutputPath -Encoding utf8
@@ -3479,6 +3555,7 @@ function addTemplateSpecParserResource($content, $yaml, $isyaml, $contentResourc
             )
         }
     }
+    Register-SolutionResourceKind -Resources $parserObj -Kind Parser
     $global:baseMainTemplate.resources += $parserObj
 
     $parserMetadata = [PSCustomObject]@{
@@ -3598,6 +3675,7 @@ function generateParserContent($file, $contentToImport, $contentResourceDetails)
 
     # Use File Name as Parser Name
     $global:parserVersion = ($null -ne $yaml -and $yaml.Count -gt 0) ? ($null -eq $yaml.Function.Version ? "1.0.0" : $yaml.Function.Version) : "1.0.0"
+    Assert-V31ReleaseVersion -Version $global:parserVersion -ContentKind Parser -ContentPath $file
 
     # create object with multiple values in it for a single parser resource
     $objParserVariables | Add-Member -NotePropertyName "parserVersion$global:parserCounter" -NotePropertyValue $global:parserVersion
@@ -3650,6 +3728,7 @@ function generateParserContent($file, $contentToImport, $contentResourceDetails)
             return;
         }
         else {
+            Register-SolutionResourceKind -Resources $parserObj -Kind Parser
             $global:baseMainTemplate.resources[$queryLocation].resources += $parserObj
         }
     }

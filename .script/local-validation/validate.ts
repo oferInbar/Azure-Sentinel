@@ -271,6 +271,11 @@ function getChangedFiles(targetBranch: string): ChangedFile[] {
  */
 function getFilesInPath(dirPath: string): ChangedFile[] {
   const results: ChangedFile[] = [];
+  const resolvedPath = path.resolve(process.cwd(), dirPath);
+  if (!fs.existsSync(resolvedPath) || !fs.lstatSync(resolvedPath).isDirectory()) {
+    console.error(`Error: --path must name an existing directory: ${dirPath}`);
+    process.exit(2);
+  }
 
   function walk(dir: string): void {
     if (!fs.existsSync(dir)) {
@@ -287,13 +292,11 @@ function getFilesInPath(dirPath: string): ChangedFile[] {
       } else {
         // Normalize to forward slashes (repo-relative paths)
         const relativePath = path.relative(process.cwd(), fullPath).replace(/\\/g, "/");
-        results.push({ status: "A", filePath: relativePath }); // Treat all as "Added" for full validation
+        results.push({ status: "M", filePath: relativePath }); // Validate current files using modified-file rules
       }
     }
   }
 
-  // Resolve relative to cwd
-  const resolvedPath = path.resolve(process.cwd(), dirPath);
   walk(resolvedPath);
   return results;
 }
@@ -1182,6 +1185,16 @@ async function main(): Promise<void> {
     const shouldRun = (options.only.length === 0 || options.only.includes(dotnetValidator.id))
                    && !options.skip.includes(dotnetValidator.id);
     if (shouldRun) {
+      if (options.mode === "path") {
+        allResults.push({
+          validator: dotnetValidator.name,
+          filePath: dotnetValidator.project,
+          passed: true,
+          skipped: true,
+          skipReason: "The standalone --path runner cannot safely scope this repo-wide .NET test project; use build-and-validate.ps1 for scoped solution validation",
+        });
+        continue;
+      }
       // Only run .NET validators if dotnet is available
       try {
         execSync("dotnet --version", { encoding: "utf8", stdio: "pipe" });
