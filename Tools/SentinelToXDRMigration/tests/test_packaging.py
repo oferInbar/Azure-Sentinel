@@ -31,6 +31,12 @@ class PackagingTests(unittest.TestCase):
         package.mkdir()
         script.parent.mkdir(parents=True)
         script.write_text("", encoding="utf-8")
+        contract = script.parent.parent / "common" / "contentDeploymentParameters.json"
+        contract.parent.mkdir()
+        contract.write_bytes((
+            Path(__file__).resolve().parents[2] / "Create-Azure-Sentinel-Solution"
+            / "common" / "contentDeploymentParameters.json"
+        ).read_bytes())
         (detections / "Detection.yaml").write_text("kind: CustomDetection\n", encoding="utf-8")
         (data / "Solution_Sample.json").write_text(
             json.dumps({
@@ -46,6 +52,20 @@ class PackagingTests(unittest.TestCase):
             "testParameters.json",
         ):
             (package / name).write_text("{}", encoding="utf-8")
+        parameters = {
+            "DeployCustomDetection": {"type": "bool", "defaultValue": False},
+        }
+        (package / "mainTemplate.json").write_text(json.dumps({"parameters": parameters}))
+        (package / "testParameters.json").write_text(json.dumps(parameters))
+        (package / "createUiDefinition.json").write_text(json.dumps({
+            "parameters": {
+                "outputs": {"DeployCustomDetection": "[steps('contentSelection').DeployCustomDetection]"},
+                "steps": [{"name": "contentSelection", "elements": [{
+                    "name": "DeployCustomDetection", "type": "Microsoft.Common.CheckBox",
+                    "defaultValue": False,
+                }]}],
+            },
+        }))
         with zipfile.ZipFile(package / "1.2.3.zip", "w") as archive:
             archive.writestr("mainTemplate.json", "{}")
             archive.writestr("createUiDefinition.json", "{}")
@@ -81,6 +101,9 @@ class PackagingTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertIn("createSolutionV3_1.ps1", command[3])
         self.assertEqual("none", command[-1])
+        self.assertFalse(any("E5" in value or "Registration" in value for value in command))
+        self.assertEqual({"DeployCustomDetection": False}, result["deploymentParameters"])
+        self.assertEqual("unverified", result["customDetectionRegistrationSupport"])
         self.assertEqual(self.repository, run.call_args.kwargs["cwd"])
         which.assert_called_once_with("pwsh")
 
@@ -177,6 +200,22 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(
             [source], json.loads(Path(result["packageReport"]).read_text())["attributionSources"]
         )
+
+    @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
+    @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
+    def test_tactic_and_registration_warnings_are_visible_and_persisted(self, run, which) -> None:
+        warnings = [
+            "WARNING: V3.1 TACTIC SELECTION: first authored tactic 'Execution'; omitted tactics: Persistence",
+            "WARNING: V3.1 CONTENT SELECTION: live provider registration support remains unverified.",
+        ]
+        run.return_value = CompletedProcess(
+            [], 0, "Starting Package Creation using V3.1 tool\n" + "\n".join(warnings), "",
+        )
+        with mock.patch("sys.stderr") as stderr:
+            result = package_solution_v3_1(self.solution, version_bump="none")
+        self.assertTrue(stderr.write.called)
+        self.assertEqual(warnings, result["warnings"])
+        self.assertEqual(warnings, json.loads(Path(result["packageReport"]).read_text())["warnings"])
 
 
 if __name__ == "__main__":

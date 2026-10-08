@@ -17,13 +17,16 @@ deployment mode.
 Validate and optionally deploy `Package\mainTemplate.json` as a complete
 solution:
 
-- `E5Flavor=false` validates the Sentinel Analytic Rule installation path.
-- `E5Flavor=true` validates the Defender XDR Custom Detection installation
-  path.
+- `DeployAnalyticsRule=true` selects Sentinel Analytic Rule content.
+- `DeployCustomDetection=true` selects both Defender XDR Custom Detection
+  installation and Content Hub registration, independently of Sentinel content.
+  Both selections may be true. Use only parameters declared by the package.
 
-Run an Azure Resource Manager validation or what-if before create. Do not
-enable Custom Detection Content Hub registration unless explicitly requested
-and supported by the live resource provider.
+Run an Azure Resource Manager validation or what-if before create. Registration
+support remains unverified; do not treat emitted templates as proof of live
+acceptance. The obsolete `RegisterE5Content` and `E5Flavor` controls are not
+declared. Exact-scope approval must explicitly include registration when
+selecting CDs. Existing instances are not disabled or removed by these switches.
 
 ### Alert-parity preparation
 

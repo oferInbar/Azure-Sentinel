@@ -547,7 +547,7 @@ def _next_action(status: str, findings: list[dict[str, Any]]) -> str:
         return "Inspect the recorded exclusion before changing scope."
     categories = {item["category"] for item in findings if item["severity"] in {"error", "review", "blocked"}}
     if "Tactics" in categories:
-        return "Select one tactic matching the query's observable behavior; retain all compatible techniques/subtechniques in this rule's override. See classification details."
+        return "Review invalid or incompatible classification metadata. Authoring preserves all source tactics; regenerate historical single-tactic drafts after review."
     if "Identity / entities" in categories:
         return "Confirm the output identity mapping against source evidence."
     return "Review the recorded reasons and resolve the rule-specific decision."
@@ -559,15 +559,17 @@ def _is_tactic_review(finding: dict[str, Any]) -> bool:
 
 def _tactic_guide() -> str:
     return (
-        '<details id="tactic-selection-guide-panel"><summary>Select one tactic; retain compatible techniques</summary>'
-        '<section id="tactic-selection-guide" aria-label="Primary tactic selection guidance" tabindex="-1">'
-        '<p><strong>Why this needs a decision:</strong> a Sentinel source rule can list multiple tactics and '
-        'an independent list of techniques. The current verified Defender behavior is <strong>one tactic, '
+        '<details id="tactic-selection-guide-panel"><summary>Preserve source tactics; review historical single-tactic findings</summary>'
+        '<section id="tactic-selection-guide" aria-label="Source tactic preservation guidance" tabindex="-1">'
+        '<p><strong>Historical finding:</strong> authoring now preserves all source tactics in source order, '
+        'with documented compatible techniques. Multiple tactics alone no longer require review. '
+        'Regenerate older drafts explicitly; this report does not clear historical findings.</p>'
+        '<p>V3.1 ARM packaging carries only the first tactic and its compatible techniques, without modifying YAML. '
+        'This classification loss is not validated parity. Direct Graph deployment remains <strong>one tactic, '
         'with multiple compatible techniques and subtechniques under it</strong> — not one technique only.</p>'
-        '<p>This is a <strong>classification review</strong>, not a query execution failure or a structural error. '
-        'Choose the primary tactic that describes the behavior the query actually observes, then retain the compatible '
-        'techniques/subtechniques supported by that behavior. Do not pair the source lists by position, copy every '
-        'technique into an arbitrary tactic, or accept the first tactic merely because it is in the draft.</p>'
+        '<p>Do not pair the source lists by position or copy every technique into every tactic. '
+        'Legacy overrides replace techniques only for their named source tactic; they cannot narrow or reorder the source tactics. '
+        'Unknown or incompatible classifications still require correction.</p>'
         '<p><strong>Verified scope (2026-10-07):</strong> an isolated Microsoft Graph beta create request with '
         'multiple tactics returned HTTP 400: <q>Multiple MITRE tactics are not supported. Specify a single tactic..</q> '
         'The Defender UI was confirmed to allow one tactic with multiple techniques; a read-back of a UI-created '
@@ -610,20 +612,20 @@ def _tactic_details(rule: dict[str, Any], findings: list[dict[str, Any]]) -> str
     )
     rule_id = (rule.get("analyticRule") or {}).get("id")
     example = {"ruleOverrides": {str(rule_id or "<source-rule-id>"): {
-        "tactic": "<one reviewed primary tactic>",
+        "tactic": "<existing source tactic whose techniques need correction>",
         "techniques": ["<compatible technique ID>", "<additional compatible technique or subtechnique ID, if applicable>"],
     }}}
     return (
-        '<section class="tactic-review"><h4>Primary tactic decision and retained techniques</h4>'
-        '<p><a href="#tactic-selection-guide">Why select one tactic while retaining multiple compatible techniques?</a></p>'
+        '<section class="tactic-review"><h4>Historical tactic finding and retained classification</h4>'
+        '<p><a href="#tactic-selection-guide">Authored YAML preserves all source tactics; deployment contracts differ.</a></p>'
         '<p>Source lists are independent; their positions do not establish tactic/technique pairings. '
         'Source metadata reflects the current file; provenance records the original conversion classification.</p>'
         + "".join(sections)
         + (
             '<p><strong>Unapproved fallback shape:</strong> this draft retains the first original tactic '
             f'({_text(original[0])}) with techniques omitted. It matches the converter fallback for an unresolved '
-            'multi-tactic source; it is not an approved classification. Select the intended primary tactic and '
-            'restore its compatible techniques/subtechniques through the reviewed override.</p>' if fallback else
+            'multi-tactic source; it is not an approved classification. Explicitly regenerate to preserve all source tactics '
+            'and their documented compatible techniques/subtechniques.</p>' if fallback else
             '<p>The draft shape is not treated as proof that a selection was approved. Resolve the recorded review reason explicitly.</p>'
         )
         + '<h5>Rule-specific override example — illustrative, not ready to apply</h5>'
@@ -632,7 +634,8 @@ def _tactic_details(rule: dict[str, Any], findings: list[dict[str, Any]]) -> str
         'Use technique IDs, including dotted subtechnique IDs where appropriate, in the existing '
         '<code>techniques</code> list. Merge this rule entry into the existing migration configuration; '
         'do not replace other rules. No tactic or technique is selected by this example. '
-        'A reviewed override and subsequent workflow checks are still required.</p></section>'
+        'An override is optional for technique corrections, not required merely for multiple tactics. '
+        'It does not remove or reorder source tactics. Subsequent workflow checks remain required.</p></section>'
     )
 
 
@@ -780,7 +783,7 @@ def render_dashboard(report: dict[str, Any]) -> str:
     for kind, labels in FINDING_LABELS.items():
         section = "".join(
             f'<li id="{group["id"]}">{_finding_badge(kind)} — '
-            + ('<a href="#tactic-selection-guide">Select one tactic; retain compatible techniques</a> '
+            + ('<a href="#tactic-selection-guide">Historical single-tactic finding; preserve source tactics</a> '
                if _is_tactic_review(group) else _text(group["message"]) + " ")
             + f'<button type="button" data-filter-issue="{group["id"]}">Show {len(group["rules"])} affected rules'
             f'<span class="muted"> · Issue {group["id"].split("-")[1]}</span></button></li>'
@@ -796,7 +799,7 @@ def render_dashboard(report: dict[str, Any]) -> str:
         for finding in findings:
             group = finding["group"]
             if _is_tactic_review(finding):
-                reason = '<a href="#tactic-selection-guide">Select one tactic; retain compatible techniques</a>'
+                reason = '<a href="#tactic-selection-guide">Historical single-tactic finding; preserve source tactics</a>'
             elif len(group["rules"]) > 1:
                 reason = f'<a href="#{group["id"]}">{_text(finding["category"])} · Issue {group["id"].split("-")[1]}</a>'
             else:

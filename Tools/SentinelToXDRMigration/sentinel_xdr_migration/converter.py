@@ -34,6 +34,10 @@ DETECTION_API_VERSION = "2026-06-01-preview"
 ENTITY_CONFIRMATION_PREFIX = "Entity confirmation required:"
 REQUIRED_ASSET_COLLECTIONS = frozenset({"hosts", "accounts", "mailboxes", "ips"})
 SUPPORTED_SEVERITIES = frozenset({"informational", "low", "medium", "high"})
+MITRE_CATALOG_PATH = (
+    Path(__file__).resolve().parents[3]
+    / ".script/tests/detectionTemplateSchemaValidation/Models/ModelValidationAttributes/KillChainTechniquesHelper.cs"
+)
 SEARCH_REVIEW_REASON = "search queries should be replaced with explicit tables"
 BLOCKING_KQL_PATTERNS = {
     r"\bworkspace\s*\(": "cross-workspace queries require manual redesign",
@@ -166,6 +170,7 @@ class ConversionResult:
     warnings: tuple[str, ...]
     errors: tuple[str, ...]
     informational: tuple[str, ...] = ()
+    tactic_count: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -178,6 +183,9 @@ class ConversionResult:
             "warnings": list(self.warnings),
             "errors": list(self.errors),
             "informational": list(self.informational),
+            "directGraphDeploymentReady": (
+                self.status == "converted" and not self.review_required and self.tactic_count <= 1
+            ),
         }
 
 
@@ -848,6 +856,268 @@ def _techniques(values: list[str] | None) -> list[dict[str, Any]]:
     return result
 
 
+def _mitre_catalog() -> dict[str, set[str]]:
+    """Reuse the Sentinel validator's base-technique compatibility, including for subtechniques."""
+    text = MITRE_CATALOG_PATH.read_text(encoding="utf-8-sig")
+    catalog = {
+        tactic: set(re.findall(r'"(T\d{4})"', techniques))
+        for tactic, techniques in re.findall(
+            r'\{\s*Tactic\.(\w+),\s*new List<string>\(\)\s*\{([^}]*)\}', text
+        )
+        if tactic != "Unknown"
+    }
+    if not catalog or any(not techniques for techniques in catalog.values()):
+        raise ValueError("MITRE compatibility catalog is missing or malformed")
+    return catalog
+
+
+def _classification_payload(
+    tactics: Any, techniques: Any, override: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(tactics, list) or not all(isinstance(value, str) and value for value in tactics):
+        return [], ["source tactics must be an array of nonempty tactic identifiers"], []
+    unclassified = [{"tactic": tactic} for tactic in tactics]
+    try:
+        catalog = _mitre_catalog()
+    except (OSError, ValueError) as exc:
+        return unclassified, [f"Cannot resolve MITRE classification: {exc}"], []
+    if not isinstance(techniques, list) or not all(
+        isinstance(value, str) and re.fullmatch(r"T\d{4}(?:\.\d{3})?", value)
+        for value in techniques
+    ):
+        return unclassified, ["source relevantTechniques must be an array of technique IDs (Tdddd or Tdddd.ddd)"], []
+    for tactic in tactics:
+        if tactic not in catalog:
+            errors.append(f"unsupported source MITRE tactic: {tactic!r}")
+    for technique in techniques:
+        if not any(technique.split(".")[0] in catalog.get(tactic, set()) for tactic in tactics):
+            errors.append(f"MITRE technique {technique!r} has no documented compatible source tactic")
+
+    selected = override.get("tactic")
+    selected_techniques = override.get("techniques")
+    apply_override = False
+    if "tactic" in override or "techniques" in override:
+        if not isinstance(selected, str) or selected not in tactics or selected not in catalog:
+            errors.append("configured tactic override must name an existing supported source tactic; source tactics cannot be removed or replaced")
+        elif not isinstance(selected_techniques, list) or not all(
+            isinstance(value, str) and re.fullmatch(r"T\d{4}(?:\.\d{3})?", value)
+            and value.split(".")[0] in catalog[selected]
+            for value in selected_techniques
+        ):
+            errors.append(f"configured techniques override must contain documented compatible technique IDs for {selected}")
+        else:
+            apply_override = True
+            warnings.append(
+                f"Legacy tactic override updates techniques only for {selected}; "
+                "all source tactics and their order are preserved, not narrowed or reordered."
+            )
+    payload = []
+    for tactic in tactics:
+        relevant = (
+            selected_techniques if apply_override and tactic == selected else
+            [value for value in techniques if value.split(".")[0] in catalog.get(tactic, set())]
+        )
+        item: dict[str, Any] = {"tactic": tactic}
+        if relevant:
+            item["techniques"] = _techniques(relevant)
+        payload.append(item)
+    return payload, errors, warnings
+
+
+def _custom_detail_binding(query: str, column: str) -> str:
+    facts = _linear_facts(query)
+    if facts:
+        _, columns, assignments = facts
+        if columns is not None:
+            return "available" if column in columns else "missing"
+        if column in assignments:
+            return "available"
+    grouped = _linear_facts(query, allow_aggregation=True)
+    if grouped and grouped[1] is not None and column in grouped[1]:
+        return "available"
+    parts = _pipeline_parts(query)
+    if parts:
+        tail = list(parts[1:])
+        while tail and tail[-1] and tail[-1][0] == "where":
+            tail.pop()
+        if tail and tail[-1] and tail[-1][0] == "project":
+            items = _expression_items(tail[-1][1:])
+            if all(
+                item and re.fullmatch(r"[A-Za-z_]\w*", item[0])
+                and (len(item) == 1 or (len(item) >= 3 and item[1] == "="))
+                for item in items
+            ):
+                return "available" if column in {item[0] for item in items} else "missing"
+    tokens = _tokens(query)
+    if any(
+        tokens[index:index + 3] in (["project", "-", "away"], ["project", "-", "rename"])
+        for index in range(len(tokens) - 2)
+    ):
+        return "unproven-destructive-projection"
+    columns = projected_columns(query)
+    if columns is not None and column not in columns and "*" not in tokens:
+        return "missing"
+    return "runtime-binding-pending"
+
+
+def _entity_identifier_preserved(
+    entity_type: str, identifier: str, column: str, source_fields: dict[str, str],
+    mappings: dict[str, Any], query: str,
+) -> bool:
+    collection, identifiers = ENTITY_MAP.get(entity_type, ("", {}))
+    candidates = mappings.get(collection) or []
+    if not isinstance(candidates, list):
+        return False
+    candidates = [item for item in candidates if isinstance(item, dict)]
+    target = identifiers.get(identifier)
+    if target and any(item.get(target) == column for item in candidates):
+        return True
+    if entity_type == "Host" and identifier == "FullName":
+        return any(_host_full_name_preserved(source_fields, item, query) for item in candidates)
+    if entity_type == "Account":
+        if identifier == "FullName":
+            return any(
+                item.get("upnColumn") == column or
+                (item.get("nameColumn") == column and _valid_account(item))
+                for item in candidates
+            )
+        if identifier == "Name" and column.lower() in ACCOUNT_UPN_ALIASES:
+            return any(item.get("upnColumn") == column for item in candidates)
+    if entity_type == "FileHash" and identifier in {"Algorithm", "Value"}:
+        facts = _linear_facts(query)
+        algorithm = facts[2].get(source_fields.get("Algorithm", "")) if facts else None
+        target = {"'SHA1'": "sha1Column", "'SHA256'": "sha256Column"}.get(
+            algorithm[0].upper() if algorithm and len(algorithm) == 1 else ""
+        )
+        return bool(target) and any(
+            item.get(target) == source_fields.get("Value") for item in candidates
+        )
+    return False
+
+
+def _supplemental_custom_details(
+    doc: dict[str, Any], override: dict[str, Any], mappings: dict[str, Any],
+    query: str, column_mappings: dict[str, str],
+) -> tuple[Any, list[dict[str, Any]], list[str], list[str], list[str]]:
+    details: dict[str, Any] = {}
+    evidence: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    information: list[str] = []
+    errors: list[str] = []
+    for origin, container in (("source", doc), ("configured override", override)):
+        if "customDetails" not in container:
+            continue
+        value = container["customDetails"]
+        if not isinstance(value, dict):
+            errors.append(f"{origin} customDetails must be an object of nonempty key-to-query-column strings")
+            if origin == "source":
+                return deepcopy(value), evidence, warnings, information, errors
+            continue
+        for key, source_column in value.items():
+            if not isinstance(key, str) or not key or not isinstance(source_column, str) or not source_column:
+                errors.append(f"{origin} customDetails contains an invalid key or query-column value: {key!r}")
+                column = deepcopy(source_column)
+            else:
+                column = column_mappings.get(source_column, source_column)
+            if key in details and details[key] != column:
+                errors.append(f"customDetails key {key!r} conflicts with the existing source binding; no value was overwritten")
+            else:
+                details[key] = column
+    for key, column in details.items():
+        if not isinstance(column, str) or not column:
+            continue
+        binding = _custom_detail_binding(query, column)
+        if binding in {"missing", "unproven-destructive-projection"}:
+            errors.append(f"customDetails {key!r} column `{column}` is missing or unproven after projection; explicit binding retained for correction")
+        elif binding != "available":
+            warnings.append(f"customDetails {key!r} column `{column}` requires runtime output-schema binding verification")
+
+    for index, entity in enumerate(doc.get("entityMappings") or [], start=1):
+        entity_type = str(entity.get("entityType") or "UnknownEntity")
+        source_fields = {
+            str(field.get("identifier") or ""): column_mappings.get(
+                str(field.get("columnName") or ""), str(field.get("columnName") or ""),
+            )
+            for field in entity.get("fieldMappings") or []
+        }
+        for field in entity.get("fieldMappings") or []:
+            identifier = str(field.get("identifier") or "")
+            source_column = str(field.get("columnName") or "")
+            column = column_mappings.get(source_column, source_column)
+            if not identifier or not column:
+                continue
+            if _entity_identifier_preserved(entity_type, identifier, column, source_fields, mappings, query):
+                continue
+            binding = _custom_detail_binding(query, column)
+            record: dict[str, Any] = {
+                "entityType": entity_type, "entityIndex": index, "identifier": identifier,
+                "sourceColumn": source_column, "column": column, "status": binding,
+            }
+            evidence.append(record)
+            warnings.append(
+                f"{entity_type}.{identifier} column `{column}` is not retained by an equivalent entity mapping; "
+                "custom details do not restore entity identity or correlation"
+            )
+            if binding in {"missing", "unproven-destructive-projection"}:
+                record["status"] = "not-preserved"
+                record["reason"] = binding
+                warnings.append(
+                    f"Supplemental {entity_type}.{identifier} information is not preserved: column `{column}` "
+                    "is missing or unproven after projection. No invalid binding was added and KQL was not rewritten"
+                )
+                continue
+            key = next((key for key, value in details.items() if value == column and isinstance(key, str)), None)
+            if key is None:
+                base = re.sub(r"[^A-Za-z0-9]", "", entity_type + identifier) or "EntityDetail"
+                key = base
+                suffix = 2
+                while key in details:
+                    key = f"{base}_{suffix}"
+                    suffix += 1
+                details[key] = column
+            record["customDetailKey"] = key
+            information.append(
+                f"Supplemental {entity_type}.{identifier} value is configured as customDetails.{key} "
+                f"from query column `{column}` ({binding}); this is not entity-identity or alert-parity equivalence"
+            )
+            if binding == "runtime-binding-pending":
+                warnings.append(
+                    f"Supplemental customDetails.{key} column `{column}` requires runtime output-schema binding verification"
+                )
+    if len(details) > 20:
+        errors.append(
+            f"customDetails contains {len(details)} pairs, exceeding the documented 20-pair limit; "
+            "no details were truncated. Review the source and supplemental details"
+        )
+    if sum(len(key.encode("utf-8")) for key in details if isinstance(key, str)) > 4096:
+        errors.append("customDetails keys alone exceed the documented combined 4 KB per-alert limit; no keys were truncated")
+    if details:
+        warnings.append(
+            "Custom-detail values must remain within the documented combined 4 KB per-alert limit; "
+            "runtime values are unverified and the service drops all custom details if exceeded"
+        )
+    return details, evidence, warnings, information, errors
+
+
+def custom_detail_schema_errors(document: dict[str, Any], schema: list[dict[str, Any]]) -> list[str]:
+    alert = ((document.get("properties") or {}).get("detectionAction") or {}).get("alertTemplate") or {}
+    details = alert.get("customDetails") or {}
+    if not isinstance(details, dict):
+        return ["customDetails must be an object"]
+    if not isinstance(schema, list):
+        return ["customDetails binding verification requires a runtime output schema"]
+    columns = {
+        str(item.get("name") or item.get("Name") or "")
+        for item in schema if isinstance(item, dict)
+    }
+    return [
+        f"customDetails {key!r} column `{column}` is absent from the runtime output schema"
+        for key, column in details.items() if not isinstance(column, str) or column not in columns
+    ]
+
+
 def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]) -> dict[str, Any]:
     with source.open(encoding="utf-8-sig") as handle:
         doc = yaml.safe_load(handle) or {}
@@ -888,10 +1158,12 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
     rule_override = (config.get("ruleOverrides") or {}).get(source_id) or {}
 
     entity_information: list[str] = []
+    column_mappings = query_column_renames(converted_query)
+    column_mappings.update(_configured_column_mappings(config))
     mappings, mapping_warnings = convert_entities(
         doc,
         converted_query,
-        _configured_column_mappings(config),
+        column_mappings,
         informational=entity_information,
     )
     configured_entity_mappings = rule_override.get("entityMappings")
@@ -928,31 +1200,26 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
         entity_review_reasons = []
     warnings.extend(mapping_warnings)
     review_reasons.extend(entity_review_reasons)
+    custom_details, supplemental_evidence, detail_warnings, detail_information, detail_errors = _supplemental_custom_details(
+        doc, rule_override, mappings, converted_query, column_mappings,
+    )
+    warnings.extend(detail_warnings)
+    informational.extend(detail_information)
+    errors.extend(detail_errors)
 
-    source_tactics = [str(value) for value in doc.get("tactics") or [] if value]
-    source_relevant = [
-        str(value) for value in doc.get("relevantTechniques") or [] if value
-    ]
-    tactics = list(source_tactics)
-    relevant = list(source_relevant)
-    if len(tactics) > 1:
-        selected_tactic = rule_override.get("tactic")
-        selected_techniques = rule_override.get("techniques")
-        if selected_tactic:
-            tactics = [str(selected_tactic)]
-            relevant = [str(value) for value in selected_techniques or [] if value]
-            warnings.append(
-                "multiple source tactics were resolved by the configured per-rule override"
-            )
-        else:
-            reason = (
-                "Custom Detections support one tactic; configure ruleOverrides."
-                f"{source_id}.tactic and techniques"
-            )
-            warnings.append(reason)
-            review_reasons.append(reason)
-            tactics = [tactics[0]]
-            relevant = []
+    source_tactics = deepcopy(doc.get("tactics", []))
+    source_relevant = deepcopy(doc.get("relevantTechniques", []))
+    tactic_payload, classification_errors, classification_warnings = _classification_payload(
+        source_tactics, source_relevant, rule_override,
+    )
+    errors.extend(classification_errors)
+    warnings.extend(classification_warnings)
+    if len(tactic_payload) > 1:
+        informational.append(
+            "All source MITRE tactics are preserved in source order in authored YAML. "
+            "V3.1 ARM packaging carries only the first tactic and its compatible techniques; "
+            "this classification loss is not validated parity. Direct Graph deployment requires a single tactic."
+        )
     if not mappings:
         errors.append("no supported entity mappings were produced")
     elif not REQUIRED_ASSET_COLLECTIONS.intersection(mappings):
@@ -986,14 +1253,6 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
         warnings.append(f"unsupported severity {severity!r}; changed to medium")
         severity = "medium"
 
-    tactic_payload: list[dict[str, Any]] = []
-    if tactics:
-        tactic = {"tactic": tactics[0]}
-        technique_payload = _techniques(relevant)
-        if technique_payload:
-            tactic["techniques"] = technique_payload
-        tactic_payload.append(tactic)
-
     alert: dict[str, Any] = {
         "title": display_name[:120],
         "description": str(doc.get("description") or display_name).strip()[:600],
@@ -1002,6 +1261,8 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
     }
     if tactic_payload:
         alert["tactics"] = tactic_payload
+    if custom_details or "customDetails" in doc or "customDetails" in rule_override:
+        alert["customDetails"] = custom_details
 
     blocking_review_reasons = [
         reason
@@ -1046,6 +1307,7 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
                 "errors": errors,
                 "originalTactics": source_tactics,
                 "originalTechniques": source_relevant,
+                **({"supplementalEntityDetails": supplemental_evidence} if supplemental_evidence else {}),
                 **(
                     {"acceptedReviewReasons": sorted(accepted_review_reasons)}
                     if accepted_review_reasons
@@ -1174,12 +1436,46 @@ def validate_document(document: dict[str, Any]) -> list[str]:
         errors.append("properties.queryCondition.queryText is required")
     alert = ((properties.get("detectionAction") or {}).get("alertTemplate") or {})
     mappings = alert.get("entityMappings") or {}
+    custom_details = alert.get("customDetails")
+    if isinstance(custom_details, dict):
+        if sum(len(key.encode("utf-8")) for key in custom_details if isinstance(key, str)) > 4096:
+            errors.append("customDetails keys alone exceed the documented combined 4 KB per-alert limit")
+        for key, column in custom_details.items():
+            if isinstance(column, str) and _custom_detail_binding(query, column) in {"missing", "unproven-destructive-projection"}:
+                errors.append(f"customDetails {key!r} column `{column}` is missing or unproven after projection")
     if not mappings:
         errors.append("alertTemplate.entityMappings is required")
     if not REQUIRED_ASSET_COLLECTIONS.intersection(mappings):
         errors.append("at least one Host, Account, Mailbox, or IP mapping is required")
-    if len(alert.get("tactics") or []) > 1:
-        errors.append("at most one tactic is supported")
+    tactics = alert.get("tactics") or []
+    if isinstance(tactics, list) and tactics:
+        try:
+            catalog = _mitre_catalog()
+        except (OSError, ValueError) as exc:
+            errors.append(f"Cannot validate MITRE classification: {exc}")
+        else:
+            for item in tactics:
+                if not isinstance(item, dict):
+                    continue
+                tactic = item.get("tactic")
+                if not isinstance(tactic, str) or tactic not in catalog:
+                    errors.append(f"unsupported MITRE tactic: {tactic!r}")
+                    continue
+                technique_items = item.get("techniques") or []
+                if not isinstance(technique_items, list):
+                    continue
+                for technique in technique_items:
+                    if not isinstance(technique, dict):
+                        continue
+                    base = technique.get("technique")
+                    if not isinstance(base, str) or base not in catalog[tactic]:
+                        errors.append(f"MITRE technique {base!r} is not documented for tactic {tactic}")
+                    subtechniques = technique.get("subTechniques") or []
+                    if not isinstance(subtechniques, list):
+                        continue
+                    for sub in subtechniques:
+                        if not isinstance(sub, str) or not re.fullmatch(r"T\d{4}\.\d{3}", sub) or sub.split(".")[0] != base:
+                            errors.append(f"MITRE subtechnique {sub!r} must belong to technique {base!r}")
     return errors
 
 
@@ -1402,6 +1698,7 @@ def convert_solution(
                 tuple(conversion["warnings"]),
                 tuple(conversion["errors"]),
                 tuple(conversion.get("informational") or []),
+                len(document["properties"]["detectionAction"]["alertTemplate"].get("tactics") or []),
             )
         )
 
@@ -1429,7 +1726,8 @@ def convert_solution(
         "needsReview": sum(result.status == "needsReview" for result in results),
         "reviewRequired": sum(result.review_required for result in results),
         "deploymentReady": sum(
-            result.status == "converted" and not result.review_required for result in results
+            result.status == "converted" and not result.review_required and result.tactic_count <= 1
+            for result in results
         ),
         "conflicts": sum(result.status == "conflict" for result in results),
         "results": [
@@ -1498,13 +1796,19 @@ def runtime_validation_plan(solution: str | Path) -> dict[str, Any]:
                 "sourceRule": str(source_path),
                 "sentinelQuery": str(source.get("query") or ""),
                 "advancedHuntingQuery": document["properties"]["queryCondition"]["queryText"],
+                "customDetailBindings": deepcopy(
+                    document["properties"]["detectionAction"]["alertTemplate"].get("customDetails") or {}
+                ),
             }
         )
     return {
         "solution": str(root),
         "instructions": (
             "Run sentinelQuery and advancedHuntingQuery through the Microsoft Sentinel "
-            "the configured runtime providers. Record execution errors and compare output entities."
+            "the configured runtime providers. Record execution errors and compare output entities. "
+            "Verify every customDetailBindings value against the returned Advanced Hunting output schema; "
+            "query success alone does not prove these bindings. Check the combined custom-detail runtime "
+            "value size against the documented 4 KB per-alert limit."
         ),
         "rules": plan,
     }

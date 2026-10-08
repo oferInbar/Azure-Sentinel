@@ -143,6 +143,47 @@ function ConvertTo-CustomDetectionArmLiteral {
     return "[if(true(), '$escapedValue', '$escapedValue')]"
 }
 
+function Set-V31CustomDetectionTactics {
+    param([psobject]$DetectionResource, [string]$DetectionId)
+    $alertTemplate = $DetectionResource.properties.detectionAction.alertTemplate
+    if ($null -eq $alertTemplate.PSObject.Properties['tactics']) { return }
+    $tactics = $alertTemplate.tactics
+    if ($tactics -isnot [array] -or $tactics.Count -eq 0) {
+        throw "Custom Detection '$DetectionId' tactics must be a nonempty array when supplied."
+    }
+    foreach ($tactic in $tactics) {
+        if ($tactic -isnot [pscustomobject] -or $tactic.tactic -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($tactic.tactic)) {
+            throw "Custom Detection '$DetectionId' tactics must contain objects with a nonempty tactic name."
+        }
+        if ($null -ne $tactic.PSObject.Properties['techniques']) {
+            if ($tactic.techniques -isnot [array]) {
+                throw "Custom Detection '$DetectionId' tactic techniques must be an array."
+            }
+            foreach ($technique in $tactic.techniques) {
+                if ($technique -isnot [pscustomobject] -or $technique.technique -isnot [string] -or
+                    [string]::IsNullOrWhiteSpace($technique.technique)) {
+                    throw "Custom Detection '$DetectionId' techniques must contain objects with a nonempty technique name."
+                }
+                if ($null -ne $technique.PSObject.Properties['subTechniques'] -and (
+                    $technique.subTechniques -isnot [array] -or
+                    @($technique.subTechniques | Where-Object {
+                        $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_)
+                    }).Count -gt 0)) {
+                    throw "Custom Detection '$DetectionId' subTechniques must be an array of nonempty strings."
+                }
+            }
+        }
+    }
+    if ($tactics.Count -gt 1) {
+        # The current Custom Detections beta API accepts only one tactic. Preserve all
+        # tactics in authoring YAML; remove this payload restriction once the API supports multiple tactics.
+        $alertTemplate.tactics = @($tactics[0])
+        $dropped = ($tactics | Select-Object -Skip 1 | ForEach-Object { $_.tactic }) -join ', '
+        Write-Warning "V3.1 TACTIC SELECTION: Custom Detection '$DetectionId' ARM install and registration retain the first authored tactic '$($tactics[0].tactic)' and its techniques; omitted tactics: $dropped. Source order is preserved; this is an API payload restriction, not a recommended classification or full tactic coverage. Authored YAML and provenance are unchanged."
+    }
+}
+
 function Get-AnalyticRuleContentTemplateIndex {
     param(
         [Parameter(Mandatory = $true)]
@@ -229,7 +270,7 @@ function New-CustomDetectionInstallDeployment {
         type       = 'Microsoft.Resources/deployments'
         apiVersion = '2025-04-01'
         name       = $DeploymentName
-        condition  = "[parameters('E5Flavor')]"
+        condition  = "[parameters('DeployCustomDetection')]"
         dependsOn  = @(
             "[extensionResourceId(resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspace')), 'Microsoft.SecurityInsights/contentPackages', variables('_solutionId'))]"
         )
@@ -320,7 +361,7 @@ function New-CustomDetectionRegistration {
         apiVersion = '2023-04-01-preview'
         name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(parameters('workspace'),'-cd-',uniquestring('$escapedContentId')))]"
         location   = "[parameters('workspace-location')]"
-        condition  = "[and(parameters('E5Flavor'), parameters('RegisterE5Content'))]"
+        condition  = "[parameters('DeployCustomDetection')]"
         dependsOn  = @(
             "[resourceId('Microsoft.Resources/deployments', '$DeploymentName')]",
             "[extensionResourceId(resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspace')), 'Microsoft.SecurityInsights/contentPackages', variables('_solutionId'))]"
@@ -348,30 +389,14 @@ function Add-XdrCustomDetectionsToSolution {
         Import-Module powershell-yaml -ErrorAction Stop
     }
 
-    if ($null -eq $Template.parameters.E5Flavor) {
-        $Template.parameters | Add-Member -MemberType NoteProperty -Name E5Flavor -Value ([pscustomobject]@{
-            type         = 'bool'
-            defaultValue = $false
-            metadata     = [pscustomobject]@{
-                description = 'When true, install the E5 / XDR-native custom detections instead of the analytic rules they replace.'
-            }
-        })
-    }
-    $includeRegistration = $false
     $registrationProperty = $ContentToImport.PSObject.Properties |
         Where-Object { $_.Name -ieq 'Include XDR Content Registration' } |
         Select-Object -First 1
     if ($null -ne $registrationProperty) {
-        $includeRegistration = [System.Convert]::ToBoolean($registrationProperty.Value)
+        Write-Warning 'V3.1 CONTENT SELECTION: Include XDR Content Registration is deprecated and ignored (including false). Installation and registration are both emitted under DeployCustomDetection; live provider registration support remains unverified.'
     }
-    if ($includeRegistration -and $null -eq $Template.parameters.RegisterE5Content) {
-        $Template.parameters | Add-Member -MemberType NoteProperty -Name RegisterE5Content -Value ([pscustomobject]@{
-            type         = 'bool'
-            defaultValue = $false
-            metadata     = [pscustomobject]@{
-                description = 'Register each installed custom detection as Content Hub content. Leave false until CustomDetection content-template registration is supported by the live resource provider.'
-            }
-        })
+    else {
+        Write-Warning 'V3.1 CONTENT SELECTION: Custom Detection installation and registration are both emitted under DeployCustomDetection; live provider registration support remains unverified.'
     }
 
     $extensionVersion = '1.0.0'
@@ -438,7 +463,7 @@ function Add-XdrCustomDetectionsToSolution {
         if ([string]::IsNullOrWhiteSpace([string]$detectionDocument.properties.queryCondition.queryText)) {
             throw "Custom Detection '$detectionId' has no queryCondition.queryText."
         }
-        if (@($detectionDocument.properties.detectionAction.alertTemplate.tactics).Count -gt 1) {
+        if (-not $v31VersionPolicy -and @($detectionDocument.properties.detectionAction.alertTemplate.tactics).Count -gt 1) {
             throw "Custom Detection '$detectionId' contains more than one tactic; the service supports exactly one."
         }
         if ($null -eq $detectionDocument.properties.detectionAction.alertTemplate.entityMappings) {
@@ -453,8 +478,18 @@ function Add-XdrCustomDetectionsToSolution {
             type       = $resourceType
             properties = Copy-CustomDetectionObject -InputObject $detectionDocument.properties
         }
+        if ($v31VersionPolicy) {
+            Set-V31CustomDetectionTactics -DetectionResource $detectionResource -DetectionId $detectionId
+        }
 
-        Set-AnalyticRuleE5Condition -Template $Template -SourceId $sourceId -AnalyticRuleIndex $analyticRuleIndex
+        $variableName = $analyticRuleIndex[$sourceId]
+        $matches = @($Template.resources | Where-Object {
+            $_.properties.contentKind -eq 'AnalyticsRule' -and
+            $variableName -and ([string]$_.name).Contains("variables('$variableName')")
+        })
+        if ($matches.Count -ne 1) {
+            throw "Expected exactly one AnalyticsRule content template for Custom Detection source id '$sourceId'; found $($matches.Count)."
+        }
 
         $deploymentName = Get-CustomDetectionDeploymentName -SolutionName $SolutionName -DetectionId $detectionId
         $Template.resources += New-CustomDetectionInstallDeployment -DeploymentName $deploymentName -DetectionResource $detectionResource -ExtensionVersion $extensionVersion
@@ -470,9 +505,7 @@ function Add-XdrCustomDetectionsToSolution {
                 $contentVersion = $defaultContentVersion
             }
         }
-        if ($includeRegistration) {
-            $Template.resources += New-CustomDetectionRegistration -DeploymentName $deploymentName -DetectionResource $detectionResource -DetectionDocument $detectionDocument -ContentVersion $contentVersion -ExtensionVersion $extensionVersion
-        }
+        $Template.resources += New-CustomDetectionRegistration -DeploymentName $deploymentName -DetectionResource $detectionResource -DetectionDocument $detectionDocument -ContentVersion $contentVersion -ExtensionVersion $extensionVersion
         $count++
     }
 

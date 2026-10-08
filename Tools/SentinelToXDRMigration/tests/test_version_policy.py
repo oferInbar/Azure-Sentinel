@@ -84,7 +84,7 @@ class VersionPolicyTests(unittest.TestCase):
                             template = json.loads((self.solution / "Package/mainTemplate.json").read_text())
                             registered = [r for r in template["resources"]
                                           if r.get("properties", {}).get("contentKind") == "CustomDetection"]
-                            self.assertEqual(1 if registration else 0, len(registered))
+                            self.assertEqual(1, len(registered))
                             if registration:
                                 properties = registered[0]["properties"]
                                 self.assertEqual(version, properties["version"])
@@ -337,7 +337,8 @@ class VersionPolicyTests(unittest.TestCase):
         result = self.package(entry, False)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         template = json.loads((self.solution / "Package/mainTemplate.json").read_text())
-        xdr = next(r for r in template["resources"] if r.get("condition") == "[parameters('E5Flavor')]")
+        xdr = next(r for r in template["resources"] if r["type"] == "Microsoft.Resources/deployments"
+                   and r.get("condition") == "[parameters('DeployCustomDetection')]")
         self.assertEqual("9.0.0", xdr["properties"]["template"]["imports"]["MicrosoftSecurity"]["version"])
         self.assertEqual("Microsoft.Security/detectionRules@2025-06-01",
                          xdr["properties"]["template"]["resources"]["detectionRule"]["type"])

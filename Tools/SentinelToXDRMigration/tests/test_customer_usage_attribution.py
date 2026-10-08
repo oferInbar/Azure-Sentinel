@@ -156,7 +156,7 @@ class AttributionTests(unittest.TestCase):
                 "id": source_id,
                 "displayName": "Test detection", "status": "disabled",
                 "queryCondition": {"queryText": "print Test = 1"},
-                "detectionAction": {"alertTemplate": {"tactics": ["Execution"], "entityMappings": {}}},
+                "detectionAction": {"alertTemplate": {"tactics": [{"tactic": "Execution"}], "entityMappings": {}}},
             },
         }
         for folder, document in (("Analytic Rules", rule), ("XDR Detections", detection)):
@@ -191,7 +191,7 @@ class AttributionTests(unittest.TestCase):
             "foreach ($property in $metadata.PSObject.Properties) { "
             "if ($property.Name -notin @('version', 'trackingId')) { "
             "$data | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value } }; "
-            f"& {ps_literal(entry)} {ps_literal(self.repository)} 'Sample' $data "
+            f"& {ps_literal(entry)} {ps_literal(str(self.repository) + '/')} 'Sample' $data "
             "'Solution_Sample.json' 'Data Connectors' 'Data' 'test' '1' '1' "
             f"{ps_literal(calculated_version)} '3.0.0' $false{extra}"
         )
@@ -498,7 +498,7 @@ class AttributionTests(unittest.TestCase):
                 self.assertEqual(2, len(deployments))
                 self.assertIn(self.marker(TRACKING_ID), deployments)
                 xdr = next(r for r in deployments if r["name"] != TRACKING_ID)
-                self.assertEqual("[parameters('E5Flavor')]", xdr["condition"])
+                self.assertEqual("[parameters('DeployCustomDetection')]", xdr["condition"])
                 self.assertEqual("2.0", xdr["properties"]["template"]["languageVersion"])
                 self.assertIsInstance(xdr["properties"]["template"]["resources"], dict)
                 self.assertEqual(
@@ -507,7 +507,7 @@ class AttributionTests(unittest.TestCase):
                 )
                 analytic = next(r for r in template["resources"]
                                 if r.get("properties", {}).get("contentKind") == "AnalyticsRule")
-                self.assertEqual("[not(parameters('E5Flavor'))]", analytic["condition"])
+                self.assertEqual("[parameters('DeployAnalyticsRule')]", analytic["condition"])
                 self.assertEqual("3.0.0", analytic["properties"]["contentSchemaVersion"])
                 self.assertEqual("3.1.0", template["variables"]["_solutionVersion"])
                 self.assertNotIn("trackingId", json.dumps(template))

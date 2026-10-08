@@ -236,7 +236,8 @@ class PackagedIdentityTests(unittest.TestCase):
                 result = self.package(entry, pipeline)
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                 template = json.loads((self.solution / "Package/mainTemplate.json").read_text())
-                install = next(r for r in template["resources"] if r.get("condition") == "[parameters('E5Flavor')]")
+                install = next(r for r in template["resources"] if r["type"] == "Microsoft.Resources/deployments"
+                               and r.get("condition") == "[parameters('DeployCustomDetection')]")
                 registration = next(r for r in template["resources"]
                                     if r.get("properties", {}).get("contentKind") == "CustomDetection")
                 expected_id = f"[if(true(), '{SOURCE_ID}', '{SOURCE_ID}')]"

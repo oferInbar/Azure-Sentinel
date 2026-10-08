@@ -317,8 +317,8 @@ class ReportDashboardTests(unittest.TestCase):
         self.assertEqual(html.count('id="tactic-selection-guide"'), 1)
         for text in ("Unapproved fallback shape", "techniques omitted", "independent list",
                      "multiple compatible techniques and subtechniques", "not one technique only",
-                     "not a query execution failure or a structural error", "T1059", "T1005", "T1020",
-                     "Select one tactic; retain compatible techniques", "collection-shaped property",
+                     "Multiple tactics alone no longer require review", "T1059", "T1005", "T1020",
+                     "Preserve source tactics; review historical single-tactic findings", "collection-shaped property",
                      "not a claim", "ARM was tested"):
             self.assertIn(text, html)
         self.assertIn("Errors (0 rules)", html)
@@ -375,7 +375,7 @@ class ReportDashboardTests(unittest.TestCase):
         example = json.loads(parser.blocks[-1])
         self.assertEqual(list(example["ruleOverrides"]), [payload])
         override = example["ruleOverrides"][payload]
-        self.assertEqual(override["tactic"], "<one reviewed primary tactic>")
+        self.assertEqual(override["tactic"], "<existing source tactic whose techniques need correction>")
         self.assertEqual(len(override["techniques"]), 2)
         self.assertTrue(all(value.startswith("<") for value in override["techniques"]))
         self.assertIn("illustrative, not ready to apply", html)

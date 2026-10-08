@@ -330,9 +330,15 @@ class InformationContractTests(unittest.TestCase):
             "entityMappings": [entity("Host", FullName="DeviceName", HostName="HostName", DnsDomain="DnsDomain")],
         }
         rule.update(updates)
-        with patch.object(Path, "open", return_value=io.StringIO(yaml.safe_dump(rule))):
+        original_open = Path.open
+        source = Path("Example/Analytic Rules/Test.yaml")
+
+        def open_input(path, *args, **kwargs):
+            return io.StringIO(yaml.safe_dump(rule)) if path == source else original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", autospec=True, side_effect=open_input):
             with patch("sentinel_xdr_migration.converter.normalize_parser_bindings", side_effect=lambda query, _: (query, [])):
-                return build_xdr_document(Path("Example/Analytic Rules/Test.yaml"), Path("Example"), {})
+                return build_xdr_document(source, Path("Example"), {})
 
     def test_information_nonblocking_and_schema_optional(self):
         document = self.document()
@@ -351,6 +357,8 @@ class InformationContractTests(unittest.TestCase):
 
     def test_information_does_not_override_tactic_or_required_asset_gates(self):
         document = self.document(tactics=["Execution", "Collection"])
+        self.assertEqual("converted", document["contentProvenance"]["conversion"]["status"])
+        document = self.document(tactics=["Execution", "InvalidTactic"])
         conversion = document["contentProvenance"]["conversion"]
         self.assertEqual("needsReview", conversion["status"])
         self.assertTrue(conversion["reviewRequired"])

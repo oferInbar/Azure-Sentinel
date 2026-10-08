@@ -89,12 +89,53 @@ Each XDR Detection YAML contains:
 - optional top-level `requiredDataConnectors`, copied from source authoring
   metadata and never emitted as Graph/ARM detection-rule properties;
 - translated entity mappings;
-- one supported MITRE tactic;
+- all source MITRE tactics, in source order, with compatible techniques;
 - a `contentProvenance` block linking the detection to its source analytic
   rule and recording conversion warnings.
 
 The YAML contract is defined in
 [`schema/xdr-detection.schema.json`](schema/xdr-detection.schema.json).
+
+### MITRE authoring and deployment contracts
+
+Conversion preserves every source tactic in order in
+`properties.detectionAction.alertTemplate.tactics`, including two or more
+entries. Multiple tactics alone are not an error or a `needsReview` reason.
+Each entry contains only compatible source techniques/subtechniques. The
+converter reuses the repository Sentinel validator's
+`.script/tests/detectionTemplateSchemaValidation/Models/ModelValidationAttributes/KillChainTechniquesHelper.cs`
+catalog and its base-technique matching semantics for subtechniques; this
+catalog does not independently verify that a particular subtechnique suffix
+exists. Source tactic identifiers are retained as target tactic strings, not
+paired by position with the flat technique list. A technique shared by several
+documented tactics can appear under each of those tactics, never under an
+incompatible one. A tactic with no compatible techniques is retained without
+inventing any. Unknown tactics, malformed IDs, unmatched techniques, or an
+unavailable catalog remain blocking conversion/validation errors.
+The Graph `mitreTactic.tactic` reference defines a string, not a public enum.
+
+Original source lists remain independently preserved in
+`contentProvenance.conversion.originalTactics` and `originalTechniques`.
+Existing `ruleOverrides.<source-id>.tactic` plus `techniques` now correct only
+the techniques of that named source tactic. They never narrow the list or
+change source order; conversion emits an explicit legacy-override warning.
+The tactic must already occur in the source, and techniques must be compatible.
+An absent tactic, missing technique list, or invalid/incompatible override is
+a blocking error, not a silently ignored decision. To change source tactic
+intent, use the separate reviewed source-authoring process. Existing drafts
+are refreshed only with the normal explicit overwrite approval.
+
+**Authored YAML is not the deployed payload.** V3.1 ARM packaging copies only
+the first tactic entry, including its compatible nested techniques, into the
+deployment payload; it does not modify the multi-tactic YAML or provenance.
+This is intentional classification loss, not validated classification or alert
+parity. Direct Microsoft Graph deployment remains restricted to at most one
+tactic because the verified service rejected multiple tactics with HTTP 400.
+The direct deployment path fails instead of truncating or sending an illegal
+multi-tactic payload. `deploymentReady` counts and per-result
+`directGraphDeploymentReady` exclude authored multi-tactic documents even
+when conversion and authoring structural validation pass. No runtime or
+deployment success is inferred from authoring or packaging.
 
 ### Source-derived detection identity
 
@@ -160,6 +201,66 @@ not invent those mappings. These are converter limitations, not claims that
 Defender lacks the entity type. The required Host/Account/Mailbox/IP asset gate
 is unchanged.
 
+### Supplemental entity evidence in custom details
+
+Whenever source entity information lacks an equivalent final entity mapping,
+the converter also binds the original output value under
+`properties.detectionAction.alertTemplate.customDetails`. This applies to every
+entity family, unsupported identifiers, ambiguous repairs, conflicting mappings,
+and identifiers omitted by an explicit `ruleOverrides.<id>.entityMappings`.
+For example, a reviewed `hosts.nameColumn: HostName` plus IP mapping can retain
+the original Host.FullName value as `customDetails.HostFullName: DeviceName`.
+It does **not** map arbitrary FullName values to `nameColumn`, replace valid
+entities, remove mapping warnings/reviews, or claim restored identity,
+correlation, semantic equivalence, or alert parity.
+
+The [Graph `alertTemplate` contract](https://learn.microsoft.com/en-us/graph/api/resources/security-alerttemplate?view=graph-rest-beta)
+defines each custom-detail value as a **query output column name**, not an event
+literal or entity object. Its
+[`alertCustomDetails` resource](https://learn.microsoft.com/en-us/graph/api/resources/security-alertcustomdetails?view=graph-rest-beta)
+is an open key-value object. Source `customDetails` and per-rule override
+`customDetails` are merged, with the same configured/catalog column renames as
+converted KQL. Identical bindings are retained; a conflicting explicit key
+blocks conversion without overwriting the source value. Malformed declarations
+remain errors. Empty source objects remain empty when no supplement is needed.
+
+Automatic keys concatenate the entity type and source identifier using
+alphanumeric characters, for example `HostFullName` or `ProcessCommandLine`.
+Existing keys are never overwritten. A collision uses `_2`, `_3`, and so on
+in source mapping order; an existing detail for the same output column is reused
+instead of duplicated. Repeated conversion is deterministic. Query-proven
+equivalent mappings, such as an intact FullName decomposition into host name
+and DNS domain, need no redundant supplemental key.
+`contentProvenance.conversion.supplementalEntityDetails` records source entity
+index/type/identifier, original and converted column, selected detail key, and
+availability status. The actual detail bindings are normal Graph/ARM alert
+properties; this provenance remains outside deployment properties.
+
+Existing conservative KQL helpers distinguish known output columns, known
+missing columns, and runtime-binding-pending output. Automatic bindings are
+not emitted for projected-out columns or unproven destructive projections;
+warnings and provenance explicitly record unpreserved information. The
+converter never rewrites KQL to restore missing columns. Explicit source
+bindings to missing columns are retained for correction but fail validation.
+When output availability cannot be proven, a supplemental binding is labeled
+`runtime-binding-pending`, with an explicit warning rather than an availability
+claim. Runtime plans include `customDetailBindings`. Graph runtime validation
+checks every binding against the returned schema. Imported successful runtime
+results for detections with custom details must include the target query's
+`schema` array (`name` or `Name` per column); a count alone is blocked, and a
+missing bound column fails validation. Query execution alone does not establish
+detail binding or entity correlation.
+
+The [documented Defender limits](https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#add-custom-details)
+are **20 key-value pairs per rule** and **4 KB combined custom-detail keys and
+runtime values per alert**. More than 20 authored pairs or keys alone exceeding
+4 KB is a blocking error; nothing is silently truncated. The public references
+do not specify a separate per-key character limit, so none is invented.
+Runtime event-value size cannot be established from column names or schema:
+the converter warns that the service drops the whole custom-details array if
+the runtime limit is exceeded. Schema success is not proof of value-size safety;
+qualification must check actual values.
+
 `contentProvenance.conversion.informational` and manifest result
 `informational` are optional string lists for nonblocking explanations of
 preserved equivalents. They do not set errors, review reasons, or `needsReview`.
@@ -224,6 +325,44 @@ Missing or conflicting metadata is a specific tool/evidence limitation, not a
 reason to fabricate fields or ask the customer to guess. Resolve conflicts
 before claiming a safe transformation.
 
+### Repair metadata at both ends
+
+Metadata inconsistencies are not resolved merely by copying them faithfully and
+reporting an error. Within the approved content-authoring scope, the orchestrator
+must repair unambiguous, schema-defined metadata errors in both the Sentinel
+source and the corresponding XDR draft, then inform the user. This applies to
+all metadata, not only connector dependencies. It is a source-authoring
+maintenance step, **not** permission for the converter to edit Analytic Rules:
+normal conversion remains read-only with respect to source content, and no
+automatic repair engine is implemented by this policy.
+
+Only mechanical corrections with one defensible interpretation may be made
+without a further content decision. For example, when an AWSS3 entry contains
+`datatypes: [AWSVPCFlow]` but lacks the schema-required `dataTypes`, rename that
+key to `dataTypes` in the source, then explicitly refresh the corresponding
+draft. Do not normalize valid connector IDs, data-type values, arbitrary
+extension fields, order, duplicates, or absent/empty declarations. Conflicting
+keys or values, ambiguous intent, tactic/technique choices, entity meaning,
+identities, and release versions require an explicit decision; never invent a
+resolution or copy platform-specific metadata across incompatible contracts.
+
+1. Record the affected files, field paths, exact before/after values and schema
+   basis. Preserve earlier reports and query hashes before replacing evidence.
+2. Make the minimal approved source correction. Regenerate only the affected
+   draft with the reviewed configuration and explicit overwrite approval; use
+   `--rule-id` for an isolated repair so unrelated or deliberately deleted drafts
+   remain untouched. Respect the [single-rule scope contract](#single-rule-conversion).
+3. Check both declarations against their applicable schemas, their intended
+   correspondence, unchanged KQL/identity/version/lifecycle, and unrelated-file
+   hashes. Refresh conversion diagnostics through the existing tools, clearing
+   only errors actually resolved; record the repair and checks in run evidence.
+4. Tell the user what was repaired versus what remains unresolved, including
+   affected files and before/after values. Reports must disclose their scope.
+   Existing offline comparison pages and evidence exports remain historical
+   snapshots unless explicitly refreshed; never pair old content with new hashes.
+   Static metadata success does not make runtime checks passed: retain `notRun`,
+   mixed-surface reviews, warnings, and all unmet workflow gates.
+
 | Capability | Current implementation | Approved policy / pending work |
 | --- | --- | --- |
 | Standard schema resolution | `catalog.py` contains a finite table/rename catalog; `convert_query` applies token replacements. No general authoritative source/target schema resolver is implemented. | Resolve documented schemas and table-scoped lineage automatically; retain surface, source, and confidence evidence. |
@@ -231,7 +370,7 @@ before claiming a safe transformation.
 | Custom logs | `_CL` recognition identifies names, not a complete schema. | Infer only from actual available connector/DCR/table metadata; report missing/conflicting evidence explicitly. |
 | Runtime validation declined | YAML generation is possible without runtime access; existing structural/review checks and workflow gates remain. No general no-runtime completion/waiver mode is introduced here. | Show the disclosure below and specific checks. Any new optional-validation state/gate behavior requires a separate implementation decision. |
 | Entity equivalence | Documented identifier mappings and conservative proofs exist; unsupported mappings produce diagnostics. | Explain the exact retained identifiers, actual field loss, or proven equivalence; distinguish converter proof limits from target-contract limits. |
-| Source connector dependencies | Optional top-level `requiredDataConnectors` is deep-copied unchanged and structurally validated. Graph and inner ARM properties exclude it. | Target-specific dependency translation/registration remains separate pending work; source declarations do not prove deployment readiness. |
+| Source connector dependencies | Optional top-level `requiredDataConnectors` is deep-copied unchanged and structurally validated. Graph and inner ARM properties exclude it. | Repair schema-clear inconsistencies in source and draft through the authoring step above, then inform the user; converter source inputs remain read-only. Target-specific dependency translation/registration remains separate pending work; source declarations do not prove deployment readiness. |
 
 When runtime validation is declined, the review UI should say:
 
@@ -330,9 +469,13 @@ and additional per-entry metadata are deep-copied without normalization.
 Each entry must be an object containing a string `connectorId` and an array of
 strings `dataTypes`; additional properties remain extensible. Nulls, scalar
 lists, missing required members, and incorrectly typed members are invalid,
-not silently dropped. Conversion retains malformed metadata for review,
-records field-specific errors and `needsReview`, and structural validation
-rejects it. It is never counted as successfully converted.
+not silently dropped. At initial discovery, conversion retains malformed
+metadata for review, records field-specific errors and `needsReview`, and
+structural validation rejects it. It is never counted as successfully converted.
+This preservation is not the final authoring outcome: follow
+[repair metadata at both ends](#repair-metadata-at-both-ends) to correct
+schema-clear errors in source and draft, or obtain a decision for ambiguous
+conflicts, then report the repaired and outstanding findings.
 
 1. [`build_xdr_document`](sentinel_xdr_migration/converter.py)
    validates source dependency metadata against the output field schema and
@@ -1027,9 +1170,10 @@ diagnostics per rule. A warning repeated verbatim as an explicit review reason
 is counted once as a review, preserving both original records in its evidence;
 unrelated warnings remain warnings. Types can overlap on the same rule.
 
-The shared **Select one tactic; retain compatible techniques** explanation
-distinguishes classification review from query execution failure or structural
-error. Current verified Defender UI / Graph beta behavior (2026-10-07) uses one
+The shared **Preserve source tactics; review historical single-tactic findings**
+explanation labels older single-tactic findings as historical and recommends
+explicit draft regeneration, not mandatory narrowing of authoring metadata.
+Current verified Defender UI / Graph beta behavior (2026-10-07) uses one
 tactic with multiple compatible techniques/subtechniques; the isolated beta
 multi-tactic create request was rejected. The documentation's collection-shaped
 `alertTemplate.tactics` property does not alone establish multi-tactic acceptance.
@@ -1041,9 +1185,9 @@ independently, the original lists retained in conversion provenance, and the
 exact current draft tactic/technique/subtechnique structure. Lists are never
 paired by position. A first-original-tactic draft with no techniques is labeled
 an unapproved fallback shape only when those recorded facts match. The report
-provides a rule-ID-specific, placeholder-only `ruleOverrides` example: select the
-tactic describing the observable query behavior and retain compatible technique
-IDs (including dotted subtechnique IDs). It never recommends a tactic from rule
+provides a rule-ID-specific, placeholder-only `ruleOverrides` example for optional
+technique corrections to one existing source tactic, without removing or
+reordering other tactics. It never recommends a tactic from rule
 names or silently applies an override, approves a mapping, edits KQL, or clears
 review gates. Absent classification metadata remains explicitly unrecorded.
 
@@ -1080,9 +1224,9 @@ The existing status controls and rule badges remain available.
 ### Reviewed bulk tactic exports
 
 The dashboard supports **pending review/export**, never automatic resolution.
-Only explicit single-tactic review findings with unique source IDs, valid source
+Only historical explicit single-tactic review findings with unique source IDs, valid source
 choices, and a recorded source-file SHA-256 are eligible. Select visible eligible
-rules or individual rules, choose a bulk primary tactic, then choose techniques
+rules or individual rules, choose a source tactic to correct, then choose techniques
 and confirm compatibility/observable behavior **individually for each rule**.
 Incompatible source tactics are refused with a reason; applying a new bulk
 tactic clears prior technique selections and confirmations. No compatibility
@@ -1090,6 +1234,10 @@ cross-product is invented. Rules needing a new tactic/technique absent from the
 source lists, an empty technique selection, missing metadata, mapping redesign,
 or timing/data-loss acceptance require individual review outside these controls.
 There is no blanket `acceptedReviewReasons` export.
+These legacy controls are optional technique corrections, not a requirement to
+choose one tactic for authored YAML. Conversion retains all source tactics in
+source order regardless of the selected override. Regeneration, rather than an
+exported decision alone, refreshes historical conversion findings.
 
 Import the existing **complete JSON configuration** to merge unrelated root
 settings, rule overrides, and other fields within selected rule overrides.

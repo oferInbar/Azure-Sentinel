@@ -21,6 +21,47 @@ DATA_EXCLUSIONS = {
 }
 
 
+def _deployment_parameters(
+    template: dict[str, Any], ui: dict[str, Any], test_parameters: dict[str, Any],
+    *, has_xdr: bool, contract_path: Path | None = None,
+) -> dict[str, bool]:
+    contract_path = contract_path or (
+        Path(__file__).resolve().parents[2] / "Create-Azure-Sentinel-Solution"
+        / "common" / "contentDeploymentParameters.json"
+    )
+    contract = _read_json(contract_path)
+    parameters = template.get("parameters", {})
+    if {"E5Flavor", "RegisterE5Content"} & parameters.keys():
+        raise RuntimeError("V3.1 package declares obsolete E5 deployment controls; rebuild it.")
+    selected = {name: value for name, value in parameters.items() if name.startswith("Deploy")}
+    outputs = ui.get("parameters", {}).get("outputs", {})
+    controls = {
+        element["name"]: element
+        for step in ui.get("parameters", {}).get("steps", [])
+        if step.get("name") == "contentSelection"
+        for element in step.get("elements", [])
+    }
+    if set(selected) != set(controls) or set(selected) != {
+        name for name in outputs if name.startswith("Deploy")
+    }:
+        raise RuntimeError("V3.1 deployment parameters and UI selections disagree.")
+    if test_parameters != parameters:
+        raise RuntimeError("V3.1 testParameters.json must match the declared parameter subset.")
+    for name, value in selected.items():
+        expected = contract.get(name)
+        if (
+            expected is None or value.get("type") != "bool"
+            or value.get("defaultValue") is not expected["defaultValue"]
+            or controls[name].get("defaultValue") is not expected["defaultValue"]
+            or controls[name].get("type") != "Microsoft.Common.CheckBox"
+            or outputs[name] != f"[steps('contentSelection').{name}]"
+        ):
+            raise RuntimeError(f"Invalid V3.1 content selection contract for {name}.")
+    if has_xdr != ("DeployCustomDetection" in selected):
+        raise RuntimeError("V3.1 Custom Detection declaration does not match the packaged XDR inputs.")
+    return {name: value["defaultValue"] for name, value in selected.items()}
+
+
 def _solution_data_file(data_directory: Path) -> Path:
     candidates = sorted(
         path
@@ -148,7 +189,10 @@ def package_solution_v3_1(
     if "Starting Package Creation using V3.1 tool" not in output:
         raise RuntimeError("Packaging output did not confirm the V3.1 entry point.")
     warnings = [
-        line for line in output.splitlines() if "CUSTOMER USAGE ATTRIBUTION:" in line
+        line for line in output.splitlines()
+        if any(label in line for label in (
+            "CUSTOMER USAGE ATTRIBUTION:", "V3.1 CONTENT SELECTION:", "V3.1 TACTIC SELECTION:",
+        ))
     ]
     for warning in warnings:
         print(warning, file=sys.stderr)
@@ -174,9 +218,11 @@ def package_solution_v3_1(
         raise RuntimeError(
             "V3.1 packaging completed without required artifacts: " + ", ".join(missing)
         )
-    _read_json(main_template)
-    _read_json(create_ui)
-    _read_json(test_parameters)
+    deployment_parameters = _deployment_parameters(
+        _read_json(main_template), _read_json(create_ui), _read_json(test_parameters),
+        has_xdr=bool(xdr_files),
+        contract_path=script.parent.parent / "common" / "contentDeploymentParameters.json",
+    )
     try:
         with zipfile.ZipFile(zip_path) as archive:
             names = {Path(name).name for name in archive.namelist()}
@@ -206,6 +252,8 @@ def package_solution_v3_1(
         "versionBump": version_bump,
         "solutionData": str(data_file),
         "xdrDetectionCount": len(xdr_files),
+        "deploymentParameters": deployment_parameters,
+        "customDetectionRegistrationSupport": "unverified" if xdr_files else "notApplicable",
         "mainTemplate": str(main_template),
         "createUiDefinition": str(create_ui),
         "testParameters": str(test_parameters),

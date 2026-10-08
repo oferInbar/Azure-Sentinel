@@ -49,6 +49,102 @@ The optional named `-SkipAttributionLookup` switch is available in both local
 and pipeline parameter sets. For CI callers that do not forward optional
 arguments, set `SENTINEL_SKIP_ATTRIBUTION_LOOKUP=1` in the process environment.
 
+## Independent content selection (V3.1 default)
+
+V3.1 local and pipeline output use independent ARM boolean `Deploy*` parameters,
+including Sentinel-only solutions. Only families actually emitted receive a
+parameter, UI checkbox/output, and `testParameters.json` entry. Legacy V3 keeps
+its existing behavior and has no new flags.
+
+For a solution carrying the five corresponding families:
+
+| Parameter | Default | Selected resources |
+|---|---|---|
+| `DeployAnalyticsRule` | `true` | AnalyticsRule and AnalyticsRuleTemplate content |
+| `DeployPlaybook` | `true` | Playbook/PlaybookTemplate, owned AzureFunction and LogicAppsCustomConnector assets |
+| `DeployWorkbook` | `true` | Sentinel Workbook and WorkbookTemplate content |
+| `DeployDataConnector` | `true` | DataConnector, ResourceDataConnector/ResourcesDataConnector, DataType, connector metadata and catalog resources |
+| `DeployCustomDetection` | `false` | Both Custom Detection installation and Content Hub registration |
+
+`common/contentDeploymentParameters.json` is the shared vocabulary used by
+generation, UI, Python artifact checks, and tests. HuntingQuery, InvestigationQuery,
+Parser, Watchlist/WatchlistTemplate, Notebook, AutomationRule and SummaryRule have
+their own `Deploy<Kind>` controls **when emitted**, not speculative empty controls.
+No DefenderWorkbook emitter/control is added. Classification uses content kinds,
+resource types and explicit emitter ownership, not display names, counts or
+query text. Unclassified content fails with its resource name/type/kind.
+
+For example, the relevant generated fragments are:
+
+```json
+"DeployAnalyticsRule": { "type": "bool", "defaultValue": true },
+"DeployCustomDetection": { "type": "bool", "defaultValue": false }
+```
+
+```text
+AnalyticsRule:        [parameters('DeployAnalyticsRule')]
+CD install:          [parameters('DeployCustomDetection')]
+CD registration:     [parameters('DeployCustomDetection')]
+```
+
+Both switches may be true or false independently. Selecting CDs does **not**
+suppress Sentinel templates, disable existing rule instances, or remove them.
+CDs remain packaged disabled. Existing resource conditions are AND-composed
+with the selection; existing variables, names, IDs, versions, resource bodies,
+dependency ordering and nested template scopes remain intact. Outer selections
+are not injected into stored templates or inner-scope deployment templates.
+The CD registration depends on its install wrapper and the package, never the
+reverse. The language-version-2 XDR template and MicrosoftSecurity import are
+unchanged.
+
+The content package and customer usage attribution marker remain unconditional;
+the legacy workspace query container is shared infrastructure with independently
+gated children. All selections false is permitted: package-only installation
+(plus shared infrastructure/attribution when present), not an uninstall operation.
+There is no new all-off runtime check. Existing package dependency criteria,
+including `AND` and external prerequisites, are deliberately unchanged. A
+selection can leave prerequisites unmet: the booleans do not rewrite dependency
+semantics, guarantee Content Hub acceptance, or provision missing dependencies.
+
+**Compatibility:** `E5Flavor` and `RegisterE5Content` are no longer generated.
+Update external parameter files to use only controls declared by that package;
+omitting a declared parameter uses its default, whereas explicit `false` skips
+that family. A package without CDs declares no `DeployCustomDetection`. The
+legacy Data key `Include XDR Content Registration`, whether absent, `true` or
+`false`, no longer controls emission. When present it produces a deprecation
+warning and is ignored: every packaged CD has both wrappers under the same
+switch. Remove this obsolete key from future Data files.
+
+`createUiDefinition.json` exposes the declared subset in **Content selection**.
+`testParameters.json` retains the existing parameter-definition format (including
+defaults), not ARM deployment `{"value": ...}` overrides. The migration CLI passes
+no legacy E5 controls; its report records `deploymentParameters`, visible build
+warnings and `customDetectionRegistrationSupport: "unverified"` for XDR packages.
+Live provider support for CustomDetection registration is **unverified**.
+Template emission and offline tests do not establish deployment/Marketplace
+acceptance. Any subsequent environment write requires separate approval.
+
+### First authored tactic in V3.1 ARM payloads
+
+Authored YAML may retain multiple tactics. V3.1 validates a supplied, nonempty
+array of tactic objects, then selects the **first entry in authored order** on
+a deep copy of deployment properties. Both install and registration get the
+same single-entry array, with that entry's techniques/subtechniques and ordering
+unchanged. No tactics are sorted, merged or reclassified, and no technique from
+another entry is moved into the selected tactic. Omitted optional tactics remain
+omitted; malformed supplied lists fail before output.
+
+This restriction exists because the current Custom Detections beta API accepts
+only one tactic. Remove it deliberately once the API supports multiple tactics;
+there is no automatic future-capability detection. Authored YAML, original
+Sentinel rules, source provenance and full authoring classification remain
+unchanged. Every truncation emits `V3.1 TACTIC SELECTION:` with the selected first
+tactic and all omitted tactics; the migration CLI displays and persists the
+warning. This is an API payload restriction, **not** a user-reviewed recommended
+classification or a claim of full tactic coverage. A single tactic passes through
+unchanged without a truncation warning. Legacy V3 and direct Graph deployment
+behavior are unchanged; the Graph single-tactic guard still applies.
+
 ## Operational and PR evidence exclusions
 
 Solution content references must not include `Logs`, `Reports`, or `Evidence`
@@ -69,10 +165,10 @@ successfully packaged individual detections in the Basics description of
 Queries; zero-count categories are omitted. For example:
 **Analytic Rules:** 15, **XDR Detections:** 15, **Hunting Queries:** 15.
 
-This is an inventory count, independent of enabled status or the E5 selection.
-Deployment wrappers, optional content registrations, and customer usage
-attribution markers do not add to it. No navigation step or selector is added,
-and the API/schema kind remains `CustomDetection`. Legacy V3 and
+This is an inventory count, independent of enabled status or the content selections.
+Deployment wrappers, content registrations, and customer usage attribution
+markers do not add to it. The API/schema kind remains `CustomDetection`; the
+separate Content selection step controls deployment, not inventory. Legacy V3 and
 `pipeline/createSolutionV4.ps1` descriptions are unchanged.
 
 ## Release-version bounds (V3.1 only)
@@ -124,7 +220,7 @@ Regeneration preserves valid existing XDR versions for the same source rule;
 it does not reset `3.1.1` or silently replace an invalid `4.0.0`.
 `contentProvenance.source.version` remains the original Sentinel release.
 The packager uses the XDR version for registration metadata and content product
-IDs, and checks it even when `Include XDR Content Registration` is false.
+IDs, regardless of the deprecated `Include XDR Content Registration` setting.
 Data `XDR Detection Version`, solution version, and source provenance are not
 fallbacks in V3.1. Missing or invalid XDR versions fail before package output.
 For older files with no top-level version, review manual edits and explicitly
@@ -228,7 +324,7 @@ rebuild rather than rename or edit old reports.
 From the repository root (Python 3.11/3.12, PowerShell 7, and `powershell-yaml`):
 
 ```bash
-PYTHONPATH=Tools/SentinelToXDRMigration:Tools/SentinelToXDRMigration/tests python -m unittest test_packaging test_workflow test_customer_usage_attribution test_version_policy test_xdr_description_counts test_converter
+PYTHONPATH=Tools/SentinelToXDRMigration:Tools/SentinelToXDRMigration/tests python3.12 -m unittest test_content_deployment_parameters test_packaging test_workflow test_customer_usage_attribution test_version_policy test_xdr_description_counts test_detection_identity test_connector_metadata test_parser_bindings
 ```
 
 The attribution tests exercise both local and positional pipeline entry points
@@ -248,10 +344,21 @@ mutation.
 Converter tests cover independent XDR initialization, unchanged source provenance,
 version preservation, explicit legacy reconversion, and invalid-version conflicts.
 Description-count tests cover zero, one, and multiple XDR detections, mixed
-inventories, registration on/off, attribution exclusion, Markdown/HTML and ZIP
+inventories, deprecated registration true/false (both emit), attribution exclusion, Markdown/HTML and ZIP
 consistency, failed generation without partial output, and unchanged legacy
 descriptions. Formatter tests also cover XDR-only and trailing/empty categories;
 actual XDR packaging still requires the matching source Analytic Rules.
+
+Content-selection tests evaluate all 32 combinations of the five reference
+switches against resource identities, existing-condition composition, nested
+scope/body preservation, connector companions, playbook automation assets,
+unknown-kind rejection, defaults and omission, local/pipeline and V3 isolation,
+and declaration/UI/test-parameter agreement. Real mixed-family fixtures provide
+workbook metadata at the existing repository-relative lookup location; that
+pre-existing path resolution is not changed here. Tactic tests cover two/three
+entries, reversed source order, single-tactic preservation, malformed input,
+consistent deep-copied install/registration payloads, visible persisted warnings
+and byte-for-byte unchanged authored inputs.
 
 ## Local parser names in Custom Detections
 

@@ -15,8 +15,9 @@ Detections. Never use V3 to satisfy this workflow's packaging stage.
 The generated package remains a full Microsoft Sentinel solution. When XDR
 Detections are declared, it also supports hybrid installation:
 
-- `E5Flavor=false` installs Sentinel Analytic Rules.
-- `E5Flavor=true` installs their matched Defender XDR Custom Detections.
+- `DeployAnalyticsRule=true` (default) installs Sentinel Analytic Rule content.
+- `DeployCustomDetection=true` (default false) installs Custom Detections and their
+  Content Hub registrations independently. Both selections may be true.
 - Custom Detections are always packaged disabled.
 
 ## Scope
@@ -50,7 +51,7 @@ automatic promotions. A major bump from `3.x` is therefore rejected.
 XDR requires its own top-level YAML `version` (`major.minor.patch`); new
 conversions initialize it to `3.1.0` independently of the Sentinel source.
 Registration metadata and content product IDs use that value. This check
-applies even without XDR registration. Data `XDR Detection Version`, solution
+applies regardless of deployment selection. Data `XDR Detection Version`, solution
 version, and source provenance are not fallbacks. Older files missing the
 version must be explicitly reconverted with `--overwrite` after reviewing
 manual edits, or have their independent XDR version authored. Never falsify
@@ -66,8 +67,7 @@ contains:
 ```json
 {
   "Analytic Rules": [],
-  "XDR Detections": [],
-  "Include XDR Content Registration": false
+  "XDR Detections": []
 }
 ```
 
@@ -82,8 +82,11 @@ For every XDR Detection YAML, require:
 - a query, schedule, alert template, and reviewed entity mappings; and
 - `properties.status: disabled`.
 
-Do not enable `Include XDR Content Registration` unless the user explicitly
-requests it and the live resource provider is known to support registration.
+`Include XDR Content Registration` is deprecated: any supplied value warns and
+is ignored. V3.1 emits installation and registration together under
+`DeployCustomDetection`; live provider support for registration is **unverified**.
+Do not claim otherwise from template generation. Require separate exact-scope
+approval before any environment write.
 
 ## Workflow
 
@@ -137,15 +140,21 @@ requests it and the live resource provider is known to support registration.
 
 8. For a hybrid package, verify:
 
-   - `E5Flavor` exists and defaults to `false`;
-   - every matched AR has condition
-     `[not(parameters('E5Flavor'))]`;
-   - every CD nested deployment has condition
-     `[parameters('E5Flavor')]`;
-   - AR, CD deployment, and CD ID counts match;
+   - only emitted families declare `Deploy*` booleans; Sentinel defaults true,
+     `DeployCustomDetection` defaults false, and UI/test parameters agree;
+   - every AR is gated by `DeployAnalyticsRule`, independently of CDs;
+   - every CD installation and registration is gated by `DeployCustomDetection`;
+   - existing conditions are AND-composed without changing nested scopes;
+   - every CD resolves to exactly one source AR; CD deployment/registration counts match;
    - every CD body has `status: disabled`;
    - deployment names and CD IDs are unique and deterministic;
-   - Content Hub registration is absent unless explicitly enabled; and
+   - content packages and attribution remain unconditional; dependencies are
+     unchanged and may still require unselected content or external prerequisites;
+   - no `E5Flavor` or `RegisterE5Content` parameter is generated;
+   - multiple authored tactics retain only the first authored entry and its
+     techniques in both ARM payload copies, with an explicit omission warning;
+     authored YAML and provenance remain unchanged, and Graph deployment still
+     has its single-tactic guard; and
    - the generated ZIP version matches the solution-data version.
 
 9. Run the repository packaging validations. Do not classify skipped tests as

@@ -353,6 +353,7 @@ def build_solution_report(
                 item["customDetection"]["conversionStatus"] == "converted"
                 and not item["customDetection"]["reviewRequired"]
                 and item["customDetection"]["structuralStatus"] == "passed"
+                and len(item["attackClassification"].get("draftTactics") or []) <= 1
                 for item in rules
             ),
             "strictParityPassed": sum(

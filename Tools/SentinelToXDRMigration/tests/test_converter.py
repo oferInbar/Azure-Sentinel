@@ -438,6 +438,7 @@ AzureActivity
     def test_multiple_techniques_are_grouped(self) -> None:
         path = self.solution / "Analytic Rules" / "SampleRule.yaml"
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document["tactics"] = ["Persistence"]
         document["relevantTechniques"] = ["T1078", "T1078.004", "T1098"]
         path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
         convert_solution(self.solution)
@@ -455,7 +456,7 @@ AzureActivity
             ],
         )
 
-    def test_multiple_tactics_require_an_explicit_rule_override(self) -> None:
+    def test_multiple_tactics_preserved_without_rule_override(self) -> None:
         path = self.solution / "Analytic Rules" / "SampleRule.yaml"
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
         document["tactics"] = ["Persistence", "CommandAndControl"]
@@ -469,11 +470,14 @@ AzureActivity
             )
         )
 
-        self.assertEqual(result["needsReview"], 1)
-        tactic = output["properties"]["detectionAction"]["alertTemplate"]["tactics"][0]
-        self.assertEqual(tactic, {"tactic": "Persistence"})
+        self.assertEqual(result["needsReview"], 0)
+        self.assertEqual(result["deploymentReady"], 0)
+        self.assertEqual(output["properties"]["detectionAction"]["alertTemplate"]["tactics"], [
+            {"tactic": "Persistence", "techniques": [{"technique": "T1505"}]},
+            {"tactic": "CommandAndControl", "techniques": [{"technique": "T1071"}]},
+        ])
 
-    def test_rule_override_selects_one_tactic_and_its_techniques(self) -> None:
+    def test_rule_override_changes_named_tactic_techniques_without_narrowing(self) -> None:
         path = self.solution / "Analytic Rules" / "SampleRule.yaml"
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
         document["tactics"] = ["Persistence", "CommandAndControl"]
@@ -506,6 +510,10 @@ AzureActivity
         self.assertEqual(
             tactic,
             {"tactic": "Persistence", "techniques": [{"technique": "T1505"}]},
+        )
+        self.assertEqual(
+            output["properties"]["detectionAction"]["alertTemplate"]["tactics"][1],
+            {"tactic": "CommandAndControl", "techniques": [{"technique": "T1071"}]},
         )
         conversion = output["contentProvenance"]["conversion"]
         self.assertEqual(

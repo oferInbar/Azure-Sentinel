@@ -12,7 +12,7 @@ import yaml
 
 from .artifacts import report_directory, portable_artifact, write_json_artifact
 from .catalog import referenced_catalog_tables, referenced_custom_tables
-from .converter import xdr_detection_files
+from .converter import custom_detail_schema_errors, xdr_detection_files
 from .content_paths import yaml_files
 from .onboarding import (
     AUTH_RECORD_NAME,
@@ -235,15 +235,16 @@ def validate_advanced_hunting(
             )
             continue
         runtime = run_advanced_hunting_query(query, _token=token)
+        binding_errors = custom_detail_schema_errors(document, runtime["schema"]) if runtime["ok"] else []
         results.append(
             {
                 "detection": path.relative_to(output).as_posix(),
-                "status": "passed" if runtime["ok"] else "failed",
-                "valid": runtime["ok"],
+                "status": "passed" if runtime["ok"] and not binding_errors else "failed",
+                "valid": runtime["ok"] and not binding_errors,
                 "statusCode": runtime["statusCode"],
                 "rowCount": runtime["rowCount"],
                 "schemaColumnCount": len(runtime["schema"]),
-                "error": runtime["error"],
+                "error": "; ".join(binding_errors) if binding_errors else runtime["error"],
                 "errorDetails": runtime["errorDetails"],
             }
         )
@@ -275,7 +276,8 @@ def record_runtime_validation(
         )
     root = Path(solution).expanduser().resolve()
     output = root / "XDR Detections"
-    expected = {path.relative_to(output).as_posix() for path in _detection_files(output)}
+    detection_paths = {path.relative_to(output).as_posix(): path for path in _detection_files(output)}
+    expected = set(detection_paths)
     raw = json.loads(Path(results_path).expanduser().read_text(encoding="utf-8"))
     entries = raw.get("results") if isinstance(raw, dict) else raw
     if not isinstance(entries, list):
@@ -298,6 +300,22 @@ def record_runtime_validation(
             status = "passed" if entry.get("valid") is True else "failed"
         if status not in {"passed", "failed", "blocked", "not-run"}:
             raise ValueError(f"invalid runtime status {status!r} for {detection}")
+        error = entry.get("error")
+        schema = entry.get("schema")
+        if status == "passed" and detection in detection_paths:
+            document = yaml.safe_load(detection_paths[detection].read_text(encoding="utf-8-sig")) or {}
+            details = (
+                ((document.get("properties") or {}).get("detectionAction") or {}).get("alertTemplate") or {}
+            ).get("customDetails")
+            if details:
+                if not isinstance(schema, list):
+                    status = "blocked"
+                    error = "customDetails binding verification requires the returned target-query output schema, not just schemaColumnCount"
+                else:
+                    binding_errors = custom_detail_schema_errors(document, schema)
+                    if binding_errors:
+                        status = "failed"
+                        error = "; ".join(binding_errors)
         normalized.append(
             {
                 "detection": detection,
@@ -305,8 +323,8 @@ def record_runtime_validation(
                 "valid": status == "passed",
                 "statusCode": int(entry.get("statusCode") or 0),
                 "rowCount": int(entry.get("rowCount") or 0),
-                "schemaColumnCount": int(entry.get("schemaColumnCount") or 0),
-                "error": entry.get("error"),
+                "schemaColumnCount": len(schema) if isinstance(schema, list) else int(entry.get("schemaColumnCount") or 0),
+                "error": error,
                 "errorDetails": entry.get("errorDetails"),
             }
         )

@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     record_parser.add_argument("--results", required=True)
     package_v3_1 = subparsers.add_parser(
         "package-v3-1",
-        help="Package the solution through the V3.1 XDR-aware local packager.",
+        help="Package V3.1 with independent Deploy* content selections (Sentinel true, XDR false).",
     )
     package_v3_1.add_argument("--solution", required=True)
     package_v3_1.add_argument(

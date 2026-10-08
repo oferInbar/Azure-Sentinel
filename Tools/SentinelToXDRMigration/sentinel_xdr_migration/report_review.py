@@ -55,6 +55,11 @@ def render_bulk_review(report: dict[str, Any], candidates: list[dict[str, Any]])
         '<section class="panel" id="bulk-review" data-review-payload="'
         + escape(json.dumps(payload, ensure_ascii=False), quote=True)
         + '"><details><summary>Review and export tactic overrides — no automatic application</summary>'
+        '<p><strong>Historical review compatibility:</strong> multiple source tactics no longer require selection of one tactic '
+        'for authoring. Regeneration preserves all source tactics in source order. These optional legacy exports correct '
+        'techniques only for the named source tactic; they do not narrow or reorder tactics. '
+        'V3.1 ARM packaging carries only the first tactic; direct Graph deployment still requires a single tactic. '
+        'Neither operation proves classification parity.</p>'
         '<p>Select eligible rules in the table below, or select the currently visible eligible rules. '
         'A bulk tactic choice is applied only to rules listing that source tactic. Techniques are never chosen automatically: '
         'confirm their compatibility and observable behavior individually for every rule. '
@@ -65,7 +70,7 @@ def render_bulk_review(report: dict[str, Any], candidates: list[dict[str, Any]])
         '<button type="button" id="select-visible">Select visible eligible rules</button> '
         '<button type="button" id="clear-selection">Clear selection and pending decisions</button>'
         '<p id="selection-count" role="status" aria-live="polite"></p>'
-        '<label for="bulk-tactic">Primary tactic for compatible selected rules</label> '
+        '<label for="bulk-tactic">Source tactic whose techniques need correction</label> '
         '<select id="bulk-tactic"><option value="">Choose a tactic</option></select> '
         '<button type="button" id="set-bulk-tactic">Set tactic — leave techniques unselected</button>'
         '<p id="bulk-feedback" role="status" aria-live="polite"></p>'
@@ -150,7 +155,7 @@ BULK_SCRIPT = """
       const section = node("fieldset");
       section.dataset.decisionId = id;
       section.append(node("legend", `${rule.name} — ${id}`));
-      const tacticLabel = node("label", "Primary tactic ");
+      const tacticLabel = node("label", "Source tactic to correct ");
       const tactic = node("select");
       tactic.dataset.choice = "tactic";
       tacticOptions(tactic, rule.tactics, choice.tactic);
@@ -219,7 +224,7 @@ BULK_SCRIPT = """
   byId("set-bulk-tactic").addEventListener("click", () => {
     const tactic = byId("bulk-tactic").value;
     if (!tactic || !selected.size) {
-      byId("bulk-feedback").textContent = "Select rules and a primary tactic first."; return;
+      byId("bulk-feedback").textContent = "Select rules and a source tactic to correct first."; return;
     }
     let applied = 0;
     const skipped = [];

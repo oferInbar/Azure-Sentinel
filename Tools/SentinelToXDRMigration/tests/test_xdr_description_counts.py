@@ -28,8 +28,18 @@ class XdrDescriptionCountTests(unittest.TestCase):
             (self.solution / "XDR Detections/Test.yaml").read_text().removeprefix("---\n")
         )
         data["XDR Detections"] = []
+        rule = json.loads(
+            (self.solution / "Analytic Rules/Test.yaml").read_text().removeprefix("---\n")
+        )
+        if xdr_count:
+            data["Analytic Rules"] = []
         for index in range(xdr_count):
             detection["properties"]["id"] = f"{index + 2:08d}-2222-3333-4444-555555555555"
+            detection["contentProvenance"]["source"]["id"] = detection["properties"]["id"]
+            rule["id"] = detection["properties"]["id"]
+            source = f"Analytic Rules/Count{index}.yaml"
+            (self.solution / source).write_text("---\n" + json.dumps(rule))
+            data["Analytic Rules"].append(source)
             relative = f"XDR Detections/Count{index}.yaml"
             (self.solution / relative).write_text("---\n" + json.dumps(detection))
             data["XDR Detections"].append(relative)
@@ -65,7 +75,9 @@ class XdrDescriptionCountTests(unittest.TestCase):
                 self.assertNotIn("XDR Detections:", html)
             self.assertNotRegex(html, r"\{\{|\}\}|, </p>|, ,")
             self.assertIn("keep this text.", html)
-        self.assertNotIn("xdr", json.dumps(ui["parameters"]["steps"]).lower())
+        self.assertNotIn("xdr", json.dumps([
+            step for step in ui["parameters"]["steps"] if step.get("name") != "contentSelection"
+        ]).lower())
         self.assertNotIn("E5Flavor", json.dumps(ui))
         with zipfile.ZipFile(package / f"{template['variables']['_solutionVersion']}.zip") as archive:
             self.assertEqual(ui, json.loads(archive.read("createUiDefinition.json").decode("utf-8-sig")))
@@ -86,7 +98,7 @@ class XdrDescriptionCountTests(unittest.TestCase):
             expected = ", ".join(
                 f"**{label}:** {number}"
                 for label, number in (
-                    ("Analytic Rules", int(analytics)), ("XDR Detections", count),
+                    ("Analytic Rules", max(int(analytics), count)), ("XDR Detections", count),
                     ("Hunting Queries", int(hunting)),
                 ) if number
             )
@@ -109,7 +121,7 @@ class XdrDescriptionCountTests(unittest.TestCase):
                                       deployments)
                         registered = [r for r in template["resources"]
                                       if r.get("properties", {}).get("contentKind") == "CustomDetection"]
-                        self.assertEqual(count if registration else 0, len(registered))
+                        self.assertEqual(count, len(registered))
                         for deployment in deployments:
                             if deployment["name"] != attribution.TRACKING_ID:
                                 self.assertEqual("disabled", deployment["properties"]["template"]
@@ -139,7 +151,7 @@ class XdrDescriptionCountTests(unittest.TestCase):
             legacy = entry.with_name("legacy.ps1")
             shutil.copyfile(attribution.PACKAGER / relative, legacy)
             # Even with XDR inputs present, legacy paths must not add this display count.
-            self.configure(3, hunting=True)
+            self.configure(1, hunting=True)
             with self.subTest(entry=relative):
                 result = self.package(legacy, pipeline, version_bump="patch",
                                       calculated_version="3.1.1")

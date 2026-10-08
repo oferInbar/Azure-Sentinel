@@ -33,6 +33,7 @@ $baseCreateUiDefinitionPath = "$PSScriptRoot/templating/baseCreateUiDefinition.j
 $global:baseMainTemplate = Get-Content -Raw $baseMainTemplatePath | Out-String | ConvertFrom-Json
 $global:baseCreateUiDefinition = Get-Content -Raw $baseCreateUiDefinitionPath | Out-String | ConvertFrom-Json
 . "$PSScriptRoot/customDetections.ps1"
+. "$PSScriptRoot/contentDeploymentParameters.ps1"
 . "$PSScriptRoot/customerUsageAttribution.ps1"
 . "$PSScriptRoot/versionPolicy.ps1"
 $v31VersionPolicy = $null
@@ -1770,6 +1771,7 @@ function GetPlaybookDataMetadata($file, $contentToImport, $contentResourceDetail
         $global:baseMainTemplate.resources += $playbookTemplateSpecContent;
     }
     else {
+        Register-SolutionResourceKind -Resources $playbookResources -Kind Playbook
         $global:baseMainTemplate.resources += $playbookResources;
     }
 
@@ -2561,6 +2563,7 @@ function GetHuntingDataMetadata($file, $rawData, $contentResourceDetails) {
             return;
         }
         else {
+            Register-SolutionResourceKind -Resources $huntingQueryObj -Kind HuntingQuery
             $global:baseMainTemplate.resources[$(getQueryResourceLocation)].resources += $huntingQueryObj
         }
     }
@@ -3105,6 +3108,7 @@ function GeneratePackage(
     if ($IncludeXdrDetections) {
         $xdrDetectionCount = Add-XdrCustomDetectionsToSolution -SolutionName $solutionName -ContentToImport $contentToImport -Template $global:baseMainTemplate
         Update-XdrDescriptionCount -Count $xdrDetectionCount
+        Add-SolutionContentDeploymentParameters -Template $global:baseMainTemplate -UiDefinition $global:baseCreateUiDefinition
     }
 
     if ($contentToImport.Description) {
@@ -3551,6 +3555,7 @@ function addTemplateSpecParserResource($content, $yaml, $isyaml, $contentResourc
             )
         }
     }
+    Register-SolutionResourceKind -Resources $parserObj -Kind Parser
     $global:baseMainTemplate.resources += $parserObj
 
     $parserMetadata = [PSCustomObject]@{
@@ -3723,6 +3728,7 @@ function generateParserContent($file, $contentToImport, $contentResourceDetails)
             return;
         }
         else {
+            Register-SolutionResourceKind -Resources $parserObj -Kind Parser
             $global:baseMainTemplate.resources[$queryLocation].resources += $parserObj
         }
     }

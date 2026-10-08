@@ -183,6 +183,12 @@ def _graph_request(
 
 def graph_detection_payload(document: dict[str, Any]) -> dict[str, Any]:
     errors = validate_document(document)
+    alert = ((document.get("properties") or {}).get("detectionAction") or {}).get("alertTemplate") or {}
+    if len(alert.get("tactics") or []) > 1:
+        errors.append(
+            "Direct Graph deployment supports at most one tactic; authored YAML may preserve "
+            "multiple tactics, but this deployment path never truncates them"
+        )
     conversion = (document.get("contentProvenance") or {}).get("conversion") or {}
     if conversion.get("status") != "converted" or conversion.get("reviewRequired"):
         errors.append("detection must be converted with no review required")

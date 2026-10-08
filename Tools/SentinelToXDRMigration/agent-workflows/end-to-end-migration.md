@@ -239,7 +239,8 @@ general schema resolver. See the README's
 
 ### Conversion
 
-Run `sentinel-xdr-migration convert`. Preserve source Analytic Rules. Generated
+Run `sentinel-xdr-migration convert`. The converter must preserve source Analytic
+Rules; source-authoring metadata repairs are a separate step described below. Generated
 files belong under `XDR Detections`, remain disabled, and contain source
 provenance. Pass only with no conflicts and no unresolved `needsReview` item.
 Only deployable detection YAML belongs under `XDR Detections`; conversion
@@ -270,12 +271,73 @@ conversion changes their semantics. The README includes a
 [concrete Local Admin Group Changes review](../README.md#worked-review-local-admin-group-changes).
 Source `requiredDataConnectors` is preserved in optional top-level XDR authoring
 metadata, outside deployment `properties`, with exact presence/empty-list and
-extensible-entry fidelity. Malformed metadata remains a conversion/structural
-failure, not a silently dropped declaration. Older artifacts require an
+extensible-entry fidelity. On initial discovery, malformed metadata is a
+conversion/structural failure, not a silently dropped declaration or a final
+authoring outcome. Older artifacts require an
 explicit conversion refresh; no automatic rewrite or gate waiver is implied.
 See [dependency preservation](../README.md#connector-dependency-preservation-and-deployment-boundary).
 Target registration/dependency translation remains pending design; do not add
 an undocumented field to Graph or inner detection-rule properties.
+
+When an entity identifier cannot be preserved equivalently in the final
+entity mappings, retain its available query output value **in addition** as
+an `alertTemplate.customDetails` column binding. This applies to explicit
+mapping overrides as well as automatic conversion. Keep the mapping limitation
+and review diagnostics: supplemental evidence does not restore entity identity
+or correlation. Preserve source/override custom details, reject conflicting
+explicit keys, and use stable collision-safe keys for added details. Record the
+source identifier, bound output column and availability status in conversion
+provenance. Do not rewrite KQL or emit known projected-out supplemental columns.
+Unknown output bindings require runtime schema verification, not an availability
+claim. Respect the documented 20-pair limit without truncation and disclose the
+4 KB runtime-value limit. See
+[supplemental entity evidence](../README.md#supplemental-entity-evidence-in-custom-details).
+
+Preserve **all** source tactics in source order in authored YAML; multiple
+tactics alone are not a review gate. Assign flat source techniques only to
+compatible tactics using the repository MITRE catalog, retaining independently
+recorded original lists. Unknown/invalid classifications still block. Legacy
+single-tactic overrides correct techniques only for their existing named source
+tactic, with an explicit warning that they neither narrow nor reorder the
+source list. Invalid or incompatible overrides fail rather than lose metadata.
+Historical single-tactic draft findings require explicit regeneration, not a
+mandatory choice of one tactic for authoring. See the
+[MITRE contract](../README.md#mitre-authoring-and-deployment-contracts).
+
+#### Metadata repair and user notification
+
+Within approved content-authoring scope, fix unambiguous schema-defined
+metadata inconsistencies at **both ends**: the Sentinel source and its generated
+XDR draft. This applies to all metadata, not just connector declarations.
+The orchestrator performs a minimal source-authoring maintenance edit and then
+uses the existing converter to refresh the affected draft; normal conversion
+must never automatically edit source rules. No backend auto-repair engine or
+toolkit modification is authorized by this content workflow.
+
+Only mechanical, schema-clear corrections are automatic within that scope.
+For example, rename a lone AWSS3 `datatypes` key to required `dataTypes`, keeping
+`AWSS3` and `AWSVPCFlow` unchanged. Do not normalize arbitrary extension fields,
+valid IDs/data-type values, declaration order, duplicates, or absent/empty lists.
+Conflicting keys/values, ambiguous intent, tactics/techniques, entity semantics,
+identities and versions require an explicit decision, not an invented fix.
+Intentional source/target contract differences are not inconsistencies to erase.
+
+Record file scope, field paths, exact before/after values and schema rationale.
+Preserve prior report snapshots and query hashes. For an isolated repair, pass
+the selected source `--rule-id`, locked `--run-id`, reviewed `--config` and
+approved `--overwrite`; never recreate deliberately deleted unselected drafts.
+Verify both metadata structures and their correspondence, unchanged queries,
+identities, versions and disabled lifecycle, and untouched unrelated files.
+Refresh diagnostics with the existing tools and record repair evidence without
+waiving stages or representing scoped output as full-solution coverage.
+
+Inform the user of repairs and outstanding findings separately, including the
+affected files and before/after values. Metadata repair clears only the resolved
+error; runtime checks remain not run if unexecuted, and unrelated mixed-surface
+reviews/warnings remain visible. Identify older comparison pages and exported
+evidence as historical unless explicitly refreshed; never attach new hashes to
+old snapshot content. See the README's
+[metadata repair policy](../README.md#repair-metadata-at-both-ends).
 
 ### Validation
 
@@ -301,6 +363,10 @@ failures.
 
 Unavailable workload tables are blocked environment results. Zero rows prove
 query execution, not behavioral parity. Entity mappings require review.
+For custom-detail bindings, verify the target output schema even when zero
+rows are returned. Imported successful runtime results must include the actual
+target-query `schema` array when custom details exist; a column count alone
+cannot prove bindings. Runtime value size remains unverified by schema alone.
 
 Defender Advanced Hunting and Log Analytics workspace queries are distinct
 surfaces. A table visible in one does not prove availability in the other.
@@ -336,6 +402,10 @@ parameters, and ZIP paths. Existing package files are not current-run evidence.
 Do not relabel historical V4 evidence. Rebuild with V3.1. Surface missing
 customer usage attribution warnings; optional `trackingId` must be copied
 unchanged from Partner Center into SolutionMetadata.json, never synthesized.
+V3.1 copies only the first authored tactic and its compatible nested techniques
+into the ARM payload, without changing the complete YAML/provenance. Disclose
+this intentional classification loss; packaging is not classification/alert
+parity validation and must not mark parity passed.
 
 ### Deployment — qualification only
 
@@ -343,6 +413,11 @@ Deploy every reviewed AR and CD disabled. Verify Azure RBAC and Microsoft Graph
 scopes separately. A successful write without live read verification is
 blocked, not passed. Never infer Azure resource permissions from Entra Global
 Administrator.
+Direct Microsoft Graph deployment still requires at most one tactic; the
+verified service rejected multi-tactic requests. Multi-tactic authored YAML can
+pass structural validation but is not direct-Graph-deployment-ready. Never
+silently truncate it outside the V3.1 ARM packaging boundary or infer that ARM
+packaging proves live service acceptance.
 
 ### Mock ingestion — qualification only
 
