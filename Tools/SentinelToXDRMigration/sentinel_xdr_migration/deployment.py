@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -15,7 +16,13 @@ from typing import Any
 import yaml
 
 from .artifacts import artifact_path, write_json_artifact
-from .converter import validate_document, xdr_detection_files
+from .converter import (
+    PREFIXED_SOURCE_ID_PATTERN,
+    SOURCE_ID_PATTERN,
+    is_sentinel_derived,
+    validate_document,
+    xdr_detection_files,
+)
 from .onboarding import (
     GRAPH_CLIENT_ID,
     _load_auth_record,
@@ -182,8 +189,29 @@ def _graph_request(
 
 
 def graph_detection_payload(document: dict[str, Any]) -> dict[str, Any]:
-    errors = validate_document(document)
-    alert = ((document.get("properties") or {}).get("detectionAction") or {}).get("alertTemplate") or {}
+    prepared = deepcopy(document)
+    properties = prepared.get("properties") or {}
+    detection_id = properties.get("id")
+    source_id = ((prepared.get("contentProvenance") or {}).get("source") or {}).get("id")
+    if isinstance(detection_id, str) and re.fullmatch(SOURCE_ID_PATTERN, detection_id):
+        if is_sentinel_derived(prepared) and (
+            not isinstance(source_id, str) or detection_id.casefold() != source_id.casefold()
+        ):
+            pass
+        else:
+            properties["id"] = f"xdr-{source_id if is_sentinel_derived(prepared) else detection_id}"
+    elif isinstance(detection_id, str):
+        match = re.fullmatch(PREFIXED_SOURCE_ID_PATTERN, detection_id)
+        if match:
+            guid = detection_id[4:]
+            if is_sentinel_derived(prepared) and (
+                not isinstance(source_id, str) or guid.casefold() != source_id.casefold()
+            ):
+                pass
+            else:
+                properties["id"] = f"xdr-{source_id if is_sentinel_derived(prepared) else guid}"
+    errors = validate_document(prepared)
+    alert = ((properties.get("detectionAction") or {}).get("alertTemplate") or {})
     if len(alert.get("tactics") or []) > 1:
         errors.append(
             "Direct Graph deployment supports at most one tactic; authored YAML may preserve "
@@ -194,7 +222,7 @@ def graph_detection_payload(document: dict[str, Any]) -> dict[str, Any]:
         errors.append("detection must be converted with no review required")
     if errors:
         raise ValueError("; ".join(errors))
-    properties = deepcopy(document["properties"])
+    properties = deepcopy(prepared["properties"])
     properties["@odata.type"] = "#microsoft.graph.security.detectionRule"
     properties["status"] = "disabled"
     return properties

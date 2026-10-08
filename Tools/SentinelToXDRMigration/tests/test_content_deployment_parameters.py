@@ -338,7 +338,7 @@ class ContentDeploymentTests(unittest.TestCase):
             custom_detection_criteria,
         )
         self.assertEqual(
-            [(content_id, version) for content_id, version, _ in identities],
+            [(f"xdr-{content_id}", version) for content_id, version, _ in identities],
             [(item["contentId"], item["version"]) for item in custom_detection_criteria],
         )
 
@@ -494,6 +494,9 @@ class ContentDeploymentTests(unittest.TestCase):
                             bodies.append(resource["properties"]["mainTemplate"])
                     self.assertEqual(2, len(bodies))
                     expected = copy.deepcopy(document["properties"])
+                    expected["id"] = (
+                        "xdr-" + document["contentProvenance"]["source"]["id"]
+                    )
                     expected["id"] = f"[if(true(), '{expected['id']}', '{expected['id']}')]"
                     expected["detectionAction"]["alertTemplate"]["tactics"] = [authored[0]]
                     for body in bodies:

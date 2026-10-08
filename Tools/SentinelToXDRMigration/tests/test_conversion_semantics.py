@@ -13,6 +13,7 @@ from sentinel_xdr_migration.converter import (
     assess_schedule,
     build_xdr_document,
     convert_entities,
+    constrain_event_window,
     validate_document,
 )
 
@@ -252,8 +253,8 @@ class ScheduleSemanticsTests(unittest.TestCase):
             else:
                 self.assertTrue(warnings)
                 self.assertFalse(info)
-        warnings, info = self.assess("1h")
-        self.assertIn("source and native lookbacks differ", warnings[0])
+        warnings, info = self.assess("1h", query="DeviceEvents")
+        self.assertIn("source and native service windows differ", warnings[0])
         self.assertFalse(info)
 
     def test_frequency_unknown_surface_and_time_basis_remain_warnings(self):
@@ -293,7 +294,7 @@ class ScheduleSemanticsTests(unittest.TestCase):
         self.assertFalse(info)
         self.assertIn("source frequency=1d, lookback=1d", warnings[0])
         self.assertIn("target frequency=P1D, native lookback=2592000s", warnings[0])
-        self.assertIn("source and native lookbacks differ", warnings[0])
+        self.assertIn("source and native service windows differ", warnings[0])
         self.assertNotIn("unknown query surface", warnings[0])
 
     def test_native_surface_is_not_a_proof_of_aggregate_time_equivalence(self):
@@ -303,7 +304,7 @@ class ScheduleSemanticsTests(unittest.TestCase):
         )
         self.assertFalse(info)
         self.assertIn("native lookback=2592000s", warnings[0])
-        self.assertIn("query shape or time filters cannot be proven", warnings[0])
+        self.assertIn("no explicit event-time bound proves equivalence", warnings[0])
         for suffix in (
             "| join kind=inner (SecurityEvent) on DeviceName",
             "| union SecurityEvent",
@@ -321,12 +322,60 @@ class ScheduleSemanticsTests(unittest.TestCase):
         self.assertFalse(warnings)
         self.assertTrue(info)
 
+    def test_narrower_source_window_is_injected_before_aggregation(self):
+        for period, expected in (("30m", 1800), ("2h", 7200), ("3h", 10800)):
+            query = "DeviceEvents | summarize Count=count() by DeviceId, Timestamp"
+            converted, evidence, review = constrain_event_window(
+                {"queryPeriod": period, "queryFrequency": "1h"},
+                query, query, "PT1H",
+            )
+            with self.subTest(period=period):
+                self.assertIsNone(review)
+                self.assertIn(f"where Timestamp >= ago({period})", converted)
+                self.assertLess(converted.index("where Timestamp"), converted.index("summarize"))
+                self.assertEqual(evidence["effectiveEventWindowSeconds"], expected)
+                self.assertEqual(evidence["xdrServiceWindowSeconds"], 14400)
+                self.assertTrue(evidence["filterInjected"])
+                self.assertIn("Late-ingestion risk", evidence["lateIngestionRisk"])
+
+    def test_timegenerated_binding_is_lexical_and_targets_timestamp(self):
+        query = (
+            'DeviceEvents | summarize Values=make_set("TimeGenerated") '
+            "by bin(TimeGenerated, 5m) // TimeGenerated is only a source comment\n"
+        )
+        converted, evidence, review = constrain_event_window(
+            {"queryPeriod": "2h", "queryFrequency": "1h"},
+            query, query, "PT1H",
+        )
+        self.assertIsNone(review)
+        self.assertIn("where Timestamp >= ago(2h)", converted)
+        self.assertIn("bin(Timestamp, 5m)", converted)
+        self.assertIn('"TimeGenerated"', converted)
+        self.assertIn("// TimeGenerated is only a source comment", converted)
+        self.assertEqual("TimeGenerated", evidence["sourceTimeColumn"])
+        self.assertEqual("Timestamp", evidence["targetTimeColumn"])
+
+    def test_unsafe_native_query_shapes_require_review_without_rewrite(self):
+        for query in (
+            "DeviceEvents | join kind=inner (DeviceInfo) on DeviceId",
+            "union DeviceEvents, DeviceInfo | where Timestamp > ago(2h)",
+            "let baseline = DeviceEvents | summarize count(); DeviceEvents | where Timestamp > ago(2h)",
+        ):
+            with self.subTest(query=query):
+                converted, evidence, review = constrain_event_window(
+                    {"queryPeriod": "2h", "queryFrequency": "1h"},
+                    query, query, "PT1H",
+                )
+                self.assertEqual(query, converted)
+                self.assertIsNone(evidence)
+                self.assertIn("cannot be proven equivalent", review)
+
 
 class InformationContractTests(unittest.TestCase):
     def document(self, **updates):
         rule = {
             "id": "11111111-2222-3333-4444-555555555555",
-            "name": "Example", "query": HOST_QUERY, "queryFrequency": "1h", "queryPeriod": "1h",
+            "name": "Example", "query": HOST_QUERY, "queryFrequency": "1h", "queryPeriod": "4h",
             "entityMappings": [entity("Host", FullName="DeviceName", HostName="HostName", DnsDomain="DnsDomain")],
         }
         rule.update(updates)
@@ -370,6 +419,43 @@ class InformationContractTests(unittest.TestCase):
         conversion = document["contentProvenance"]["conversion"]
         self.assertTrue(conversion["informational"])
         self.assertIn("a Host, Account, Mailbox, or IP mapping is required", conversion["errors"])
+
+    def test_narrowed_event_window_is_recorded_without_parity_claim(self):
+        query = "DeviceEvents | summarize Count=count() by DeviceId, Timestamp"
+        document = self.document(
+            query=query,
+            queryFrequency="1h",
+            queryPeriod="2h",
+        )
+        conversion = document["contentProvenance"]["conversion"]
+        target_query = document["properties"]["queryCondition"]["queryText"]
+        self.assertIn("DeviceEvents | where Timestamp >= ago(2h) | summarize", target_query)
+        self.assertEqual(conversion["status"], "converted")
+        self.assertFalse(conversion["reviewRequired"])
+        window = conversion["eventTimeWindow"]
+        self.assertEqual(window["originalSentinelLookbackSeconds"], 7200)
+        self.assertEqual(window["effectiveEventWindowSeconds"], 7200)
+        self.assertEqual(window["xdrServiceWindowSeconds"], 14400)
+        self.assertTrue(window["filterInjected"])
+        self.assertTrue(any(
+            "event-time window constrained to original Sentinel lookback" in message
+            for message in conversion["informational"]
+        ))
+        self.assertTrue(any("late-ingestion risk" in message for message in conversion["warnings"]))
+        self.assertTrue(any(
+            "parity is not established" in message.lower()
+            for message in conversion["informational"]
+        ))
+
+    def test_unsafe_event_window_shape_remains_needs_review(self):
+        query = "DeviceEvents | join kind=inner (DeviceInfo) on DeviceId"
+        document = self.document(query=query, queryFrequency="1h", queryPeriod="2h")
+        conversion = document["contentProvenance"]["conversion"]
+        self.assertEqual("needsReview", conversion["status"])
+        self.assertTrue(conversion["reviewRequired"])
+        self.assertIn(query, document["properties"]["queryCondition"]["queryText"])
+        self.assertTrue(any("source and target table inputs cannot be proven equivalent" in reason
+                            for reason in conversion["reviewReasons"]))
 
     def test_result_serializes_information_without_breaking_positional_callers(self):
         result = ConversionResult(Path("source"), Path("target"), "Example", "converted", False, (), (), ())

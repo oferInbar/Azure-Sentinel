@@ -82,6 +82,14 @@ For every XDR Detection YAML, require:
 - a query, schedule, alert template, and reviewed entity mappings; and
 - `properties.status: disabled`.
 
+For Sentinel-derived detections, `properties.id` is `xdr-<full source GUID>`,
+while `contentProvenance.source.id` remains the original unprefixed GUID. The
+packager normalizes a bare source GUID on its packaging copy, keeps a canonical
+`xdr-` ID unchanged, and rejects unrelated custom IDs; it must not rewrite the
+authored detection YAML or provenance. Installation and registration IDs and
+references must use the same normalized identity. Existing deployed identities
+are not migrated or deleted; review and reconcile them before any deployment.
+
 `Include XDR Content Registration` is deprecated: any supplied value warns and
 is ignored. V3.1 emits installation and registration together under
 `DeployCustomDetection`; live provider support for registration is **unverified**.

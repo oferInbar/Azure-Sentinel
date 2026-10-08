@@ -139,11 +139,13 @@ deployment success is inferred from authoring or packaging.
 
 ### Source-derived detection identity
 
-Generated `properties.id` is the **full original Sentinel analytic rule template
-GUID**, exactly as recorded in `contentProvenance.source.id`. It is not a deployed
-Sentinel rule instance ID, a name slug, or an eight-character prefix. Renaming a
-rule does not change this ID; distinct full source GUIDs remain distinct.
-Source IDs must use the hyphenated GUID format; their case is preserved.
+Generated `properties.id` is `xdr-<full original Sentinel analytic rule
+template GUID>`; `contentProvenance.source.id` retains the original GUID without
+the XDR prefix. The prefix ensures a Graph-compatible leading letter, including
+when the GUID begins with a digit. This is not a deployed Sentinel rule instance
+ID, a name slug, or an eight-character prefix. Renaming a rule does not change
+this ID; distinct full source GUIDs remain distinct. Source IDs must use the
+hyphenated GUID format; their case is preserved.
 Duplicate source GUIDs (including case variants) and existing output ID or
 provenance conflicts block conversion rather than overwriting another rule.
 
@@ -164,13 +166,17 @@ cloud migration. No existing cloud rule is updated or deleted by conversion.
 Review/reconcile deployed identities before a separately approved deployment,
 which otherwise targets the new GUID rather than the old name-based ID.
 
-Structural validation and packaging require exact source/target ID equality for
+Structural validation and packaging require the canonical `xdr-<GUID>` ID for
 documents declaring Microsoft Sentinel / AnalyticsRule provenance or the
 `sentinel-to-xdr-migration` converter. They do not impose this GUID identity
-contract on unrelated Custom Detections. The packager carries the GUID through
-to the inner ARM `detectionRule.properties.id` and optional content registration;
-the existing `[if(true(), '<GUID>', '<GUID>')]` literal expression is unchanged.
-Graph payload preparation also preserves the validated GUID unchanged.
+contract on unrelated Custom Detections. Packaging normalizes a bare originating
+GUID to `xdr-<GUID>` on its packaging copy, leaves an already-prefixed ID
+unchanged, and rejects unrelated custom IDs rather than silently replacing them.
+The normalized identity is used consistently in installation, registration,
+content IDs, catalog criteria, and their references. The authored YAML and
+source provenance remain unchanged. Graph payload preparation applies the same
+idempotent normalization. The existing ARM `[if(true(), '<ID>', '<ID>')]`
+literal expression is unchanged.
 
 ### Entity mapping and schedule diagnostics
 
@@ -211,8 +217,12 @@ and identifiers omitted by an explicit `ruleOverrides.<id>.entityMappings`.
 For example, a reviewed `hosts.nameColumn: HostName` plus IP mapping can retain
 the original Host.FullName value as `customDetails.HostFullName: DeviceName`.
 It does **not** map arbitrary FullName values to `nameColumn`, replace valid
-entities, remove mapping warnings/reviews, or claim restored identity,
-correlation, semantic equivalence, or alert parity.
+entities, or claim restored identity, correlation, semantic equivalence, or
+alert parity. When the bound output column is statically proven available, the
+unmapped identifier is reported as nonblocking information; unknown output
+schema, missing columns, conflicts, and custom-detail limits remain warnings or
+errors. Supplemental values never resolve independent identity-confirmation
+reviews.
 
 The [Graph `alertTemplate` contract](https://learn.microsoft.com/en-us/graph/api/resources/security-alerttemplate?view=graph-rest-beta)
 defines each custom-detail value as a **query output column name**, not an event
@@ -280,16 +290,41 @@ Schedule messages record source frequency/lookback and emitted target frequency
 with a [public lookback reference](https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback).
 Native Defender fixed lookbacks are 4 hours for hourly rules, 12 hours for
 3-hour rules, 48 hours for 12-hour rules, and 30 days for daily rules.
-Information requires matching frequencies and configured/native lookbacks,
-plus provably equal explicit event-time bounds in a simple native-table
-pipeline. A duration in a comment or string is not a time filter.
-Different lookbacks remain warnings even when an event-time filter is narrower:
-that filter does not configure Defender's ingestion lookback.
-Sentinel-only/custom, mixed, unknown, NRT, and ambiguous time-basis cases remain
-warnings; a custom Sentinel lookback is never assumed when absent from the
-payload. Assessment does not add filters, synthesize Timestamp, alter the
-schedule, or claim alert parity, initial-run equivalence, or ingestion-delay
-equivalence. Existing query conversion and human-review gates remain in force.
+For a shorter Sentinel lookback than a documented native XDR service window,
+conversion may add a `Timestamp >= ago(...)` event-time bound immediately after
+the native table input and before any query filters, projections, or
+aggregation. This is limited to a conservatively recognized single-native-table
+pipeline with matching source/target input and established source event-time
+semantics; a simple `TimeGenerated` reference is lexically rebound to
+`Timestamp`. Original filters remain. Provenance records the original Sentinel
+lookback, effective event-time window, fixed XDR service window, time-column
+binding, transformation rationale, and late-ingestion risk. The HTML and
+manifest distinguish a constrained event-time window from the larger fixed
+service window; they do not claim identical service windows, cadence parity,
+initial-run equivalence, or alert parity.
+
+Joins, unions, historical/baseline branches, reassigned or ambiguous time
+columns, unknown native inputs, and unproven source/target bindings are not
+rewritten and remain `needsReview` with a specific reason. NRT and frequency
+mismatches are not narrowed. A duration in a comment or string is not a time
+filter; existing filters are never discarded. Sentinel-only/custom, mixed,
+unknown, and longer-source-lookback cases retain their schedule diagnostics.
+Late-arriving events whose event timestamp falls outside the inserted bound can
+be missed, so generated transforms still require normal runtime validation and
+qualification; conversion does not promote a rule to runtime-validated.
+When this or another conversion changes the persisted Advanced Hunting query,
+the converter blocks previously passed validation and downstream workflow
+stages while retaining the old reports as historical. Runtime results bind to
+the exact KQL SHA-256: Graph results record `querySha256` for the executed XDR
+query; imported Sentinel MCP/Log Analytics results must supply the same field
+for the exact source query. Missing or mismatched hashes are blocked. A passed
+validation stage requires complete current-hash Sentinel and Advanced Hunting
+query families; only Authoring may explicitly pass as
+`runtimeStatus=environment-blocked`, which is not a runtime-qualified result.
+Failed KQL/runtime results cannot be relabeled as provider gaps, and provider
+fallback must rerun the complete family. Zero rows establish execution only.
+Hash-scoped review decisions also expire when either source or converted-query
+hash changes.
 
 ## Content-creator authoring policy and pending implementation
 
@@ -1045,8 +1080,11 @@ sentinel-xdr-migration record-runtime-validation `
 ```
 
 This creates `runtime-validation.triage-mcp.json` and
-`runtime-validation.triage-mcp.html`. The public CLI does not implement or host
-an MCP server; the repository skill invokes the configured official MCP.
+`runtime-validation.triage-mcp.html`. Each passed result must include
+`querySha256`, the SHA-256 of the exact persisted Sentinel query submitted to
+the MCP or fallback provider. Missing/stale hashes are recorded as blocked.
+The public CLI does not implement or host an MCP server; the repository skill
+invokes the configured official MCP.
 
 For original Sentinel queries, the orchestrator falls back to Log Analytics
 CLI/API when the connected MCP does not advertise a suitable workspace-query

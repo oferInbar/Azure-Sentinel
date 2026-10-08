@@ -13,6 +13,8 @@ from .content_paths import content_path
 
 
 PACKAGER_NAME = "V3.1"
+TACTIC_PROJECTION_PREFIX = "V3.1 TACTIC PROJECTION: "
+IDENTITY_PROJECTION_PREFIX = "V3.1 ID PROJECTION: "
 DATA_EXCLUSIONS = {
     "parameter.json",
     "parameters.json",
@@ -191,11 +193,54 @@ def package_solution_v3_1(
     warnings = [
         line for line in output.splitlines()
         if any(label in line for label in (
-            "CUSTOMER USAGE ATTRIBUTION:", "V3.1 CONTENT SELECTION:", "V3.1 TACTIC SELECTION:",
+            "CUSTOMER USAGE ATTRIBUTION:", "V3.1 CONTENT SELECTION:",
         ))
     ]
     for warning in warnings:
         print(warning, file=sys.stderr)
+    informational = [
+        line for line in output.splitlines()
+        if line.startswith((
+            "INFORMATION: V3.1 TACTIC SELECTION:",
+            "INFORMATION: V3.1 ID NORMALIZATION:",
+        ))
+    ]
+    for message in informational:
+        print(message, file=sys.stderr)
+    tactic_projection = []
+    identity_projection = []
+    for line in output.splitlines():
+        if line.startswith(TACTIC_PROJECTION_PREFIX):
+            try:
+                record = json.loads(line[len(TACTIC_PROJECTION_PREFIX):])
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"Invalid V3.1 tactic projection evidence: {exc}") from exc
+            if (
+                not isinstance(record, dict)
+                or not isinstance(record.get("detectionId"), str)
+                or not record["detectionId"]
+                or any(
+                    not isinstance(record.get(key), list)
+                    or any(not isinstance(value, str) for value in record[key])
+                    for key in ("authoredTactics", "packagedTactics", "omittedTactics")
+                )
+            ):
+                raise RuntimeError("V3.1 tactic projection evidence has an invalid structure.")
+            tactic_projection.append(record)
+        elif line.startswith(IDENTITY_PROJECTION_PREFIX):
+            try:
+                record = json.loads(line[len(IDENTITY_PROJECTION_PREFIX):])
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"Invalid V3.1 identity projection evidence: {exc}") from exc
+            if (
+                not isinstance(record, dict)
+                or not isinstance(record.get("inputId"), str)
+                or not isinstance(record.get("packagedId"), str)
+                or not isinstance(record.get("changed"), bool)
+                or record.get("scope") != "package-projection-only"
+            ):
+                raise RuntimeError("V3.1 identity projection evidence has an invalid structure.")
+            identity_projection.append(record)
     attribution_sources = [
         line for line in output.splitlines() if "CUSTOMER USAGE ATTRIBUTION SOURCE:" in line
     ]
@@ -246,6 +291,9 @@ def package_solution_v3_1(
         "status": "passed",
         "packager": PACKAGER_NAME,
         "warnings": warnings,
+        "informational": informational,
+        "tacticProjection": tactic_projection,
+        "identityProjection": identity_projection,
         "attributionSources": attribution_sources,
         "solution": str(root),
         "version": version,

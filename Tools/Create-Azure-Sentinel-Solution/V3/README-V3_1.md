@@ -178,15 +178,19 @@ separate Content selection step controls deployment, not inventory. Legacy V3 an
 
 ## Release-version bounds (V3.1 only)
 
-Sentinel-derived Custom Detections use the full originating analytic rule template
-GUID as `properties.id`, exactly equal to `contentProvenance.source.id`. Packaging
-checks this when provenance declares Microsoft Sentinel / AnalyticsRule or the
+Sentinel-derived Custom Detections use `xdr-<full originating analytic rule
+template GUID>` as `properties.id`; `contentProvenance.source.id` retains the
+original unprefixed GUID. Packaging normalizes a bare originating GUID on its
+packaging copy and leaves an already-prefixed ID unchanged. It rejects unrelated
+custom IDs rather than silently replacing them. This contract applies when
+provenance declares Microsoft Sentinel / AnalyticsRule or the
 `sentinel-to-xdr-migration` converter; unrelated Custom Detection identity
-contracts are unchanged. Legacy generated name IDs require reviewed, explicit
-reconversion with `--overwrite`, not an automatic packaging rewrite. This changes
-local artifacts only; reconcile previously deployed identities before any new
+contracts are unchanged. The normalized ID is used consistently by installation
+and registration, including content IDs, catalog criteria, and references.
+Authored YAML and source provenance remain unchanged. This changes local
+artifacts only; reconcile previously deployed identities before any new
 deployment. Both install and registration templates retain the existing
-`[if(true(), '<GUID>', '<GUID>')]` wrapper around the inner detection ID.
+`[if(true(), '<ID>', '<ID>')]` wrapper around the inner detection ID.
 
 V3.1 applies these hard guards in local, catalog, and positional pipeline modes:
 

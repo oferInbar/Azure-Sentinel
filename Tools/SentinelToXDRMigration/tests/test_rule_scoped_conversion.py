@@ -70,7 +70,7 @@ class RuleScopedConversionTests(unittest.TestCase):
         self.assertEqual(draft, self.other_output.read_bytes())
         self.assertEqual(sources_before, (self.source.read_bytes(), self.other_source.read_bytes()))
         document = yaml.safe_load(self.output.read_text())
-        self.assertEqual(SOURCE_ID, document["properties"]["id"])
+        self.assertEqual(f"xdr-{SOURCE_ID}", document["properties"]["id"])
         self.assertEqual("disabled", document["properties"]["status"])
         self.assertEqual({
             "kind": "rule", "ruleIds": [SOURCE_ID], "sourceTotal": 2, "selectedTotal": 1,
@@ -100,7 +100,7 @@ class RuleScopedConversionTests(unittest.TestCase):
         self.assertEqual(before[1], self.other_output.read_bytes())
         updated = yaml.safe_load(self.output.read_text())
         self.assertEqual("3.1.7", updated["version"])
-        self.assertEqual(SOURCE_ID, updated["properties"]["id"])
+        self.assertEqual(f"xdr-{SOURCE_ID}", updated["properties"]["id"])
         self.assertEqual(CONNECTORS, updated["requiredDataConnectors"])
         self.assertEqual(
             hashlib.sha256(source["query"].encode()).hexdigest(),
@@ -240,7 +240,7 @@ class RuleScopedConversionTests(unittest.TestCase):
         result = convert_solution(self.solution, rule_id=SOURCE_ID, overwrite=True)
         self.assertEqual(0, result["conflicts"])
         document = yaml.safe_load(self.output.read_text())
-        self.assertEqual(SOURCE_ID, document["properties"]["id"])
+        self.assertEqual(f"xdr-{SOURCE_ID}", document["properties"]["id"])
         self.assertEqual("3.1.9", document["version"])
         self.assertEqual("local-artifact-only", document["contentProvenance"]["conversion"]["identityChange"]["scope"])
         self.assertEqual(before, self.other_output.read_bytes())
@@ -286,7 +286,19 @@ class RuleScopedConversionTests(unittest.TestCase):
         convert_solution(self.solution)
         for stage in ("discovery", "conversion", "validation"):
             start_workflow_stage(self.solution, stage)
-            complete_workflow_stage(self.solution, stage, status="passed", evidence=["prior evidence"])
+            artifacts = None
+            message = None
+            if stage == "validation":
+                artifacts = {"runtimeStatus": "environment-blocked"}
+                message = "Runtime validation was not run."
+            complete_workflow_stage(
+                self.solution,
+                stage,
+                status="passed",
+                message=message,
+                artifacts=artifacts,
+                evidence=["prior evidence"],
+            )
         convert_solution(self.solution, rule_id=SOURCE_ID, overwrite=True)
         state = workflow_status(self.solution)
         self.assertEqual("blocked", state["workflowStatus"])
@@ -312,7 +324,13 @@ class RuleScopedConversionTests(unittest.TestCase):
         convert_solution(self.solution, overwrite=True)
         complete_workflow_stage(self.solution, "conversion", status="passed")
         start_workflow_stage(self.solution, "validation")
-        complete_workflow_stage(self.solution, "validation", status="passed")
+        complete_workflow_stage(
+            self.solution,
+            "validation",
+            status="passed",
+            message="Runtime validation was not run.",
+            artifacts={"runtimeStatus": "environment-blocked"},
+        )
         self.assertEqual("solution", workflow_status(self.solution)["conversionScope"]["kind"])
 
 

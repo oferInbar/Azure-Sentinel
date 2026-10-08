@@ -34,6 +34,13 @@ failure, not an MCP failure. Do not combine providers within one query-family
 report; if Triage fails mid-batch, rerun that complete batch through its direct
 provider.
 
+Before any live query, confirm the exact persisted Log Analytics workspace
+and/or Defender tenant, and verify the required read permissions for that
+provider. Never choose another workspace to recover from a failure. Do not
+launch authentication without first asking. Structural validation, runtime
+execution, schema binding, and qualification are separate outcomes; a provider
+fallback or successful query never marks a rule validated or proves parity.
+
 ## Workflow
 
 1. Run `sentinel-xdr-migration doctor`.
@@ -64,7 +71,10 @@ provider.
    CLI/API path without treating that capability gap as a KQL failure.
 
    Normalize Advanced Hunting results into a JSON file containing exactly one
-   entry per detection:
+   entry per detection and the returned target-query output `schema` array when
+   custom details are present. Copy `querySha256` from the matching
+   `advancedHuntingQuerySha256` in the runtime plan; it must hash the exact KQL
+   sent to the provider:
 
    ```json
    {
@@ -74,7 +84,8 @@ provider.
          "status": "passed",
          "statusCode": 200,
          "rowCount": 0,
-         "schemaColumnCount": 12,
+         "querySha256": "<exact advancedHuntingQuery SHA-256 from validation-plan>",
+         "schema": [{"Name": "DeviceId"}, {"Name": "Timestamp"}],
          "error": null
        }
      ]
@@ -91,11 +102,37 @@ provider.
      --results "<normalized-results.json>"
    ```
 
-7. If and only if Triage has an Advanced Hunting provider-level failure, run
-   the complete Advanced Hunting batch through Graph:
+7. If Triage cannot complete an entire query family for a provider-level
+   reason, create a run-local `provider-gap-<family>.json` recording the
+   advertised tool name (or `unavailable`), exact target reference, one
+   approved reason code (`tool-unavailable`, `authentication`, `authorization`,
+   `timeout`, `transient-provider-error`, or `batch-provider-failure`), a
+   concise reason, `batchComplete: true`, `scopeVerified: true`,
+   `permissionsVerified: true`, and `kqlError: false`. Do not use a gap record
+   for a real KQL error. The CLI rejects incomplete, cross-family, wrong-provider,
+   or unscoped fallback evidence.
+
+   For original Sentinel queries, rerun that **complete family** against the
+   exact locked Log Analytics workspace, normalize one result per detection,
+   and include `querySha256` from that rule's `sentinelQuerySha256` plan entry,
+   then record it with the gap evidence:
 
    ```powershell
-   sentinel-xdr-migration validate-advanced-hunting --solution "<solution-path>"
+   sentinel-xdr-migration record-runtime-validation `
+     --solution "<solution-path>" `
+     --provider log-analytics-cli `
+     --results "<complete-sentinel-results.json>" `
+     --provider-gap-evidence "<run-local-provider-gap-sentinel.json>"
+   ```
+
+   If and only if Triage has an Advanced Hunting provider-level failure, run
+   the complete Advanced Hunting batch through Graph with the same kind of
+   run-local evidence:
+
+   ```powershell
+   sentinel-xdr-migration validate-advanced-hunting `
+     --solution "<solution-path>" `
+     --provider-gap-evidence "<run-local-provider-gap-advanced-hunting.json>"
    ```
 
 8. Both providers create normalized JSON and self-contained HTML reports under
@@ -106,6 +143,11 @@ provider.
    - execute the `advancedHuntingQuery`;
    - record whether each query binds and executes;
    - compare returned entity columns when representative rows exist.
+   Imported `passed` Sentinel results without a matching `querySha256` are
+   blocked. Graph results bind automatically to the exact Advanced Hunting
+   query executed by the validator. A query rewrite invalidates old evidence;
+   rerun the complete Sentinel and Advanced Hunting families for the current
+   artifact before the workflow can pass runtime validation.
 10. Zero rows are not proof of behavioral parity. Record them as execution
    success with data validation still pending. A table probe that executes and
    returns zero rows proves the table binds on that query surface.
@@ -133,9 +175,19 @@ resolves through the Log Analytics workspace API, and vice versa.
 
 For an **Authoring** profile, an environment-only runtime block does not prevent
 V3.1 packaging when structural validation passed. Complete validation as passed
-with `runtimeStatus=environment-blocked`, preserve the provider error and query
-surface, and do not claim the detection is runtime-qualified. For a
+with `runtimeStatus=environment-blocked` only when no current exact-query
+KQL/runtime failure exists, preserve the provider error and query surface, and
+do not claim the detection is runtime-qualified. For a
 **Qualification** profile, the same runtime block remains blocking until the
 selected lab environment satisfies the required query surfaces.
 
 Return a per-rule result and an overall pass/needs-review summary.
+
+For unresolved table/schema or conversion assumptions, use provider-owned
+evidence: standard-table and schema documentation, live query schema from the
+selected provider, or the custom connector's DCR/table metadata. Do not
+substitute customer research or invent a schema. Present each proposed
+assumption with its exact scope, source/query hash, evidence, and `accept` or
+`reject` choice; no decision is automatic. Accepted assumptions still require
+reconversion and the normal structural/runtime checks. If content hashes change,
+re-review rather than reusing an earlier decision.

@@ -8,6 +8,12 @@
       "minLength": 36,
       "maxLength": 36,
       "pattern": "^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
+    },
+    "sentinelDetectionId": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
+      "pattern": "^xdr-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
     }
   },
   "allOf": [
@@ -58,8 +64,8 @@
           "properties": {
             "properties": {
               "id": {
-                "$ref": "#/$defs/sentinelTemplateId",
-                "description": "Exact originating Sentinel template GUID, equal to contentProvenance.source.id. Cross-field equality is enforced by structural validation and packaging."
+                "$ref": "#/$defs/sentinelDetectionId",
+                "description": "Graph-compatible xdr- prefix followed by the exact originating Sentinel template GUID in contentProvenance.source.id. Cross-field equality is enforced by structural validation and packaging."
               }
             }
           }
@@ -139,7 +145,7 @@
               "required": ["previousId", "currentId", "scope"],
               "properties": {
                 "previousId": {"type": "string"},
-                "currentId": {"$ref": "#/$defs/sentinelTemplateId"},
+                "currentId": {"$ref": "#/$defs/sentinelDetectionId"},
                 "scope": {"const": "local-artifact-only"}
               }
             },

@@ -74,6 +74,10 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual("pending", evidence["stages"]["packaging"]["recordedStatus"])
         report = evidence["reports"]["runtimeGraph"]
         self.assertEqual(["passed", "failed", "blocked", "not-run"], [x["recordedStatus"] for x in report["items"]])
+        self.assertTrue(all(
+            item["queryHashBinding"]["status"] == "stale-or-missing"
+            for item in report["items"]
+        ))
         self.assertEqual(1, report["counts"]["invalid"])
         for item in report["items"]:
             reference = item["content"]
@@ -83,6 +87,48 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual("unsupported", evidence["reports"]["conversion"]["items"][0]["provenance"]["historicalValidationBinding"])
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.run.iterdir()})
         self.assertNotIn("raw-private-response", json.dumps(evidence))
+
+    def test_runtime_result_records_exact_current_query_binding(self):
+        source_query = "DeviceEvents | where TimeGenerated > ago(4h)"
+        target_query = "DeviceEvents | where Timestamp >= ago(2h)"
+        self.source.write_text(yaml.safe_dump({
+            "id": "source-rule", "query": source_query,
+        }))
+        self.output.write_text(yaml.safe_dump({
+            "version": "3.1.0",
+            "contentProvenance": {
+                "source": {"id": "source-rule", "path": "Analytic Rules/Rule.yaml"},
+            },
+            "properties": {
+                "queryCondition": {"queryText": target_query},
+            },
+        }))
+        self.write("runtime-validation.graph.json", {
+            "provider": "graph",
+            "results": [{
+                "detection": "Rule.yaml",
+                "status": "passed",
+                "querySha256": hashlib.sha256(target_query.encode()).hexdigest(),
+            }],
+        })
+        self.write("runtime-validation.triage-mcp.json", {
+            "provider": "triage-mcp",
+            "results": [{
+                "detection": "Rule.yaml",
+                "status": "passed",
+                "querySha256": hashlib.sha256(source_query.encode()).hexdigest(),
+            }],
+        })
+
+        evidence = self.export()
+        self.assertEqual(
+            "matches",
+            evidence["reports"]["runtimeGraph"]["items"][0]["queryHashBinding"]["status"],
+        )
+        self.assertEqual(
+            "matches",
+            evidence["reports"]["runtimeTriage"]["items"][0]["queryHashBinding"]["status"],
+        )
 
     def test_completed_workflow_does_not_turn_missing_evidence_into_pass(self):
         state = json.loads((self.run / "workflow-state.json").read_text())

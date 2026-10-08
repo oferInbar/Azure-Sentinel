@@ -21,6 +21,7 @@ from test_converter import RULE
 SOURCE_ID = "11111111-2222-3333-4444-555555555555"
 OTHER_ID = "11111111-2222-3333-4444-666666666666"
 LEGACY_ID = "xdr-suspicious-test-activity-11111111"
+CANONICAL_ID = f"xdr-{SOURCE_ID}"
 
 
 class DetectionIdentityTests(unittest.TestCase):
@@ -53,16 +54,16 @@ class DetectionIdentityTests(unittest.TestCase):
         source_bytes = self.source.read_bytes(), second.read_bytes()
         result = convert_solution(self.solution)
         self.assertEqual(2, result["converted"])
-        self.assertEqual(SOURCE_ID, self.read_output()["properties"]["id"])
+        self.assertEqual(CANONICAL_ID, self.read_output()["properties"]["id"])
         other = yaml.safe_load(self.output.with_name("Second.yaml").read_text())
-        self.assertEqual(OTHER_ID, other["properties"]["id"])
+        self.assertEqual(f"xdr-{OTHER_ID}", other["properties"]["id"])
         self.assertEqual(source_bytes, (self.source.read_bytes(), second.read_bytes()))
         self.source.write_text(RULE.replace("Suspicious test activity", "Renamed test activity"))
         self.assertEqual(0, convert_solution(self.solution, overwrite=True)["conflicts"])
         document = self.read_output()
-        self.assertEqual(SOURCE_ID, document["properties"]["id"])
+        self.assertEqual(CANONICAL_ID, document["properties"]["id"])
         self.assertEqual(SOURCE_ID, document["contentProvenance"]["source"]["id"])
-        self.assertEqual(SOURCE_ID, graph_detection_payload(document)["id"])
+        self.assertEqual(CANONICAL_ID, graph_detection_payload(document)["id"])
         self.assertEqual("3.1.0", document["version"])
         self.assertEqual("disabled", document["properties"]["status"])
 
@@ -80,7 +81,7 @@ class DetectionIdentityTests(unittest.TestCase):
                 self.source.write_text(RULE.replace(SOURCE_ID, json.dumps(source_id)))
                 convert_solution(self.solution)
                 document = self.read_output()
-                self.assertEqual(source_id, document["properties"]["id"])
+                self.assertEqual(f"xdr-{source_id}", document["properties"]["id"])
                 self.assertEqual(valid, not validate_document(document))
 
     def test_legacy_reconversion_is_explicit_local_only_and_idempotent(self):
@@ -95,11 +96,11 @@ class DetectionIdentityTests(unittest.TestCase):
         self.assertEqual(0, result["conflicts"])
         document = self.read_output()
         self.assertEqual("3.1.1", document["version"])
-        self.assertEqual(SOURCE_ID, document["properties"]["id"])
+        self.assertEqual(CANONICAL_ID, document["properties"]["id"])
         self.assertEqual("disabled", document["properties"]["status"])
         conversion = document["contentProvenance"]["conversion"]
         self.assertEqual({
-            "previousId": LEGACY_ID, "currentId": SOURCE_ID, "scope": "local-artifact-only",
+            "previousId": LEGACY_ID, "currentId": CANONICAL_ID, "scope": "local-artifact-only",
         }, conversion["identityChange"])
         warning = next(value for value in conversion["warnings"] if "Local detection ID changed" in value)
         self.assertIn("No cloud rules were updated, deleted, or migrated", warning)
@@ -117,6 +118,7 @@ class DetectionIdentityTests(unittest.TestCase):
         self.write_output(document)
         self.assertEqual(0, convert_solution(self.solution, overwrite=True)["conflicts"])
         self.assertEqual("3.1.0", self.read_output()["version"])
+        self.assertEqual(CANONICAL_ID, self.read_output()["properties"]["id"])
         for custom_id in ("hand-authored-id", "xdr-custom-authored-11111111", OTHER_ID):
             with self.subTest(custom_id=custom_id):
                 document = self.read_output()
@@ -190,11 +192,11 @@ class DetectionIdentityTests(unittest.TestCase):
         convert_solution(self.solution)
         document = self.read_output()
         document["properties"]["id"] = OTHER_ID
-        self.assertTrue(any("must equal" in error for error in validate_document(document)))
+        self.assertTrue(any("canonical xdr- prefix" in error for error in validate_document(document)))
         document["properties"]["id"] = LEGACY_ID
         errors = validate_document(document)
-        self.assertTrue(any(error.startswith("schema:") for error in errors))
-        with self.assertRaisesRegex(ValueError, "must equal"):
+        self.assertTrue(any("canonical xdr- prefix" in error for error in errors))
+        with self.assertRaisesRegex(ValueError, "canonical xdr- prefix"):
             graph_detection_payload(document)
         document["contentProvenance"]["source"]["platform"] = "Other"
         document["contentProvenance"]["source"]["kind"] = "Other"
@@ -240,15 +242,100 @@ class PackagedIdentityTests(unittest.TestCase):
                                and r.get("condition") == "[parameters('DeployCustomDetection')]")
                 registration = next(r for r in template["resources"]
                                     if r.get("properties", {}).get("contentKind") == "CustomDetection")
-                expected_id = f"[if(true(), '{SOURCE_ID}', '{SOURCE_ID}')]"
+                packaged_id = f"xdr-{SOURCE_ID}"
+                expected_id = f"[if(true(), '{packaged_id}', '{packaged_id}')]"
                 install_properties = install["properties"]["template"]["resources"]["detectionRule"]["properties"]
                 registered_properties = registration["properties"]["mainTemplate"]["resources"]["detectionRule"]["properties"]
                 self.assertEqual(expected_id, install_properties["id"])
                 self.assertEqual(expected_id, registered_properties["id"])
-                self.assertEqual(SOURCE_ID, registration["properties"]["contentId"])
+                self.assertEqual(packaged_id, registration["properties"]["contentId"])
+                self.assertEqual(
+                    f"Sample-CD-{packaged_id}", install["name"],
+                )
+                self.assertEqual(
+                    f"[resourceId('Microsoft.Resources/deployments', 'Sample-CD-{packaged_id}')]",
+                    registration["dependsOn"][0],
+                )
+                self.assertIn(
+                    f"uniquestring('{packaged_id}')",
+                    registration["name"],
+                )
+                self.assertIn(
+                    f"'{packaged_id}'",
+                    registration["properties"]["contentProductId"],
+                )
+                content_packages = next(
+                    resource for resource in template["resources"]
+                    if resource["type"].endswith("/contentPackages")
+                )
+                packaged_criteria = [
+                    criterion for criterion in content_packages["properties"]["dependencies"]["criteria"]
+                    if criterion.get("kind") == "CustomDetection"
+                ]
+                self.assertEqual([{
+                    "kind": "CustomDetection", "contentId": packaged_id, "version": "3.1.0",
+                }], packaged_criteria)
+                self.assertEqual(
+                    SOURCE_ID,
+                    json.loads(path.read_text().removeprefix("---\n"))["contentProvenance"]["source"]["id"],
+                )
                 self.assertEqual("3.1.0", registration["properties"]["version"])
                 self.assertEqual("disabled", install_properties["status"])
                 self.assertEqual(before, path.read_bytes())
+
+    def test_already_prefixed_identity_is_idempotent_across_repeated_packaging(self):
+        entry, path, document = self.fixture()
+        document["properties"]["id"] = f"xdr-{SOURCE_ID}"
+        path.write_text("---\n" + json.dumps(document))
+        before = path.read_bytes()
+        packaged_ids = []
+        for pipeline in (False, True):
+            result = self.package(entry, pipeline)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            template = json.loads((self.solution / "Package/mainTemplate.json").read_text())
+            registration = next(
+                resource for resource in template["resources"]
+                if resource.get("properties", {}).get("contentKind") == "CustomDetection"
+            )
+            packaged_ids.append(registration["properties"]["contentId"])
+        self.assertEqual([f"xdr-{SOURCE_ID}", f"xdr-{SOURCE_ID}"], packaged_ids)
+        self.assertEqual(before, path.read_bytes())
+
+    def test_letter_starting_source_guid_uses_same_canonical_prefix(self):
+        entry, path, document = self.fixture()
+        source_id = "ABCDEF12-2222-3333-4444-555555555555"
+        document["contentProvenance"]["source"]["id"] = source_id
+        document["properties"]["id"] = source_id
+        path.write_text("---\n" + json.dumps(document))
+        analytic = self.solution / "Analytic Rules/Test.yaml"
+        rule = yaml.safe_load(analytic.read_text())
+        rule["id"] = source_id
+        analytic.write_text(yaml.safe_dump(rule, sort_keys=False))
+        result = self.package(entry, False)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        template = json.loads((self.solution / "Package/mainTemplate.json").read_text())
+        registration = next(
+            resource for resource in template["resources"]
+            if resource.get("properties", {}).get("contentKind") == "CustomDetection"
+        )
+        self.assertEqual(f"xdr-{source_id}", registration["properties"]["contentId"])
+        self.assertEqual(source_id, json.loads(path.read_text().removeprefix("---\n"))[
+            "contentProvenance"]["source"]["id"]
+        )
+
+    def test_bare_and_prefixed_copy_collision_is_rejected_after_normalization(self):
+        entry, path, document = self.fixture()
+        duplicate = self.solution / "XDR Detections/Copy.yaml"
+        duplicate_document = copy.deepcopy(document)
+        duplicate_document["properties"]["id"] = f"xdr-{SOURCE_ID}"
+        duplicate.write_text("---\n" + json.dumps(duplicate_document))
+        data = json.loads(self.data.read_text())
+        data["XDR Detections"].append("XDR Detections/Copy.yaml")
+        self.data.write_text(json.dumps(data))
+        result = self.package(entry, False)
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("Duplicate Custom Detection id", result.stdout + result.stderr)
+        self.assertIn("after canonical ID normalization", result.stdout + result.stderr)
 
     def test_packaging_rejects_mismatched_legacy_and_malformed_source_ids(self):
         entry, path, original = self.fixture()
@@ -262,7 +349,14 @@ class PackagedIdentityTests(unittest.TestCase):
                     path.write_text("---\n" + json.dumps(document))
                     result = self.package(entry, pipeline)
                     self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
-                    self.assertIn("originating Sentinel template GUID", result.stdout + result.stderr)
+                    output = result.stdout + result.stderr
+                    self.assertTrue(
+                        "originating Sentinel GUID" in output
+                        or "conflicts with originating" in output
+                        or "canonical xdr-<GUID>" in output
+                        or "originating Sentinel template GUID" in output,
+                        output,
+                    )
                     self.assertFalse((self.solution / "Package/mainTemplate.json").exists())
 
     def test_packaging_keeps_unrelated_custom_detection_id_contract(self):

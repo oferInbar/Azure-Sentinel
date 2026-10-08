@@ -85,7 +85,7 @@ class DeploymentTests(unittest.TestCase):
             payload["@odata.type"], "#microsoft.graph.security.detectionRule"
         )
         self.assertEqual(payload["status"], "disabled")
-        self.assertEqual(RULE_ID, payload["id"])
+        self.assertEqual(f"xdr-{RULE_ID}", payload["id"])
 
     def test_payload_rejects_review_required_detection(self) -> None:
         value = document()
@@ -136,7 +136,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result["failed"], 0)
         self.assertEqual(result["results"][0]["deployedStatus"], "disabled")
         self.assertEqual(request.call_args_list[1].args[0], "POST")
-        self.assertEqual(RULE_ID, request.call_args_list[1].args[3]["id"])
+        self.assertEqual(f"xdr-{RULE_ID}", request.call_args_list[1].args[3]["id"])
 
     @mock.patch(
         "sentinel_xdr_migration.deployment._deployment_token",
@@ -168,7 +168,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result["succeeded"], 1)
         self.assertEqual(result["results"][0]["deployedStatus"], "disabled")
         self.assertEqual(request.call_args_list[1].args[0], "PATCH")
-        self.assertTrue(request.call_args_list[1].args[1].endswith("/" + RULE_ID))
+        self.assertTrue(request.call_args_list[1].args[1].endswith("/xdr-" + RULE_ID))
         update = request.call_args_list[1].args[3]
         self.assertNotIn("id", update)
 

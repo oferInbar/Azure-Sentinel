@@ -64,7 +64,7 @@ class ConnectorMetadataTests(unittest.TestCase):
                     self.assertEqual(connectors, document["requiredDataConnectors"])
                 self.assertEqual([], validate_document(document))
                 self.assertEqual(source_bytes, self.source.read_bytes())
-                self.assertEqual(identity.SOURCE_ID, document["properties"]["id"])
+                self.assertEqual(f"xdr-{identity.SOURCE_ID}", document["properties"]["id"])
                 self.assertEqual("disabled", document["properties"]["status"])
                 document["version"] = "3.1.2"
                 self.output.write_text(yaml.safe_dump(document, sort_keys=False))
@@ -137,7 +137,7 @@ class ConnectorMetadataTests(unittest.TestCase):
         self.assertEqual(before, document)
         self.assertNotIn("requiredDataConnectors", payload)
         self.assertNotIn("contentProvenance", payload)
-        self.assertEqual(identity.SOURCE_ID, payload["id"])
+        self.assertEqual(f"xdr-{identity.SOURCE_ID}", payload["id"])
         self.assertEqual("disabled", payload["status"])
         payload["queryCondition"]["queryText"] = "changed"
         self.assertEqual(before, document)

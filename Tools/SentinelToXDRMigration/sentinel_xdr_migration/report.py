@@ -100,6 +100,17 @@ def write_transformation_report(summary: dict[str, Any], path: Path) -> None:
 
 def render_runtime_validation_report(summary: dict[str, Any]) -> str:
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    fallback = summary.get("providerFallback")
+    fallback_notice = ""
+    if fallback:
+        fallback_notice = (
+            '<section class="card"><strong>Recorded Triage MCP provider gap</strong>'
+            f'<p>{escape(str(fallback.get("reason")))} '
+            f'Complete {escape(str(fallback.get("queryFamily")))} batch rerun through '
+            f'{escape(str(fallback.get("fallbackProvider")))} for {escape(str(fallback.get("scopeReference")))}. '
+            "KQL errors are not fallback reasons.</p>"
+            f'<p class="muted">Advertised tool: {escape(str(fallback.get("advertisedTool")))}</p></section>'
+        )
     rows: list[str] = []
     for result in summary["results"]:
         status = str(result["status"])
@@ -136,6 +147,7 @@ def render_runtime_validation_report(summary: dict[str, Any]) -> str:
     <div class="card">Blocked<strong>{summary["blocked"]}</strong></div>
     <div class="card">Not run<strong>{summary.get("notRun", 0)}</strong></div>
   </section>
+  {fallback_notice}
   <div class="table-wrap">
     <table>
       <thead><tr><th>Detection</th><th>Status</th><th>Rows</th><th>Schema columns</th><th>Error</th></tr></thead>

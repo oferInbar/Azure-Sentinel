@@ -61,7 +61,7 @@ class TacticPreservationTests(unittest.TestCase):
         schema = json.loads(XDR_SCHEMA_PATH.read_text())
         self.assertEqual(list(Draft202012Validator(schema).iter_errors(document)), [])
         self.assertEqual(document["properties"]["status"], "disabled")
-        self.assertEqual(document["properties"]["id"], self.rule["id"])
+        self.assertEqual(f"xdr-{self.rule['id']}", document["properties"]["id"])
         self.assertEqual(document["version"], "3.1.0")
         self.assertEqual(document["contentProvenance"]["source"]["version"], "1.0.0")
         self.assertEqual(

@@ -123,8 +123,37 @@ class ReportDashboardTests(unittest.TestCase):
         self.assertEqual(findings[1]["severity"], "review")
         html = render_dashboard(report(item))
         self.assertIn("1 distinct rule errors · 2 diagnostic occurrences", html)
-        self.assertIn("CHECK", html)
-        self.assertIn("LOCAL", html)
+
+    def test_provider_gap_is_visible_as_information_not_runtime_parity(self) -> None:
+        item = rule()
+        item["analyticRule"]["runtime"] = [{
+            "provider": "log-analytics-cli",
+            "status": "passed",
+            "providerFallback": {
+                "mcpProvider": "triage-mcp",
+                "advertisedTool": "QueryWorkspace",
+                "fallbackProvider": "log-analytics-cli",
+                "queryFamily": "sentinel",
+                "scopeReference": "/subscriptions/example/resourceGroups/lab/providers/Microsoft.OperationalInsights/workspaces/sentinel",
+                "reasonCode": "authorization",
+                "reason": "MCP workspace-query tool was unavailable.",
+                "batchComplete": True,
+                "scopeVerified": True,
+                "permissionsVerified": True,
+                "kqlError": False,
+            },
+        }]
+        findings = _findings(item)
+        self.assertTrue(any(
+            value["severity"] == "info" and "provider gap" in value["message"].lower()
+            for value in findings
+        ))
+        self.assertEqual("unconfirmed", _rule_status(item, report(item)["workflow"]))
+        html = render_dashboard(report(item))
+        self.assertIn("MCP workspace-query tool was unavailable.", html)
+        self.assertNotIn("parity passed", html.lower())
+        self.assertIn("Automated check overview", html)
+        self.assertIn("local structural checks", html)
 
     def test_common_findings_count_rules_and_preserve_original_override(self) -> None:
         first, second = rule("First"), rule("Second")

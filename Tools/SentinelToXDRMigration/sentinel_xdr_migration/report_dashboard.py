@@ -368,7 +368,19 @@ def _findings(rule: dict[str, Any]) -> list[dict[str, Any]]:
         items.append(("blocked" if status == "blocked" else "error", stage,
                       f"{label}: {_status_label(status)}", value))
     items += [
-        ("review", "conversion-review", str(message), {"message": message})
+        (
+            "review",
+            "conversion-review",
+            str(message),
+            {
+                "message": message,
+                "reviewScope": custom.get("reviewScope"),
+                "reviewDecisions": [
+                    decision for decision in custom.get("reviewDecisions") or []
+                    if isinstance(decision, dict) and decision.get("reason") == message
+                ],
+            },
+        )
         for message in rule["customDetection"].get("reviewReasons") or []
     ]
     if (custom.get("reviewRequired") or custom.get("conversionStatus") == "needsReview") and not custom.get("reviewReasons"):
@@ -382,6 +394,17 @@ def _findings(rule: dict[str, Any]) -> list[dict[str, Any]]:
         ("info", "conversion-information", str(message), {"message": message})
         for message in rule.get("informational") or []
     ]
+    for side_key in ("analyticRule", "customDetection"):
+        for runtime in (rule.get(side_key) or {}).get("runtime") or []:
+            fallback = runtime.get("providerFallback")
+            if fallback:
+                items.append((
+                    "info",
+                    "runtime-provider-fallback",
+                    "Triage MCP provider gap recorded; complete query family rerun through "
+                    f"{fallback.get('fallbackProvider')}: {fallback.get('reason')}",
+                    {"provider": runtime.get("provider"), "providerFallback": fallback},
+                ))
     for severity, stage, message, raw in items:
         key = _message_key(message, stage)
         # Only the inherited conversion/structural pair shares an error identity.

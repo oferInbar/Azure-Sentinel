@@ -180,8 +180,15 @@ class NestedContentTests(unittest.TestCase):
 
     def test_recursive_runtime_and_report_do_not_conflate_same_basenames(self) -> None:
         convert_solution(self.solution)
+        query_hashes = {
+            item["detection"]: item["sentinelQuerySha256"]
+            for item in runtime_validation_plan(self.solution)["rules"]
+        }
         entries = [
-            {"detection": name, "status": "passed", "rowCount": index}
+            {
+                "detection": name, "status": "passed", "rowCount": index,
+                "querySha256": query_hashes[name],
+            }
             for index, name in enumerate(self.names)
         ]
         entries[0].update(status="blocked", error="specific nested failure")

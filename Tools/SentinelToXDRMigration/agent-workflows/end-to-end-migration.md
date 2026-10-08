@@ -282,9 +282,11 @@ an undocumented field to Graph or inner detection-rule properties.
 When an entity identifier cannot be preserved equivalently in the final
 entity mappings, retain its available query output value **in addition** as
 an `alertTemplate.customDetails` column binding. This applies to explicit
-mapping overrides as well as automatic conversion. Keep the mapping limitation
-and review diagnostics: supplemental evidence does not restore entity identity
-or correlation. Preserve source/override custom details, reject conflicting
+mapping overrides as well as automatic conversion. When static output binding
+is proven, report this specific mismatch as nonblocking information. Missing or
+unproven bindings, conflicts, limits, and dropped values remain warnings or
+errors. Supplemental evidence does not restore entity identity or correlation.
+Preserve source/override custom details, reject conflicting
 explicit keys, and use stable collision-safe keys for added details. Record the
 source identifier, bound output column and availability status in conversion
 provenance. Do not rewrite KQL or emit known projected-out supplemental columns.
@@ -292,6 +294,26 @@ Unknown output bindings require runtime schema verification, not an availability
 claim. Respect the documented 20-pair limit without truncation and disclose the
 4 KB runtime-value limit. See
 [supplemental entity evidence](../README.md#supplemental-entity-evidence-in-custom-details).
+
+For a source lookback shorter than a documented native XDR service window,
+conversion may constrain event time only after conservative proof of a single
+matching native input and its time-column binding. The filter belongs directly
+after the table input, before any aggregation; preserve existing predicates.
+Record original/effective/service windows, rationale, and late-ingestion risk.
+Joins, unions, historical branches, reassigned columns, or ambiguous semantics
+remain `needsReview` without speculative query edits. Explain that the event-time
+window is constrained to the original Sentinel lookback while the fixed service
+windows remain different. This is not cadence or alert-parity proof; generated
+transforms still require ordinary runtime validation. Any applied Advanced
+Hunting KQL rewrite invalidates earlier query-runtime evidence and blocks
+previously passed validation and downstream stages while retaining old reports
+as historical. Rerun the complete Sentinel and Advanced Hunting query families
+against the exact current queries. Runtime imports must include the SHA-256 of
+the exact query executed; missing or mismatched hashes are blocked. Review
+decisions are source/query-hash scoped and expire after a rewrite. Failed KQL
+results cannot be relabeled as provider gaps, and fallback is only for provider
+failure with a complete-family rerun. Zero rows indicate execution, not parity.
+Static/unit checks do not promote a transform to runtime-validated.
 
 Preserve **all** source tactics in source order in authored YAML; multiple
 tactics alone are not a review gate. Assign flat source techniques only to
@@ -357,9 +379,28 @@ obtained, report the unmet gate and pending implementation rather than success.
 
 Run structural validation. When runtime validation is authorized, validate
 original Sentinel and converted Advanced Hunting queries. Prefer capabilities
-advertised by the official Sentinel Triage MCP. Fall back to Log Analytics for
-Sentinel queries and Microsoft Graph for Advanced Hunting only for provider-level
-failures.
+actually advertised by the official Sentinel Triage MCP; do not invent tool
+names. Verify the exact persisted workspace/tenant and read permissions before
+live queries. If a provider-level failure interrupts a query family, rerun the
+entire family through Log Analytics for Sentinel or Microsoft Graph for
+Advanced Hunting and record the provider gap with `record-runtime-validation`
+or `validate-advanced-hunting --provider-gap-evidence`. Never mix providers
+within one family, and never fall back on a real KQL semantic/runtime error.
+Keep structural, runtime, schema-binding, and qualification results separate.
+`runtime-validation.graph.json` binds every result to the SHA-256 of the exact
+Advanced Hunting query. Imported Sentinel MCP or Log Analytics results must
+carry `querySha256` for the exact persisted source query; `record-runtime-validation`
+blocks missing or stale bindings. A validation stage can pass as runtime
+validated only with complete current-hash Sentinel and Advanced Hunting reports.
+Authoring may explicitly record `runtimeStatus=environment-blocked` when no
+current exact-query KQL/runtime failure exists; this is not runtime
+qualification. Qualification cannot use that exception.
+
+When investigating table/schema uncertainty, use standard-table documentation,
+provider query schemas, and solution-owned parser or custom connector DCR/table
+metadata. Do not invent schema or defer tool-owned repository/provider research
+to the customer. Present scoped evidence and proposed assumptions for explicit
+user accept/reject; stale source or query evidence requires re-review.
 
 Unavailable workload tables are blocked environment results. Zero rows prove
 query execution, not behavioral parity. Entity mappings require review.

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+
+import yaml
 
 from sentinel_xdr_migration.workflow import (
     complete_workflow_stage,
@@ -13,6 +16,9 @@ from sentinel_xdr_migration.workflow import (
     workflow_status,
 )
 from sentinel_xdr_migration.artifacts import artifact_path, migrate_reports
+from sentinel_xdr_migration.converter import convert_solution
+from sentinel_xdr_migration.solution_report import build_solution_report
+from test_converter import RULE
 
 
 class WorkflowTests(unittest.TestCase):
@@ -64,12 +70,70 @@ class WorkflowTests(unittest.TestCase):
 
     def _complete_passed_stage(self, stage: str) -> None:
         start_workflow_stage(self.solution, stage)
+        artifacts = self._packaging_artifacts() if stage == "packaging" else None
+        message = None
+        if stage == "validation":
+            context = workflow_status(self.solution)["context"]
+            if context["workflowProfile"] == "authoring":
+                artifacts = {"runtimeStatus": "environment-blocked"}
+                message = (
+                    "Runtime KQL validation was not run; no runtime-qualified "
+                    "claim is made."
+                )
+            else:
+                self._create_runtime_evidence()
         complete_workflow_stage(
             self.solution,
             stage,
             status="passed",
-            artifacts=self._packaging_artifacts() if stage == "packaging" else None,
+            message=message,
+            artifacts=artifacts,
         )
+
+    def _create_runtime_evidence(self) -> None:
+        source_path = self.solution / "Analytic Rules" / "Rule.yaml"
+        output_path = self.solution / "XDR Detections" / "Rule.yaml"
+        if not source_path.exists():
+            source_path.parent.mkdir(parents=True)
+            source_path.write_text(RULE, encoding="utf-8")
+        source = yaml.safe_load(source_path.read_text())
+        if not output_path.exists():
+            output_path.parent.mkdir(parents=True)
+            output_path.write_text(yaml.safe_dump({
+                "kind": "CustomDetection",
+                "contentProvenance": {
+                    "source": {"path": "Analytic Rules/Rule.yaml"},
+                },
+                "properties": {
+                    "queryCondition": {
+                        "queryText": "DeviceEvents | where Timestamp > ago(1h)",
+                    },
+                },
+            }), encoding="utf-8")
+        target = yaml.safe_load(output_path.read_text())
+        for provider, query in (
+            ("triage-mcp", source["query"]),
+            ("graph", target["properties"]["queryCondition"]["queryText"]),
+        ):
+            query_hash = hashlib.sha256(query.encode()).hexdigest()
+            artifact_path(
+                self.solution,
+                f"runtime-validation.{provider}.json",
+                create_parent=True,
+            ).write_text(json.dumps({
+                "provider": provider,
+                "platform": (
+                    "Microsoft Sentinel Triage MCP"
+                    if provider == "triage-mcp"
+                    else "Microsoft Defender XDR Advanced Hunting"
+                ),
+                "results": [{
+                    "detection": "Rule.yaml",
+                    "status": "passed",
+                    "rowCount": 0,
+                    "querySha256": query_hash,
+                }],
+            }), encoding="utf-8")
 
     def test_profile_selection_is_required(self) -> None:
         with self.assertRaisesRegex(ValueError, "profile selection is required"):
@@ -251,6 +315,81 @@ class WorkflowTests(unittest.TestCase):
                 "discovery",
                 status="blocked",
             )
+
+    def test_validation_cannot_pass_without_current_exact_query_evidence(self) -> None:
+        initialize_workflow(self.solution, workflow_profile="qualification", **self._qualification_args())
+        self._complete_passed_stage("discovery")
+        self._complete_passed_stage("conversion")
+        self._create_runtime_evidence()
+        graph_report = artifact_path(self.solution, "runtime-validation.graph.json")
+        report = json.loads(graph_report.read_text())
+        report["results"][0]["querySha256"] = "0" * 64
+        graph_report.write_text(json.dumps(report))
+        start_workflow_stage(self.solution, "validation")
+
+        with self.assertRaisesRegex(ValueError, "every current query"):
+            complete_workflow_stage(self.solution, "validation", status="passed")
+
+    def test_environment_blocked_authoring_cannot_hide_current_kql_failure(self) -> None:
+        initialize_workflow(self.solution, workflow_profile="authoring")
+        self._complete_passed_stage("discovery")
+        self._complete_passed_stage("conversion")
+        self._create_runtime_evidence()
+        source_report = artifact_path(self.solution, "runtime-validation.triage-mcp.json")
+        report = json.loads(source_report.read_text())
+        report["results"][0]["status"] = "failed"
+        report["results"][0]["error"] = "Failed to resolve table"
+        source_report.write_text(json.dumps(report))
+        start_workflow_stage(self.solution, "validation")
+
+        with self.assertRaisesRegex(ValueError, "cannot be relabeled environment-blocked"):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                message="environment unavailable",
+                artifacts={"runtimeStatus": "environment-blocked"},
+            )
+
+    def test_lookback_rewrite_invalidates_completed_runtime_and_downstream_stages(self) -> None:
+        initialize_workflow(self.solution, workflow_profile="qualification", **self._qualification_args())
+        source_path = self.solution / "Analytic Rules" / "Rule.yaml"
+        source_path.parent.mkdir()
+        source = yaml.safe_load(RULE)
+        source["queryPeriod"] = "4h"
+        source["query"] = (
+            "DeviceEvents | summarize Count=count() "
+            "by TimeGenerated, AccountUpn, IPAddress"
+        )
+        source_path.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+        convert_solution(self.solution)
+        self._complete_passed_stage("discovery")
+        self._complete_passed_stage("conversion")
+        self._create_runtime_evidence()
+        self._complete_passed_stage("validation")
+        self._complete_passed_stage("packaging")
+
+        source = yaml.safe_load(source_path.read_text())
+        source["queryPeriod"] = "2h"
+        source_path.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+        converted = convert_solution(self.solution, overwrite=True)
+        self.assertEqual(1, converted["converted"])
+        target_query = yaml.safe_load(
+            (self.solution / "XDR Detections/Rule.yaml").read_text()
+        )["properties"]["queryCondition"]["queryText"]
+        self.assertIn("Timestamp >= ago(2h)", target_query)
+
+        stages = workflow_status(self.solution)["stages"]
+        self.assertEqual("blocked", stages["validation"]["status"])
+        self.assertIn("previous runtime evidence is historical", stages["validation"]["message"])
+        self.assertEqual("blocked", stages["packaging"]["status"])
+        report = build_solution_report(self.solution)
+        runtime = report["rules"][0]["customDetection"]["runtime"]
+        self.assertTrue(runtime)
+        self.assertEqual("blocked", runtime[0]["status"])
+        sentinel_runtime = report["rules"][0]["analyticRule"]["runtime"]
+        self.assertEqual("passed", sentinel_runtime[0]["status"])
+        self.assertEqual("matches", sentinel_runtime[0]["queryHashStatus"])
 
 
 if __name__ == "__main__":

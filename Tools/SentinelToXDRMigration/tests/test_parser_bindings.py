@@ -153,7 +153,8 @@ class ParserBindingTests(unittest.TestCase):
             path.write_text(yaml.safe_dump(document), encoding="utf-8")
             paths.append(path)
             properties = copy.deepcopy(document["properties"])
-            properties["id"] = f"[if(true(), '{source_id}', '{source_id}')]"
+            packaged_id = f"xdr-{source_id}"
+            properties["id"] = f"[if(true(), '{packaged_id}', '{packaged_id}')]"
             for mappings in properties["detectionAction"]["alertTemplate"]["entityMappings"].values():
                 for mapping in mappings:
                     if mapping.get("id"):

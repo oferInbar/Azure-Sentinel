@@ -203,19 +203,41 @@ class PackagingTests(unittest.TestCase):
 
     @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
     @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
-    def test_tactic_and_registration_warnings_are_visible_and_persisted(self, run, which) -> None:
+    def test_tactic_projection_is_information_and_registration_remains_warning(self, run, which) -> None:
         warnings = [
-            "WARNING: V3.1 TACTIC SELECTION: first authored tactic 'Execution'; omitted tactics: Persistence",
             "WARNING: V3.1 CONTENT SELECTION: live provider registration support remains unverified.",
         ]
+        projection = {
+            "detectionId": "11111111-2222-3333-4444-555555555555",
+            "authoredTactics": ["Execution", "Persistence"],
+            "packagedTactics": ["Execution"],
+            "omittedTactics": ["Persistence"],
+        }
+        information = (
+            "INFORMATION: V3.1 TACTIC SELECTION: Custom Detection "
+            "'11111111-2222-3333-4444-555555555555' packages 'Execution'; omitted tactics: Persistence."
+        )
         run.return_value = CompletedProcess(
-            [], 0, "Starting Package Creation using V3.1 tool\n" + "\n".join(warnings), "",
+            [],
+            0,
+            "Starting Package Creation using V3.1 tool\n"
+            + "\n".join(warnings)
+            + "\n"
+            + information
+            + "\nV3.1 TACTIC PROJECTION: "
+            + json.dumps(projection),
+            "",
         )
         with mock.patch("sys.stderr") as stderr:
             result = package_solution_v3_1(self.solution, version_bump="none")
         self.assertTrue(stderr.write.called)
         self.assertEqual(warnings, result["warnings"])
-        self.assertEqual(warnings, json.loads(Path(result["packageReport"]).read_text())["warnings"])
+        self.assertEqual([information], result["informational"])
+        self.assertEqual([projection], result["tacticProjection"])
+        saved = json.loads(Path(result["packageReport"]).read_text())
+        self.assertEqual(warnings, saved["warnings"])
+        self.assertEqual([information], saved["informational"])
+        self.assertEqual([projection], saved["tacticProjection"])
 
 
 if __name__ == "__main__":

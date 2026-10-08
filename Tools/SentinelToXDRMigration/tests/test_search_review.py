@@ -102,7 +102,15 @@ class SearchReviewTests(unittest.TestCase):
         ):
             with self.subTest(query=query):
                 rule["query"] = query
-                with patch.object(Path, "open", return_value=io.StringIO(yaml.safe_dump(rule))), \
+                original_open = Path.open
+
+                def open_input(path, *args, **kwargs):
+                    expected_path = root / "Analytic Rules/Rule.yaml"
+                    if path == expected_path:
+                        return io.StringIO(yaml.safe_dump(rule))
+                    return original_open(path, *args, **kwargs)
+
+                with patch.object(Path, "open", autospec=True, side_effect=open_input), \
                      patch("sentinel_xdr_migration.converter.normalize_parser_bindings",
                            side_effect=lambda text, _: (text, [])):
                     document = build_xdr_document(root / "Analytic Rules/Rule.yaml", root, {})

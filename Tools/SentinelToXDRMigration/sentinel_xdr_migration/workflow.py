@@ -321,6 +321,36 @@ def invalidate_scoped_completion(solution: str | Path) -> None:
     _write(path, state)
 
 
+def invalidate_runtime_completion(
+    solution: str | Path,
+    changed_queries: list[str],
+) -> None:
+    """Keep historical reports, but block passed validation after KQL changes."""
+    if not changed_queries or not existing_artifact_path(solution, STATE_FILE_NAME).is_file():
+        return
+    path, state = _load(solution)
+    affected = STAGES[2:]
+    if not any(
+        state["stages"][name]["status"] not in {"pending", "notRequired"}
+        for name in affected
+    ):
+        return
+    names = ", ".join(sorted(set(changed_queries)))
+    message = (
+        "A converted Advanced Hunting query changed; previous runtime evidence is "
+        "historical and must not be reused. Rerun the complete Sentinel and Advanced "
+        f"Hunting query families against the exact current queries. Changed outputs: {names}"
+    )
+    for name in affected:
+        current = state["stages"][name]
+        if current["status"] not in {"pending", "notRequired"}:
+            current["status"] = "blocked"
+            current["completedAt"] = None
+            current["message"] = message
+    state["workflowStatus"] = "blocked"
+    _write(path, state)
+
+
 def _dependencies(state: dict[str, Any], stage: str) -> tuple[str, ...]:
     if state["context"]["workflowProfile"] == "authoring":
         return AUTHORING_DEPENDENCIES.get(stage, ())
@@ -436,7 +466,38 @@ def complete_workflow_stage(
     current = state["stages"][stage]
     if current["status"] != "running":
         raise ValueError(f"workflow stage is not running: {stage}")
-    final_artifacts = artifacts or {}
+    final_artifacts = dict(artifacts or {})
+    if stage == "validation" and status == "passed":
+        runtime_status = final_artifacts.get("runtimeStatus")
+        from .runtime import current_runtime_evidence
+
+        runtime_evidence = current_runtime_evidence(solution)
+        if runtime_status == "environment-blocked":
+            if state["context"]["workflowProfile"] != "authoring":
+                raise ValueError(
+                    "Qualification validation cannot pass as environment-blocked; "
+                    "runtime query validation is required"
+                )
+            if not str(message or "").strip():
+                raise ValueError(
+                    "environment-blocked Authoring validation requires an explanation"
+                )
+            if runtime_evidence.get("currentQueryFailures"):
+                raise ValueError(
+                    "a current exact-query KQL/runtime failure cannot be relabeled "
+                    "environment-blocked: "
+                    + "; ".join(runtime_evidence["currentQueryFailures"])
+                )
+        else:
+            if not runtime_evidence["passed"]:
+                raise ValueError(
+                    "passed validation requires complete Sentinel and Advanced Hunting "
+                    "runtime evidence bound to every current query: "
+                    + "; ".join(runtime_evidence["issues"])
+                )
+            final_artifacts.setdefault("sentinelRuntimeProvider", runtime_evidence["sentinelProvider"])
+            final_artifacts.setdefault("sentinelRuntimeReport", runtime_evidence["sentinelReport"])
+            final_artifacts.setdefault("advancedHuntingRuntimeReport", runtime_evidence["graphReport"])
     if stage == "packaging" and status == "passed":
         _validate_packaging_evidence(state, final_artifacts, solution)
     current.update(

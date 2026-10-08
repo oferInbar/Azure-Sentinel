@@ -98,6 +98,11 @@ def main(argv: list[str] | None = None) -> int:
                 "--rule-id", action="append",
                 help="Convert exactly one source template GUID; does not establish solution readiness.",
             )
+        if command == "validate-advanced-hunting":
+            subparser.add_argument(
+                "--provider-gap-evidence",
+                help="JSON evidence for a complete Graph fallback after a Triage MCP provider failure.",
+            )
     setup_parser = subparsers.add_parser(
         "setup", help="Initialize the toolkit and optionally launch guided authentication."
     )
@@ -219,6 +224,10 @@ def main(argv: list[str] | None = None) -> int:
         choices=["triage-mcp", "log-analytics-cli"],
     )
     record_parser.add_argument("--results", required=True)
+    record_parser.add_argument(
+        "--provider-gap-evidence",
+        help="JSON evidence for a complete Log Analytics fallback after a Triage MCP provider failure.",
+    )
     package_v3_1 = subparsers.add_parser(
         "package-v3-1",
         help="Package V3.1 with independent Deploy* content selections (Sentinel true, XDR false).",
@@ -412,12 +421,14 @@ def main(argv: list[str] | None = None) -> int:
             result = validate_advanced_hunting(
                 args.solution,
                 tenant_id=target["tenantId"] if target else None,
+                provider_gap_evidence=args.provider_gap_evidence,
             )
         elif args.command == "record-runtime-validation":
             result = record_runtime_validation(
                 args.solution,
                 provider=args.provider,
                 results_path=args.results,
+                provider_gap_evidence=args.provider_gap_evidence,
             )
         elif args.command == "workflow-init":
             result = initialize_workflow(

@@ -90,6 +90,7 @@ def build_solution_report(
     )
     parity = _read_json(existing_artifact_path(root, "alert-parity-report.json"))
     query_parity = _read_json(existing_artifact_path(root, "mock-query-parity.json"))
+    packaging = _read_json(existing_artifact_path(root, "packaging.v3_1.json"))
     deployment_by_id = {
         str(item.get("id")): item for item in deployment.get("results") or []
     }
@@ -103,6 +104,16 @@ def build_solution_report(
     query_parity_by_detection = {
         str(item.get("detection")).replace("\\", "/"): item
         for item in query_parity.get("comparisons") or []
+    }
+    tactic_projection_by_id = {
+        str(item.get("detectionId")): item
+        for item in packaging.get("tacticProjection") or []
+        if isinstance(item, dict) and item.get("detectionId")
+    }
+    identity_projection_by_id = {
+        str(item.get("packagedId")): item
+        for item in packaging.get("identityProjection") or []
+        if isinstance(item, dict) and item.get("packagedId")
     }
     ingestion = [
         _read_json(resolve_artifact_reference(root, path))
@@ -127,6 +138,8 @@ def build_solution_report(
                 structural_errors = [str(exc)]
         properties = detection.get("properties") or {}
         detection_id = str(properties.get("id") or "")
+        tactic_projection = tactic_projection_by_id.get(detection_id)
+        identity_projection = identity_projection_by_id.get(detection_id)
         analytic_runtime: list[dict[str, Any]] = []
         custom_runtime: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
@@ -147,15 +160,39 @@ def build_solution_report(
             if not item:
                 continue
             platform = str(report.get("platform") or "unknown")
+            is_sentinel = "Sentinel" in platform
+            expected_query = (
+                str(source.get("query") or "")
+                if is_sentinel
+                else str(
+                    (((properties.get("queryCondition") or {}).get("queryText")) or "")
+                )
+            )
+            expected_query_hash = hashlib.sha256(
+                expected_query.encode("utf-8")
+            ).hexdigest()
+            recorded_query_hash = item.get("querySha256")
+            query_hash_matches = recorded_query_hash == expected_query_hash
+            runtime_status = item.get("status")
+            stale_query_message = None
+            if runtime_status == "passed" and not query_hash_matches:
+                runtime_status = "blocked"
+                stale_query_message = (
+                    "runtime success is stale or unbound: the exact current query was not "
+                    "validated; rerun this complete query family before claiming validation"
+                )
             runtime_item = {
                 "provider": provider,
                 "platform": platform,
-                "status": item.get("status"),
+                "status": runtime_status,
+                "recordedStatus": item.get("status"),
+                "querySha256": recorded_query_hash,
+                "queryHashStatus": "matches" if query_hash_matches else "stale-or-missing",
                 "rowCount": item.get("rowCount"),
+                "providerFallback": report.get("providerFallback"),
             }
-            is_sentinel = "Sentinel" in platform
             (analytic_runtime if is_sentinel else custom_runtime).append(runtime_item)
-            if item.get("status") in {"failed", "blocked"}:
+            if stale_query_message or item.get("status") in {"failed", "blocked"}:
                 errors.append(
                     _error(
                         (
@@ -163,7 +200,7 @@ def build_solution_report(
                             if is_sentinel
                             else "custom-detection-runtime-validation"
                         ),
-                        item.get("error") or item.get("status"),
+                        stale_query_message or item.get("error") or item.get("status"),
                         provider=provider,
                         status_code=item.get("statusCode"),
                         details=item.get("errorDetails"),
@@ -270,6 +307,12 @@ def build_solution_report(
                     "conversionStatus": conversion.get("status") or "not-run",
                     "reviewRequired": bool(conversion.get("reviewRequired")),
                     "reviewReasons": list(conversion.get("reviewReasons") or []),
+                    "reviewScope": (
+                        (detection.get("contentProvenance") or {}).get("conversion") or {}
+                    ).get("reviewScope"),
+                    "reviewDecisions": (
+                        (detection.get("contentProvenance") or {}).get("conversion") or {}
+                    ).get("reviewDecisions") or [],
                     "structuralStatus": (
                         "passed"
                         if detection and not structural_errors
@@ -289,6 +332,8 @@ def build_solution_report(
                         else "not-run"
                     ),
                 },
+                "packagingProjection": tactic_projection,
+                "packagingIdentity": identity_projection,
                 "entityRecommendation": _entity_recommendation(
                     source, conversion_notes
                 ),
@@ -313,7 +358,17 @@ def build_solution_report(
                     else (
                         (detection.get("contentProvenance") or {}).get("conversion") or {}
                     ).get("informational") or []
-                ),
+                ) + ([
+                    "V3.1 ARM packaging retains authored tactic "
+                    f"{', '.join(tactic_projection.get('packagedTactics') or []) or '(none)'} "
+                    "and omits "
+                    f"{', '.join(tactic_projection.get('omittedTactics') or []) or '(none)'}; "
+                    "authored YAML is unchanged and this projection is not parity"
+                ] if tactic_projection else []) + ([
+                    "V3.1 ARM packaging normalized Custom Detection ID "
+                    f"{identity_projection.get('inputId')!r} to {identity_projection.get('packagedId')!r}; "
+                    "source/provenance YAML remains unchanged and deployed IDs are not migrated"
+                ] if identity_projection and identity_projection.get("changed") else []),
                 "errors": errors,
             }
         )
@@ -379,6 +434,20 @@ def build_solution_report(
             "errors": sum(len(item["errors"]) for item in rules),
             "informational": sum(len(item["informational"]) for item in rules),
             "rulesWithInformation": sum(bool(item["informational"]) for item in rules),
+            "packagedTacticOmissions": sum(
+                len((item.get("packagingProjection") or {}).get("omittedTactics") or [])
+                for item in rules
+            ),
+            "packageIdentityNormalizations": sum(
+                bool((item.get("packagingIdentity") or {}).get("changed"))
+                for item in rules
+            ),
+            "providerFallbackRules": sum(
+                any(runtime.get("providerFallback") for side in (
+                    item["analyticRule"], item["customDetection"],
+                ) for runtime in side["runtime"])
+                for item in rules
+            ),
         },
         "rules": rules,
         "ingestion": ingestion,
@@ -387,6 +456,7 @@ def build_solution_report(
             "runtimeReports": [
                 {
                     "provider": item.get("provider"),
+                    "providerFallback": item.get("providerFallback"),
                     "jsonReport": item.get("jsonReport"),
                     "htmlReport": item.get("htmlReport"),
                 }
@@ -396,6 +466,7 @@ def build_solution_report(
             "analyticDeploymentReport": analytic_deployment.get("reportPath"),
             "queryParityReport": query_parity.get("reportPath"),
             "alertParityReport": parity.get("reportPath"),
+            "packagingReport": packaging.get("packageReport"),
             "ingestionReports": [
                 item.get("reportPath") for item in ingestion if item.get("reportPath")
             ],

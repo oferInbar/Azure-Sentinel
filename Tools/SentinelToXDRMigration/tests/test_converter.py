@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 import tomllib
 import unittest
@@ -102,7 +103,8 @@ class ConverterTests(unittest.TestCase):
             "11111111-2222-3333-4444-555555555555",
         )
         self.assertEqual(
-            document["contentProvenance"]["source"]["id"], document["properties"]["id"],
+            f"xdr-{document['contentProvenance']['source']['id']}",
+            document["properties"]["id"],
         )
         self.assertEqual(
             document["contentProvenance"]["conversion"]["requiredWorkloads"], ["sentinel"]
@@ -233,13 +235,18 @@ class ConverterTests(unittest.TestCase):
         source.write_text(yaml.safe_dump(rule), encoding="utf-8")
 
         result = convert_solution(self.solution)
-        self.assertEqual(1, result["converted"])
-        self.assertEqual(0, result["needsReview"])
+        self.assertEqual(0, result["converted"])
+        self.assertEqual(1, result["needsReview"])
         output = self.solution / "XDR Detections/SampleRule.yaml"
         document = yaml.safe_load(output.read_text(encoding="utf-8"))
         self.assertEqual(rule["query"], document["properties"]["queryCondition"]["queryText"])
         self.assertEqual([], validate_document(document))
-        self.assertEqual(1, validate_solution(self.solution)["valid"])
+        conversion = document["contentProvenance"]["conversion"]
+        self.assertEqual("needsReview", conversion["status"])
+        self.assertTrue(any(
+            "source query does not establish an event-time column" in reason
+            for reason in conversion["reviewReasons"]
+        ))
 
     def test_other_query_blockers_remain_without_event_time(self) -> None:
         _, _, errors = convert_query(
@@ -285,6 +292,14 @@ class ConverterTests(unittest.TestCase):
         self.assertEqual(len(result["rules"]), 1)
         self.assertIn("TimeGenerated", result["rules"][0]["sentinelQuery"])
         self.assertIn("Timestamp", result["rules"][0]["advancedHuntingQuery"])
+        self.assertEqual(
+            hashlib.sha256(result["rules"][0]["sentinelQuery"].encode()).hexdigest(),
+            result["rules"][0]["sentinelQuerySha256"],
+        )
+        self.assertEqual(
+            hashlib.sha256(result["rules"][0]["advancedHuntingQuery"].encode()).hexdigest(),
+            result["rules"][0]["advancedHuntingQuerySha256"],
+        )
 
     def test_explicit_mappings_are_applied(self) -> None:
         output = self.solution / "XDR Detections"
@@ -521,19 +536,28 @@ AzureActivity
         )
         self.assertEqual(conversion["originalTechniques"], ["T1505", "T1071"])
 
-    def test_rule_override_can_accept_a_runtime_validated_review(self) -> None:
+    def test_rule_override_acceptance_is_explicit_and_hash_scoped(self) -> None:
         path = self.solution / "Analytic Rules" / "SampleRule.yaml"
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document["queryPeriod"] = "4h"
         document["query"] += "\n| union isfuzzy=true (DeviceEvents)\n"
         path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
         reason = "isfuzzy unions can still fail semantic binding in Advanced Hunting"
+        convert_solution(self.solution)
+        output_path = self.solution / "XDR Detections" / "SampleRule.yaml"
+        current = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+        scope = current["contentProvenance"]["conversion"]["reviewScope"]
         config = self.solution / "override.yaml"
         config.write_text(
             yaml.safe_dump(
                 {
                     "ruleOverrides": {
                         document["id"]: {
-                            "acceptedReviewReasons": [reason],
+                            "reviewDecisions": [{
+                                "reason": reason,
+                                "decision": "accepted",
+                                **scope,
+                            }],
                         }
                     }
                 }
@@ -541,19 +565,89 @@ AzureActivity
             encoding="utf-8",
         )
 
-        result = convert_solution(self.solution, config_path=config)
-        output = yaml.safe_load(
-            (self.solution / "XDR Detections" / "SampleRule.yaml").read_text(
-                encoding="utf-8"
-            )
-        )
+        result = convert_solution(self.solution, overwrite=True, config_path=config)
+        output = yaml.safe_load(output_path.read_text(encoding="utf-8"))
 
         self.assertEqual(result["converted"], 1)
         conversion = output["contentProvenance"]["conversion"]
         self.assertFalse(conversion["reviewRequired"])
         self.assertEqual(conversion["reviewReasons"], [])
         self.assertEqual(conversion["acceptedReviewReasons"], [reason])
+        self.assertEqual(conversion["reviewDecisions"][0]["decision"], "accepted")
         self.assertIn(reason, conversion["warnings"])
+
+    def test_review_approval_expires_when_converted_query_hash_changes(self) -> None:
+        path = self.solution / "Analytic Rules" / "SampleRule.yaml"
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document["queryPeriod"] = "4h"
+        document["query"] = 'DeviceEvents | search "needle"'
+        path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        convert_solution(self.solution)
+        output_path = self.solution / "XDR Detections" / "SampleRule.yaml"
+        current = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+        conversion = current["contentProvenance"]["conversion"]
+        reason = "search queries should be replaced with explicit tables"
+        self.assertIn(reason, conversion["reviewReasons"])
+        scope = conversion["reviewScope"]
+        config = self.solution / "changed-target.yaml"
+        config.write_text(yaml.safe_dump({
+            "schemaVersion": "1.0.0",
+            "tableMappings": {"DeviceEvents": "AlertEvidence"},
+            "ruleOverrides": {
+                document["id"]: {
+                    "reviewDecisions": [{
+                        "reason": reason,
+                        "decision": "accepted",
+                        **scope,
+                    }],
+                },
+            },
+        }), encoding="utf-8")
+
+        result = convert_solution(self.solution, overwrite=True, config_path=config)
+        updated = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+        conversion = updated["contentProvenance"]["conversion"]
+        self.assertEqual(1, result["needsReview"])
+        self.assertTrue(conversion["reviewRequired"])
+        self.assertTrue(any("reviewDecision" in error and "stale" in error for error in conversion["errors"]))
+        self.assertNotEqual(
+            scope["targetQuerySha256"],
+            conversion["reviewScope"]["targetQuerySha256"],
+        )
+
+    def test_review_decisions_reject_unscoped_and_stale_acceptance(self) -> None:
+        path = self.solution / "Analytic Rules" / "SampleRule.yaml"
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document["query"] += "\n| union isfuzzy=true (DeviceEvents)\n"
+        path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        reason = "isfuzzy unions can still fail semantic binding in Advanced Hunting"
+        unscoped = self.solution / "unscoped.yaml"
+        unscoped.write_text(yaml.safe_dump({
+            "ruleOverrides": {document["id"]: {"acceptedReviewReasons": [reason]}}
+        }), encoding="utf-8")
+        convert_solution(self.solution, config_path=unscoped)
+        output_path = self.solution / "XDR Detections" / "SampleRule.yaml"
+        result = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+        conversion = result["contentProvenance"]["conversion"]
+        self.assertTrue(conversion["reviewRequired"])
+        self.assertTrue(any("is unscoped" in error for error in conversion["errors"]))
+
+        first = convert_solution(self.solution, overwrite=True)
+        output = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+        scope = output["contentProvenance"]["conversion"]["reviewScope"]
+        scoped = self.solution / "scoped.yaml"
+        scoped.write_text(yaml.safe_dump({
+            "ruleOverrides": {document["id"]: {"reviewDecisions": [{
+                "reason": reason, "decision": "accepted", **scope,
+            }]}}
+        }), encoding="utf-8")
+        document["description"] = "changed source content invalidates the decision"
+        path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        convert_solution(self.solution, overwrite=True, config_path=scoped)
+        output = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+        conversion = output["contentProvenance"]["conversion"]
+        self.assertTrue(conversion["reviewRequired"])
+        self.assertTrue(any("is stale" in error for error in conversion["errors"]))
 
     def test_rule_override_can_supply_reviewed_entity_mappings(self) -> None:
         path = self.solution / "Analytic Rules" / "SampleRule.yaml"
@@ -747,6 +841,14 @@ AzureActivity
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["valid"], 1)
         self.assertEqual(result["results"][0]["detection"], "SampleRule.yaml")
+        self.assertEqual(
+            hashlib.sha256(
+                yaml.safe_load(
+                    (self.solution / "XDR Detections/SampleRule.yaml").read_text()
+                )["properties"]["queryCondition"]["queryText"].encode()
+            ).hexdigest(),
+            result["results"][0]["querySha256"],
+        )
 
     @mock.patch(
         "sentinel_xdr_migration.runtime._advanced_hunting_token",
@@ -790,6 +892,9 @@ AzureActivity
 
     def test_records_normalized_triage_mcp_results(self) -> None:
         convert_solution(self.solution)
+        source_query_hash = hashlib.sha256(
+            yaml.safe_load((self.solution / "Analytic Rules/SampleRule.yaml").read_text())["query"].encode()
+        ).hexdigest()
         results_path = Path(self.temp.name) / "triage-results.json"
         results_path.write_text(
             """\
@@ -800,12 +905,13 @@ AzureActivity
       "status": "passed",
       "statusCode": 200,
       "rowCount": 1,
+      "querySha256": "%s",
       "schemaColumnCount": 3,
       "error": null
     }
   ]
 }
-""",
+""" % source_query_hash,
             encoding="utf-8",
         )
         result = record_runtime_validation(

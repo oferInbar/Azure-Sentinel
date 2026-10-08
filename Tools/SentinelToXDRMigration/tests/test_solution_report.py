@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import tempfile
 import unittest
@@ -11,9 +12,54 @@ import yaml
 from sentinel_xdr_migration.converter import convert_solution
 from sentinel_xdr_migration.artifacts import report_directory
 from sentinel_xdr_migration.solution_report import build_solution_report
+from test_converter import RULE
 
 
 class SolutionReportTests(unittest.TestCase):
+    def test_runtime_pass_is_blocked_when_current_advanced_hunting_query_hash_differs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "Example"
+            analytic = root / "Analytic Rules"
+            analytic.mkdir(parents=True)
+            (analytic / "Rule.yaml").write_text(RULE, encoding="utf-8")
+            convert_solution(root)
+            detection_path = root / "XDR Detections/Rule.yaml"
+            detection = yaml.safe_load(detection_path.read_text())
+            target_query = detection["properties"]["queryCondition"]["queryText"]
+            report_directory(root, create=True).joinpath(
+                "runtime-validation.graph.json"
+            ).write_text(json.dumps({
+                "provider": "graph",
+                "platform": "Microsoft Defender XDR Advanced Hunting",
+                "results": [{
+                    "detection": "Rule.yaml",
+                    "status": "passed",
+                    "rowCount": 1,
+                    "querySha256": hashlib.sha256(b"DeviceEvents").hexdigest(),
+                }],
+            }))
+
+            report = build_solution_report(root)
+            runtime = report["rules"][0]["customDetection"]["runtime"][0]
+            self.assertEqual("blocked", runtime["status"])
+            self.assertEqual("stale-or-missing", runtime["queryHashStatus"])
+            self.assertTrue(any(
+                error["stage"] == "custom-detection-runtime-validation"
+                and "exact current query was not validated" in error["message"]
+                for error in report["rules"][0]["errors"]
+            ))
+
+            runtime_hash = hashlib.sha256(target_query.encode()).hexdigest()
+            report_path = report_directory(root) / "runtime-validation.graph.json"
+            result_document = json.loads(report_path.read_text())
+            result_document["results"][0]["querySha256"] = runtime_hash
+            report_path.write_text(json.dumps(result_document))
+            refreshed = build_solution_report(root)
+            self.assertEqual(
+                "passed",
+                refreshed["rules"][0]["customDetection"]["runtime"][0]["status"],
+            )
+
     def test_information_uses_manifest_with_provenance_fallback_without_status_changes(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "Example"
@@ -108,6 +154,9 @@ class SolutionReportTests(unittest.TestCase):
                                 "detection": "Rule.yaml",
                                 "status": "passed",
                                 "rowCount": 1,
+                                "querySha256": hashlib.sha256(
+                                    source["query"].encode()
+                                ).hexdigest(),
                             }
                         ],
                     }
@@ -124,6 +173,11 @@ class SolutionReportTests(unittest.TestCase):
                                 "detection": "Rule.yaml",
                                 "status": "blocked",
                                 "rowCount": 0,
+                                "querySha256": hashlib.sha256(
+                                    yaml.safe_load(
+                                        (output / "Rule.yaml").read_text()
+                                    )["properties"]["queryCondition"]["queryText"].encode()
+                                ).hexdigest(),
                                 "error": "table unavailable",
                             }
                         ],
@@ -146,6 +200,18 @@ class SolutionReportTests(unittest.TestCase):
                         ],
                     }
                 ),
+                encoding="utf-8",
+            )
+            (reports / "packaging.v3_1.json").write_text(
+                json.dumps({
+                    "packageReport": str(reports / "packaging.v3_1.json"),
+                    "tacticProjection": [{
+                        "detectionId": f"xdr-{source['id']}",
+                        "authoredTactics": ["Execution", "Persistence"],
+                        "packagedTactics": ["Execution"],
+                        "omittedTactics": ["Persistence"],
+                    }],
+                }),
                 encoding="utf-8",
             )
 
@@ -182,6 +248,14 @@ class SolutionReportTests(unittest.TestCase):
             self.assertEqual(report["summary"]["analyticRuntimePassed"], 1)
             self.assertEqual(report["summary"]["customRuntimePassed"], 0)
             self.assertEqual(report["summary"]["queryParityPassed"], 1)
+            self.assertEqual(report["summary"]["packagedTacticOmissions"], 1)
+            self.assertEqual(
+                report["rules"][0]["packagingProjection"]["omittedTactics"],
+                ["Persistence"],
+            )
+            self.assertTrue(any(
+                "not parity" in message for message in report["rules"][0]["informational"]
+            ))
             self.assertEqual(report["rules"][0]["queryParity"]["status"], "passed")
             self.assertTrue(Path(report["jsonReport"]).exists())
             self.assertTrue(Path(report["htmlReport"]).exists())

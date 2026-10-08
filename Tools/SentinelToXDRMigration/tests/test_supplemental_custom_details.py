@@ -30,7 +30,10 @@ class SupplementalCustomDetailsTests(unittest.TestCase):
         self.source = self.solution / "Analytic Rules/Rule.yaml"
         self.source.parent.mkdir(parents=True)
         self.rule = yaml.safe_load(RULE)
-        self.rule["query"] = "DeviceEvents | project DeviceName, HostName, SourceIP, Evidence, Other"
+        self.rule["query"] = (
+            "DeviceEvents | where TimeGenerated > ago(1h) "
+            "| project TimeGenerated, DeviceName, HostName, SourceIP, Evidence, Other"
+        )
         self.rule["entityMappings"] = [
             entity("Host", FullName="DeviceName", HostName="HostName"),
             entity("IP", Address="SourceIP"),
@@ -58,9 +61,11 @@ class SupplementalCustomDetailsTests(unittest.TestCase):
         self.assertEqual(alert["entityMappings"]["ips"][0]["addressColumn"], "SourceIP")
         self.assertNotIn("fullNameColumn", alert["entityMappings"]["hosts"][0])
         conversion = self.conversion(document)
-        self.assertTrue(any("converter cannot map Host.FullName" in warning for warning in conversion["warnings"]))
-        self.assertTrue(any("do not restore entity identity" in warning for warning in conversion["warnings"]))
-        self.assertTrue(any("Host.FullName" in note and "customDetails.HostFullName" in note for note in conversion["informational"]))
+        self.assertFalse(any("Host.FullName" in warning for warning in conversion["warnings"]))
+        self.assertTrue(any(
+            "Host.FullName" in note and "customDetails.HostFullName" in note
+            and "do not restore entity identity" in note for note in conversion["informational"]
+        ))
         self.assertEqual(conversion["supplementalEntityDetails"], [{
             "entityType": "Host", "entityIndex": 1, "identifier": "FullName",
             "sourceColumn": "DeviceName", "column": "DeviceName",
@@ -81,7 +86,8 @@ class SupplementalCustomDetailsTests(unittest.TestCase):
         self.assertEqual(self.alert(document)["customDetails"], {
             "HostFullName": "DeviceName", "HostHostName": "HostName",
         })
-        self.assertTrue(any("Host.HostName" in value for value in self.conversion(document)["warnings"]))
+        self.assertFalse(any("Host.HostName" in value for value in self.conversion(document)["warnings"]))
+        self.assertTrue(any("Host.HostName" in value for value in self.conversion(document)["informational"]))
 
     def test_proven_equivalent_fullname_needs_no_duplicate_detail(self):
         self.rule["query"] = HOST_QUERY
@@ -219,7 +225,11 @@ class SupplementalCustomDetailsTests(unittest.TestCase):
         self.build()
         convert_solution(self.solution)
         results = self.solution / "provider-results.json"
-        entry = {"detection": "Rule.yaml", "status": "passed", "schemaColumnCount": 3}
+        plan = runtime_validation_plan(self.solution)["rules"][0]
+        entry = {
+            "detection": "Rule.yaml", "status": "passed", "schemaColumnCount": 3,
+            "querySha256": plan["sentinelQuerySha256"],
+        }
         results.write_text(json.dumps([entry]))
         result = record_runtime_validation(self.solution, provider="triage-mcp", results_path=results)
         self.assertEqual(result["blocked"], 1)

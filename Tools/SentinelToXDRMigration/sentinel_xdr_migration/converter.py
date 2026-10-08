@@ -30,6 +30,8 @@ XDR_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schema" / "xdr-detectio
 INITIAL_XDR_VERSION = "3.1.0"
 XDR_VERSION_PATTERN = r"3\.[1-9][0-9]*\.(?:0|[1-9][0-9]*)"
 SOURCE_ID_PATTERN = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+PREFIXED_SOURCE_ID_PATTERN = rf"xdr-{SOURCE_ID_PATTERN}"
+GRAPH_DETECTION_ID_PATTERN = r"[A-Za-z][A-Za-z0-9_-]{0,99}"
 DETECTION_API_VERSION = "2026-06-01-preview"
 ENTITY_CONFIRMATION_PREFIX = "Entity confirmation required:"
 REQUIRED_ASSET_COLLECTIONS = frozenset({"hosts", "accounts", "mailboxes", "ips"})
@@ -660,11 +662,16 @@ def _duration_seconds(value: Any) -> int | None:
 
 
 def _event_window(query: str, time_column: str) -> tuple[int | None, str | None]:
-    facts = _linear_facts(query)
-    if not facts:
+    parts = _pipeline_parts(query)
+    if not parts or any(
+        not part or part[0] not in {"where", "extend", "project", "summarize"}
+        for part in parts[1:]
+    ):
         return None, "query shape or time filters cannot be proven by the conservative assessor"
-    parts, _, assignments = facts
-    if time_column in assignments:
+    if any(
+        part[index:index + 2] == [time_column, "="]
+        for part in parts[1:] for index in range(len(part) - 1)
+    ):
         return None, "event time is reassigned"
     windows: list[int] = []
     time_tokens = {"Timestamp", "TimeGenerated", "ago", "now", "datetime", "ingestion_time"}
@@ -684,6 +691,159 @@ def _event_window(query: str, time_column: str) -> tuple[int | None, str | None]
     if not windows:
         return None, "no explicit event-time bound proves equivalence to Defender ingestion-time evaluation"
     return min(windows), None
+
+
+def _replace_event_time_column(query: str, source_column: str, target_column: str) -> str | None:
+    parts = _pipeline_parts(query)
+    if not parts or any(
+        not part or part[0] not in {"where", "extend", "project", "summarize"}
+        for part in parts[1:]
+    ):
+        return None
+    if any(
+        part[index:index + 2] == [source_column, "="]
+        for part in parts[1:] for index in range(len(part) - 1)
+    ):
+        return None
+
+    token_pattern = re.compile(
+        r"//[^\n]*|/\*[\s\S]*?\*/|```[\s\S]*?```"
+        r"|@'(?:''|[^'])*'|@\"(?:\"\"|[^\"])*\""
+        r"|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\""
+        r"|[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?[smhd]?|>=|<=|==|!=|[^\s]"
+    )
+    spans = [
+        (match.start(), match.end())
+        for match in token_pattern.finditer(query)
+        if match.group(0) == source_column
+    ]
+    if not spans:
+        return query
+    result = query
+    for start, end in reversed(spans):
+        result = result[:start] + target_column + result[end:]
+    return result
+
+
+def _format_kql_duration(seconds: int) -> str:
+    for scale, suffix in ((86400, "d"), (3600, "h"), (60, "m")):
+        if seconds % scale == 0:
+            return f"{seconds // scale}{suffix}"
+    return f"{seconds}s"
+
+
+def constrain_event_window(
+    doc: dict[str, Any], source_query: str, target_query: str, frequency: str,
+) -> tuple[str, dict[str, Any] | None, str | None]:
+    source_period = _duration_seconds(doc.get("queryPeriod"))
+    source_frequency = _duration_seconds(doc.get("queryFrequency"))
+    target_frequency = _duration_seconds(frequency)
+    source_table = _native_pipeline_table(source_query)
+    target_table = _native_pipeline_table(target_query)
+    native_tokens = set(_tokens(source_query)) | set(_tokens(target_query))
+    service_window = (
+        NATIVE_LOOKBACK_SECONDS.get(target_frequency or 0)
+        if native_tokens.intersection(NATIVE_XDR_TABLES)
+        else None
+    )
+    if (
+        str(doc.get("kind") or "").lower() == "nrt"
+        or source_period is None
+        or source_frequency is None
+        or source_frequency != target_frequency
+        or service_window is None
+        or source_period >= service_window
+    ):
+        return target_query, None, None
+    if source_table is None or target_table is None or source_table != target_table:
+        return target_query, None, (
+            "Original Sentinel lookback is shorter than the native XDR service window, "
+            "but source and target table inputs cannot be proven equivalent"
+        )
+
+    source_time_column = "TimeGenerated" if "TimeGenerated" in _tokens(source_query) else "Timestamp"
+    if not any(column in _tokens(source_query) for column in ("Timestamp", "TimeGenerated")):
+        return target_query, None, (
+            "Original Sentinel lookback is shorter than the native XDR service window, "
+            "but the source query does not establish an event-time column"
+        )
+    bound_query = target_query
+    if source_time_column == "TimeGenerated":
+        bound_query = _replace_event_time_column(
+            bound_query, "TimeGenerated", "Timestamp",
+        )
+        if bound_query is None:
+            return target_query, None, (
+                "Original Sentinel lookback is shorter than the native XDR service window, "
+                "but TimeGenerated cannot be safely bound to the target Timestamp column"
+            )
+
+    source_bound, source_issue = _event_window(source_query, source_time_column)
+    if source_issue and source_issue != "no explicit event-time bound proves equivalence to Defender ingestion-time evaluation":
+        return target_query, None, (
+            "Original Sentinel lookback is shorter than the native XDR service window, "
+            f"but the source event-time window is ambiguous: {source_issue}"
+        )
+    effective_window = min(source_period, source_bound) if source_bound is not None else source_period
+
+    target_bound, target_issue = _event_window(bound_query, "Timestamp")
+    if target_issue and target_issue != "no explicit event-time bound proves equivalence to Defender ingestion-time evaluation":
+        return target_query, None, (
+            "Original Sentinel lookback is shorter than the native XDR service window, "
+            f"but the target event-time window is ambiguous: {target_issue}"
+        )
+    if target_bound is not None and target_bound < effective_window:
+        return target_query, None, (
+            "Original Sentinel lookback is shorter than the native XDR service window, "
+            "but the existing target event-time filter is narrower than the source window"
+        )
+
+    injected = target_bound is None or target_bound > effective_window
+    if injected:
+        token_pattern = re.compile(
+            r"//[^\n]*|/\*[\s\S]*?\*/|```[\s\S]*?```"
+            r"|@'(?:''|[^'])*'|@\"(?:\"\"|[^\"])*\""
+            r"|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\""
+            r"|[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?[smhd]?|>=|<=|==|!=|[^\s]"
+        )
+        first_table = next(
+            (
+                match for match in token_pattern.finditer(bound_query)
+                if match.group(0) == target_table
+            ),
+            None,
+        )
+        if first_table is None:
+            return target_query, None, (
+                "Original Sentinel lookback is shorter than the native XDR service window, "
+                "but the target input location could not be identified safely"
+            )
+        span = _format_kql_duration(effective_window)
+        bound_query = (
+            bound_query[:first_table.end()]
+            + f" | where Timestamp >= ago({span})"
+            + bound_query[first_table.end():]
+        )
+
+    metadata = {
+        "status": "constrained",
+        "originalSentinelLookbackSeconds": source_period,
+        "effectiveEventWindowSeconds": effective_window,
+        "xdrServiceWindowSeconds": service_window,
+        "sourceTimeColumn": source_time_column,
+        "targetTimeColumn": "Timestamp",
+        "filterInjected": injected,
+        "rationale": (
+            "A conservative single-native-table pipeline proof established the source and target "
+            "input and time-column binding. The target Timestamp filter is placed immediately "
+            "after the table input and before all filters, projections, and aggregations."
+        ),
+        "lateIngestionRisk": (
+            "Late-ingestion risk: events ingested after their Timestamp falls outside this "
+            "constrained event-time window can be missed; runtime qualification is required."
+        ),
+    }
+    return bound_query, metadata, None
 
 
 def assess_schedule(
@@ -714,23 +874,39 @@ def assess_schedule(
         reason = "source and target native tables differ; time-basis equivalence is unverified"
     elif target_period is None:
         reason = "target frequency has no documented native fixed lookback"
-    elif source_period != target_period:
+    elif source_period > target_period:
         reason = "source and native lookbacks differ; an event-time filter alone does not configure the target ingestion lookback"
     if reason:
         return [f"{summary}; {reason}. See {SCHEDULE_REFERENCE}"], []
     source_time = "TimeGenerated" if "TimeGenerated" in _tokens(source_query) else "Timestamp"
     source_bound, source_issue = _event_window(source_query, source_time)
     target_bound, target_issue = _event_window(target_query, "Timestamp")
+    narrower_source_period = source_period < target_period
+    if (
+        narrower_source_period
+        and source_issue == "no explicit event-time bound proves equivalence to Defender ingestion-time evaluation"
+        and target_bound is not None
+    ):
+        source_bound = source_period
+        source_issue = None
     if source_issue or target_issue:
         reason = source_issue or target_issue
         if source_period != target_period:
-            reason = f"source and native lookbacks differ; {reason}"
+            reason = f"source and native service windows differ; {reason}"
         return [f"{summary}; {reason}. See {SCHEDULE_REFERENCE}"], []
     source_effective = min(source_period, source_bound)
     target_effective = min(target_period, target_bound)
     summary += f"; effective event windows source={source_effective}s, target={target_effective}s"
     if source_effective != target_effective:
         return [f"{summary}; effective lookbacks differ. See {SCHEDULE_REFERENCE}"], []
+    if narrower_source_period:
+        message = (
+            f"{summary}; event-time window constrained to original Sentinel lookback. "
+            f"The XDR service window remains {target_period}s and is not identical to "
+            "the Sentinel service window; late-ingestion risk remains and cadence/service-window "
+            f"parity is not established. See {SCHEDULE_REFERENCE}"
+        )
+        return [message], [message]
     return [], [
         f"{summary}; frequency and explicit event-time window are preserved. "
         f"Ingestion delays, initial runs and alert deduplication still require runtime qualification. See {SCHEDULE_REFERENCE}"
@@ -743,6 +919,7 @@ def convert_entities(
     column_mappings: dict[str, str] | None = None,
     *,
     informational: list[str] | None = None,
+    defer_unmapped_entity_warnings: bool = False,
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
     output: dict[str, list[dict[str, Any]]] = {}
     warnings: list[str] = []
@@ -756,7 +933,8 @@ def convert_entities(
     for entity in doc.get("entityMappings") or []:
         entity_type = str(entity.get("entityType") or "")
         if entity_type not in ENTITY_MAP:
-            warnings.append(f"converter cannot map {entity_type or 'Unknown entity'} from the source identifiers")
+            if not defer_unmapped_entity_warnings:
+                warnings.append(f"converter cannot map {entity_type or 'Unknown entity'} from the source identifiers")
             continue
         collection, identifiers = ENTITY_MAP[entity_type]
         fields: dict[str, str] = {}
@@ -820,10 +998,11 @@ def convert_entities(
                     f"Account.FullName `{source_fields[identifier]}` is retained by an equivalent account mapping"
                 )
             else:
-                warnings.append(
-                    f"converter cannot map {entity_type}.{identifier} to a documented Custom Detection field; "
-                    "this source identifier is not represented"
-                )
+                if not defer_unmapped_entity_warnings:
+                    warnings.append(
+                        f"converter cannot map {entity_type}.{identifier} to a documented Custom Detection field; "
+                        "this source identifier is not represented"
+                    )
         if fields:
             counters[collection] = counters.get(collection, 0) + 1
             identifier = collection[:-1] if collection.endswith("s") else collection
@@ -1056,16 +1235,12 @@ def _supplemental_custom_details(
                 "sourceColumn": source_column, "column": column, "status": binding,
             }
             evidence.append(record)
-            warnings.append(
-                f"{entity_type}.{identifier} column `{column}` is not retained by an equivalent entity mapping; "
-                "custom details do not restore entity identity or correlation"
-            )
             if binding in {"missing", "unproven-destructive-projection"}:
                 record["status"] = "not-preserved"
                 record["reason"] = binding
                 warnings.append(
-                    f"Supplemental {entity_type}.{identifier} information is not preserved: column `{column}` "
-                    "is missing or unproven after projection. No invalid binding was added and KQL was not rewritten"
+                    f"{entity_type}.{identifier} value is not preserved: column `{column}` "
+                    "is missing or unproven after projection. No invalid customDetails binding was added and KQL was not rewritten"
                 )
                 continue
             key = next((key for key, value in details.items() if value == column and isinstance(key, str)), None)
@@ -1078,13 +1253,20 @@ def _supplemental_custom_details(
                     suffix += 1
                 details[key] = column
             record["customDetailKey"] = key
-            information.append(
-                f"Supplemental {entity_type}.{identifier} value is configured as customDetails.{key} "
-                f"from query column `{column}` ({binding}); this is not entity-identity or alert-parity equivalence"
-            )
             if binding == "runtime-binding-pending":
                 warnings.append(
+                    f"{entity_type}.{identifier} value is retained as customDetails.{key} from query column "
+                    f"`{column}`, but its target output binding requires runtime-schema verification; "
+                    "custom details do not restore entity identity or correlation"
+                )
+                warnings.append(
                     f"Supplemental customDetails.{key} column `{column}` requires runtime output-schema binding verification"
+                )
+            else:
+                information.append(
+                    f"{entity_type}.{identifier} mismatch is informational because its original value is "
+                    f"preserved as customDetails.{key} from query column `{column}`; supplemental details "
+                    "do not restore entity identity, correlation, or alert parity"
                 )
     if len(details) > 20:
         errors.append(
@@ -1149,6 +1331,17 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
         warnings.append(frequency_warning)
         review_reasons.append(frequency_warning)
     query_period = str(doc.get("queryPeriod") or "").strip()
+    converted_query, event_window, event_window_review = constrain_event_window(
+        doc, source_query, converted_query, frequency,
+    )
+    if event_window_review:
+        review_reasons.append(event_window_review)
+    review_scope = {
+        "sourceDocumentSha256": hashlib.sha256(
+            yaml.safe_dump(doc, sort_keys=True, allow_unicode=True).encode("utf-8")
+        ).hexdigest(),
+        "targetQuerySha256": hashlib.sha256(converted_query.encode("utf-8")).hexdigest(),
+    }
     schedule_warnings, schedule_information = assess_schedule(
         doc, source_query, converted_query, frequency,
     )
@@ -1165,6 +1358,7 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
         converted_query,
         column_mappings,
         informational=entity_information,
+        defer_unmapped_entity_warnings=True,
     )
     configured_entity_mappings = rule_override.get("entityMappings")
     if configured_entity_mappings is not None:
@@ -1230,24 +1424,59 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
     elif not re.fullmatch(SOURCE_ID_PATTERN, source_id):
         errors.append("source analytic rule id must be a full hyphenated GUID")
 
-    accepted_review_reasons = {
-        str(value)
-        for value in rule_override.get("acceptedReviewReasons") or []
-        if value
-    }
-    unknown_acceptances = accepted_review_reasons.difference(review_reasons)
-    if unknown_acceptances:
-        errors.extend(
-            "configured acceptedReviewReasons entry does not match a current review "
-            f"reason: {reason}"
-            for reason in sorted(unknown_acceptances)
+    accepted_review_reasons: set[str] = set()
+    review_decisions = rule_override.get("reviewDecisions") or []
+    if "acceptedReviewReasons" in rule_override:
+        errors.append(
+            "acceptedReviewReasons is unscoped and no longer clears review findings; "
+            "use hash-scoped reviewDecisions"
         )
+    if not isinstance(review_decisions, list):
+        errors.append("configured reviewDecisions must be an array of hash-scoped accept/reject decisions")
+        review_decisions = []
+    recorded_review_decisions: list[dict[str, Any]] = []
+    seen_review_decisions: set[str] = set()
+    for decision in review_decisions:
+        if not isinstance(decision, dict):
+            errors.append("each reviewDecision must be an object")
+            continue
+        reason = decision.get("reason")
+        choice = decision.get("decision")
+        source_hash = decision.get("sourceDocumentSha256")
+        query_hash = decision.get("targetQuerySha256")
+        if not isinstance(reason, str) or not reason or choice not in {"accepted", "rejected"}:
+            errors.append("each reviewDecision requires an exact reason and decision accepted or rejected")
+            continue
+        if reason in seen_review_decisions:
+            errors.append(f"duplicate reviewDecision for {reason!r}")
+            continue
+        seen_review_decisions.add(reason)
+        if not (
+            isinstance(source_hash, str) and re.fullmatch(r"[0-9a-f]{64}", source_hash)
+            and isinstance(query_hash, str) and re.fullmatch(r"[0-9a-f]{64}", query_hash)
+        ):
+            errors.append(f"reviewDecision for {reason!r} requires source-document and target-query SHA-256 hashes")
+            continue
+        if source_hash != review_scope["sourceDocumentSha256"] or query_hash != review_scope["targetQuerySha256"]:
+            errors.append(f"reviewDecision for {reason!r} is stale; source document or target query hash changed")
+            continue
+        if reason not in review_reasons:
+            errors.append(f"reviewDecision reason does not match a current review finding: {reason}")
+            continue
+        recorded_review_decisions.append({
+            "reason": reason,
+            "decision": choice,
+            "sourceDocumentSha256": source_hash,
+            "targetQuerySha256": query_hash,
+        })
+        if choice == "accepted":
+            accepted_review_reasons.add(reason)
     review_reasons = [
         reason for reason in review_reasons if reason not in accepted_review_reasons
     ]
 
     display_name = str(doc.get("name") or source.stem)
-    detection_id = source_id
+    detection_id = f"xdr-{source_id}"
     severity = str(doc.get("severity") or "Medium").lower()
     if severity not in SUPPORTED_SEVERITIES:
         warnings.append(f"unsupported severity {severity!r}; changed to medium")
@@ -1307,6 +1536,9 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
                 "errors": errors,
                 "originalTactics": source_tactics,
                 "originalTechniques": source_relevant,
+                "reviewScope": review_scope,
+                **({"reviewDecisions": recorded_review_decisions} if recorded_review_decisions else {}),
+                **({"eventTimeWindow": event_window} if event_window else {}),
                 **({"supplementalEntityDetails": supplemental_evidence} if supplemental_evidence else {}),
                 **(
                     {"acceptedReviewReasons": sorted(accepted_review_reasons)}
@@ -1373,7 +1605,10 @@ def _existing_identity_error(
             "provenance; resolve the output identity conflict before reconverting"
         )
     detection_id = properties.get("id")
-    if detection_id == source_id:
+    if isinstance(detection_id, str) and detection_id.casefold() in {
+        source_id.casefold(),
+        f"xdr-{source_id}".casefold(),
+    }:
         return None
     legacy_ids = {
         f"xdr-{slugify(name)}-{source_id[:8]}"
@@ -1387,8 +1622,8 @@ def _existing_identity_error(
     ):
         return None
     return (
-        f"existing Custom Detection id {detection_id!r} is not the source GUID or a "
-        "generated legacy name ID; reconcile this custom identity explicitly before "
+        f"existing Custom Detection id {detection_id!r} is not the source GUID, its "
+        "canonical xdr-<GUID> ID, or a generated legacy name ID; reconcile this custom identity before "
         "reconversion, even with --overwrite"
     )
 
@@ -1413,14 +1648,27 @@ def validate_document(document: dict[str, Any]) -> list[str]:
     source = provenance.get("source") or {}
     conversion = provenance.get("conversion") or {}
     properties = document.get("properties") or {}
+    detection_id = properties.get("id")
+    id_is_guid = isinstance(detection_id, str) and re.fullmatch(SOURCE_ID_PATTERN, detection_id)
+    id_is_prefixed_guid = isinstance(detection_id, str) and re.fullmatch(
+        PREFIXED_SOURCE_ID_PATTERN, detection_id,
+    )
+    if not id_is_guid and not id_is_prefixed_guid and not (
+        isinstance(detection_id, str) and re.fullmatch(GRAPH_DETECTION_ID_PATTERN, detection_id)
+    ):
+        errors.append(
+            "properties.id must be a Graph-compatible identifier beginning with a letter "
+            "and containing at most 100 letters, digits, dashes, or underscores"
+        )
     if is_sentinel_derived(document):
         if not isinstance(source.get("id"), str) or not re.fullmatch(SOURCE_ID_PATTERN, source["id"]):
             errors.append("contentProvenance.source.id must be a full hyphenated Sentinel template GUID")
-        if properties.get("id") != source.get("id"):
+        expected_id = f"xdr-{source.get('id')}"
+        if detection_id != expected_id:
             errors.append(
-                "Sentinel-derived properties.id must equal contentProvenance.source.id "
-                "exactly; review and reconvert generated legacy IDs with --overwrite "
-                "(local artifacts only, not deployed rule migration)"
+                "Sentinel-derived properties.id must be the canonical xdr- prefix plus "
+                "contentProvenance.source.id; reconvert with --overwrite to update local "
+                "artifacts only, not deployed rule migration"
             )
     for field in ("platform", "kind", "id", "path", "querySha256"):
         if not source.get(field):
@@ -1509,6 +1757,7 @@ def convert_solution(
             continue
     config = load_config(output, config_path)
     results: list[ConversionResult] = []
+    changed_target_queries: list[str] = []
     excluded_rule_ids = config.get("excludedRuleIds") or {}
     if not isinstance(excluded_rule_ids, dict):
         raise ValueError("excludedRuleIds must contain an object of rule IDs and reasons")
@@ -1558,6 +1807,16 @@ def convert_solution(
                 + ", ".join(path.relative_to(root).as_posix() for path in sorted(id_collisions))
             )
         existing_document = existing_documents.get(target)
+        existing_properties = (
+            existing_document.get("properties") or {}
+            if isinstance(existing_document, dict) else {}
+        )
+        previous_target_query = (
+            existing_properties.get("queryCondition", {}).get("queryText")
+            if isinstance(existing_properties, dict)
+            and isinstance(existing_properties.get("queryCondition"), dict)
+            else None
+        )
         if isinstance(existing_document, dict):
             existing_properties = existing_document.get("properties") or {}
             previous_id = str(existing_properties.get("id") or "") if isinstance(existing_properties, dict) else ""
@@ -1645,18 +1904,28 @@ def convert_solution(
             identity_change = (
                 (existing_document.get("contentProvenance") or {}).get("conversion") or {}
             ).get("identityChange")
-            if previous_id != source_id:
+            canonical_id = document["properties"]["id"]
+            if previous_id != canonical_id and not isinstance(identity_change, dict):
                 identity_change = {
                     "previousId": previous_id,
-                    "currentId": source_id,
+                    "currentId": canonical_id,
                     "scope": "local-artifact-only",
                 }
-            if isinstance(identity_change, dict) and identity_change.get("currentId") == source_id:
+            elif isinstance(identity_change, dict) and identity_change.get("currentId") in {
+                source_id, canonical_id,
+            }:
+                identity_change = {
+                    **identity_change,
+                    "currentId": canonical_id,
+                    "scope": "local-artifact-only",
+                }
+            if isinstance(identity_change, dict) and identity_change.get("currentId") == canonical_id:
                 conversion = document["contentProvenance"]["conversion"]
                 conversion["identityChange"] = identity_change
                 conversion["warnings"].append(
                     f"Local detection ID changed from {identity_change.get('previousId')!r} "
-                    f"to originating Sentinel template ID {source_id!r}. No cloud rules "
+                    f"to canonical Graph-compatible ID {canonical_id!r} for source "
+                    f"{source_id!r}. No cloud rules "
                     "were updated, deleted, or migrated. Review existing deployed rules "
                     "and reconcile their identities before any separately approved deployment."
                 )
@@ -1686,6 +1955,9 @@ def convert_solution(
         if not target.exists() or target.read_text(encoding="utf-8") != rendered:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(rendered, encoding="utf-8", newline="\n")
+        current_target_query = document["properties"]["queryCondition"]["queryText"]
+        if previous_target_query != current_target_query:
+            changed_target_queries.append(target.relative_to(root).as_posix())
         conversion = document["contentProvenance"]["conversion"]
         results.append(
             ConversionResult(
@@ -1744,6 +2016,10 @@ def convert_solution(
         from .workflow import invalidate_scoped_completion
 
         invalidate_scoped_completion(root)
+    elif changed_target_queries:
+        from .workflow import invalidate_runtime_completion
+
+        invalidate_runtime_completion(root, changed_target_queries)
     write_transformation_report(portable_artifact(root, summary), transformation_report)
     return summary
 
@@ -1796,6 +2072,12 @@ def runtime_validation_plan(solution: str | Path) -> dict[str, Any]:
                 "sourceRule": str(source_path),
                 "sentinelQuery": str(source.get("query") or ""),
                 "advancedHuntingQuery": document["properties"]["queryCondition"]["queryText"],
+                "sentinelQuerySha256": hashlib.sha256(
+                    str(source.get("query") or "").encode("utf-8")
+                ).hexdigest(),
+                "advancedHuntingQuerySha256": hashlib.sha256(
+                    document["properties"]["queryCondition"]["queryText"].encode("utf-8")
+                ).hexdigest(),
                 "customDetailBindings": deepcopy(
                     document["properties"]["detectionAction"]["alertTemplate"].get("customDetails") or {}
                 ),
@@ -1804,8 +2086,11 @@ def runtime_validation_plan(solution: str | Path) -> dict[str, Any]:
     return {
         "solution": str(root),
         "instructions": (
-            "Run sentinelQuery and advancedHuntingQuery through the Microsoft Sentinel "
-            "the configured runtime providers. Record execution errors and compare output entities. "
+            "Run sentinelQuery and advancedHuntingQuery through Microsoft Sentinel and "
+            "the configured runtime providers. Include sentinelQuerySha256 as querySha256 "
+            "for every imported Sentinel result. The Advanced Hunting validator records "
+            "the exact target-query hash itself. Missing or stale query hashes cannot "
+            "qualify current KQL. Record execution errors and compare output entities. "
             "Verify every customDetailBindings value against the returned Advanced Hunting output schema; "
             "query success alone does not prove these bindings. Check the combined custom-detail runtime "
             "value size against the documented 4 KB per-alert limit."

@@ -229,6 +229,49 @@ def _item(snapshot: _Snapshot, kind: str, value: Any, index: int) -> dict:
         output = snapshot.reference(item.get("outputRelativePath") or item.get("output"))
         result.update(source=source, output=output, provenance=_provenance(snapshot, source, output))
         result["reviewRequired"] = item.get("reviewRequired") if type(item.get("reviewRequired")) is bool else None
+    elif kind in {"runtimeGraph", "runtimeTriage", "runtimeLogAnalytics"}:
+        detection = item.get("detection")
+        output_reference = (
+            f"XDR Detections/{detection}" if isinstance(detection, str) else None
+        )
+        output_ref = snapshot.reference(output_reference)
+        result["content"] = output_ref
+        query = None
+        try:
+            if output_ref["availability"] == "available":
+                generated = _object(yaml.safe_load(snapshot.read(
+                    content_path(snapshot.root, output_ref["path"])
+                )))
+                if kind == "runtimeGraph":
+                    query = _object(_object(generated.get("properties")).get("queryCondition")).get("queryText")
+                else:
+                    source_path = _object(
+                        _object(generated.get("contentProvenance")).get("source")
+                    ).get("path")
+                    source_ref = snapshot.reference(source_path)
+                    if source_ref["availability"] == "available":
+                        source = _object(yaml.safe_load(snapshot.read(
+                            content_path(snapshot.root, source_ref["path"])
+                        )))
+                        query = source.get("query")
+        except (OSError, ValueError, yaml.YAMLError, UnicodeError):
+            query = None
+        expected_hash = _hash(query.encode("utf-8")) if isinstance(query, str) else None
+        recorded_hash = item.get("querySha256")
+        result["queryHashBinding"] = {
+            "surface": (
+                "advanced-hunting" if kind == "runtimeGraph" else "sentinel"
+            ),
+            "status": (
+                "matches" if expected_hash and recorded_hash == expected_hash
+                else "stale-or-missing"
+            ),
+            "recordedQuerySha256": (
+                recorded_hash if isinstance(recorded_hash, str)
+                and re.fullmatch(r"[0-9a-f]{64}", recorded_hash) else None
+            ),
+            "currentQuerySha256": expected_hash,
+        }
     elif kind == "solutionReport":
         result["source"] = snapshot.reference(item.get("sourceFile"))
         result["structuralStatus"] = _enum(_object(item.get("customDetection")).get("structuralStatus"))
@@ -329,6 +372,14 @@ def _markdown(evidence: dict) -> str:
         outcomes = Counter(item.get(key, "unknown") for item in value.get("items", []))
         label = "structural: " if name == "solutionReport" and outcomes else ""
         counts = label + ", ".join(f"{status}={count}" for status, count in sorted(outcomes.items()))
+        bindings = Counter(
+            _object(item.get("queryHashBinding")).get("status", "not-applicable")
+            for item in value.get("items", [])
+        )
+        if bindings and name.startswith("runtime"):
+            counts += "; query hashes: " + ", ".join(
+                f"{status}={count}" for status, count in sorted(bindings.items())
+            )
         lines.append(f"| {name} | {value['availability']} | {value['recordedStatus']} | {len(value.get('items', []))} | {counts or 'not-recorded'} |")
     mismatches = sum(
         item.get("provenance", {}).get("sourceQuery") == "mismatch"
@@ -342,7 +393,7 @@ def _markdown(evidence: dict) -> str:
         "## Limitations", "",
         "- Raw messages, provider records, alerts, credentials and lab identities are omitted.",
         "- Historical commands/tool versions and baseline decisions have no supported persisted contract.",
-        "- Historical validation-to-content hash binding is unsupported; current hashes are not attestations.",
+        "- New runtime reports bind results to the exact source or Advanced Hunting query hash; legacy or mismatched hashes are stale/unbound. Hashes do not attest that a provider executed the query.",
         "- Unknown fields/statuses are excluded or marked unknown, never interpreted as success.",
         "- This directory is never read as workflow state or included in Marketplace packages.", "",
     ])

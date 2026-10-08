@@ -143,10 +143,73 @@ function ConvertTo-CustomDetectionArmLiteral {
     return "[if(true(), '$escapedValue', '$escapedValue')]"
 }
 
+function ConvertTo-V31CustomDetectionId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DetectionId,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceId,
+        [Parameter(Mandatory = $true)]
+        [bool]$SentinelDerived,
+        [Parameter(Mandatory = $true)]
+        [string]$ContentPath
+    )
+
+    $guidPattern = '\A[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\z'
+    $prefixedPattern = '\Axdr-([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\z'
+    $normalized = $DetectionId
+    if ($SentinelDerived) {
+        if ($SourceId -cnotmatch $guidPattern) {
+            throw "Sentinel-derived Custom Detection '$ContentPath' has an invalid originating Sentinel template GUID '$SourceId'."
+        }
+        if ($DetectionId -cmatch $guidPattern) {
+            if ($DetectionId -ine $SourceId) {
+                throw "Sentinel-derived Custom Detection '$ContentPath' ID '$DetectionId' conflicts with originating Sentinel GUID '$SourceId'; no identity was changed."
+            }
+            $normalized = "xdr-$SourceId"
+        }
+        elseif ($DetectionId -match $prefixedPattern) {
+            if ($Matches[1] -ine $SourceId) {
+                throw "Sentinel-derived Custom Detection '$ContentPath' ID '$DetectionId' conflicts with originating Sentinel GUID '$SourceId'; no identity was changed."
+            }
+            $normalized = "xdr-$SourceId"
+        }
+        else {
+            throw "Sentinel-derived Custom Detection '$ContentPath' ID '$DetectionId' must be the originating GUID or its canonical xdr-<GUID> form; arbitrary custom IDs are not overwritten."
+        }
+    }
+    elseif ($DetectionId -cmatch $guidPattern) {
+        $normalized = "xdr-$DetectionId"
+    }
+    elseif ($DetectionId -match $prefixedPattern) {
+        $normalized = "xdr-$($Matches[1])"
+    }
+    elseif ($DetectionId -cnotmatch '\A[A-Za-z][A-Za-z0-9_-]{0,99}\z') {
+        throw "Custom Detection '$ContentPath' ID '$DetectionId' is invalid for Microsoft Graph; use a letter followed by at most 99 letters, digits, dashes, or underscores."
+    }
+
+    if ($normalized -cnotmatch '\A[A-Za-z][A-Za-z0-9_-]{0,99}\z') {
+        throw "Normalized Custom Detection ID '$normalized' for '$ContentPath' is invalid for Microsoft Graph."
+    }
+    return [pscustomobject]@{
+        id      = $normalized
+        changed = $normalized -cne $DetectionId
+    }
+}
+
 function Set-V31CustomDetectionTactics {
     param([psobject]$DetectionResource, [string]$DetectionId)
     $alertTemplate = $DetectionResource.properties.detectionAction.alertTemplate
-    if ($null -eq $alertTemplate.PSObject.Properties['tactics']) { return }
+    if ($null -eq $alertTemplate.PSObject.Properties['tactics']) {
+        $projection = [ordered]@{
+            detectionId     = $DetectionId
+            authoredTactics = @()
+            packagedTactics = @()
+            omittedTactics  = @()
+        }
+        Write-Host "V3.1 TACTIC PROJECTION: $($projection | ConvertTo-Json -Depth 10 -Compress)"
+        return
+    }
     $tactics = $alertTemplate.tactics
     if ($tactics -isnot [array] -or $tactics.Count -eq 0) {
         throw "Custom Detection '$DetectionId' tactics must be a nonempty array when supplied."
@@ -176,11 +239,22 @@ function Set-V31CustomDetectionTactics {
         }
     }
     if ($tactics.Count -gt 1) {
-        # The current Custom Detections beta API accepts only one tactic. Preserve all
-        # tactics in authoring YAML; remove this payload restriction once the API supports multiple tactics.
+        $omittedTactics = @($tactics | Select-Object -Skip 1 | ForEach-Object { [string]$_.tactic })
         $alertTemplate.tactics = @($tactics[0])
-        $dropped = ($tactics | Select-Object -Skip 1 | ForEach-Object { $_.tactic }) -join ', '
-        Write-Warning "V3.1 TACTIC SELECTION: Custom Detection '$DetectionId' ARM install and registration retain the first authored tactic '$($tactics[0].tactic)' and its techniques; omitted tactics: $dropped. Source order is preserved; this is an API payload restriction, not a recommended classification or full tactic coverage. Authored YAML and provenance are unchanged."
+    }
+    else {
+        $omittedTactics = @()
+    }
+    $projection = [ordered]@{
+        detectionId     = $DetectionId
+        authoredTactics = @($tactics | ForEach-Object { [string]$_.tactic })
+        packagedTactics = @([string]$tactics[0].tactic)
+        omittedTactics  = $omittedTactics
+    }
+    Write-Host "V3.1 TACTIC PROJECTION: $($projection | ConvertTo-Json -Depth 10 -Compress)"
+    if ($omittedTactics.Count -gt 0) {
+        $dropped = $omittedTactics -join ', '
+        Write-Host "INFORMATION: V3.1 TACTIC SELECTION: Custom Detection '$DetectionId' ARM install and registration package the first authored tactic '$($tactics[0].tactic)' and its techniques; omitted tactics: $dropped. Source order is preserved; this is an API payload restriction, not a recommended classification or full tactic coverage. Authored YAML and provenance are unchanged."
     }
 }
 
@@ -479,13 +553,29 @@ function Add-XdrCustomDetectionsToSolution {
         )
         if ($sentinelDerived -and (
                 $sourceId -cnotmatch '\A[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\z' -or
-                $detectionId -cne $sourceId)) {
-            throw "Sentinel-derived Custom Detection '$configuredPath' properties.id must equal the full originating Sentinel template GUID in contentProvenance.source.id. Review and reconvert generated legacy IDs with --overwrite; this changes local artifacts only, not deployed rules."
+                [string]::IsNullOrWhiteSpace($detectionId))) {
+            throw "Sentinel-derived Custom Detection '$configuredPath' must contain its full originating Sentinel template GUID in contentProvenance.source.id and a nonempty properties.id."
         }
+        $identity = ConvertTo-V31CustomDetectionId -DetectionId $detectionId `
+            -SourceId $sourceId -SentinelDerived $sentinelDerived -ContentPath $configuredPath
+        $inputDetectionId = $detectionId
+        $detectionId = [string]$identity.id
         if ($seenIds.ContainsKey($detectionId)) {
-            throw "Duplicate Custom Detection id '$detectionId'."
+            throw "Duplicate Custom Detection id '$detectionId' after canonical ID normalization. Bare-GUID and xdr-prefixed copies of the same rule cannot be packaged together."
         }
         $seenIds[$detectionId] = $true
+        $detectionDocument.properties.id = $detectionId
+        $identityEvidence = [ordered]@{
+            sourceId   = $sourceId
+            inputId    = $inputDetectionId
+            packagedId = $detectionId
+            changed    = [bool]$identity.changed
+            scope      = 'package-projection-only'
+        }
+        Write-Host "V3.1 ID PROJECTION: $($identityEvidence | ConvertTo-Json -Depth 10 -Compress)"
+        if ($identity.changed) {
+            Write-Host "INFORMATION: V3.1 ID NORMALIZATION: Custom Detection '$inputDetectionId' is emitted as '$detectionId' for Microsoft Graph compatibility; source/provenance IDs and YAML remain unchanged. This package projection does not update or migrate deployed rules; verify existing identities before any separately approved deployment."
+        }
 
         if ([string]::IsNullOrWhiteSpace([string]$detectionDocument.properties.queryCondition.queryText)) {
             throw "Custom Detection '$detectionId' has no queryCondition.queryText."
