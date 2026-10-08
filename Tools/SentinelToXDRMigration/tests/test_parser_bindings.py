@@ -119,7 +119,19 @@ class ParserBindingTests(unittest.TestCase):
         output.mkdir()
         paths = []
         expected = []
-        template = {"parameters": {}, "variables": {}, "resources": []}
+        template = {
+            "parameters": {},
+            "variables": {},
+            "resources": [{
+                "type": "Microsoft.OperationalInsights/workspaces/providers/contentPackages",
+                "properties": {
+                    "dependencies": {
+                        "operator": "AND",
+                        "criteria": [{"kind": "AnalyticsRule", "contentId": "existing"}],
+                    },
+                },
+            }],
+        }
         for index, fixture in enumerate(FIXTURES):
             self.parser(fixture["parser"])
             self.source.write_text(yaml.safe_dump(rule(fixture["query"])), encoding="utf-8")

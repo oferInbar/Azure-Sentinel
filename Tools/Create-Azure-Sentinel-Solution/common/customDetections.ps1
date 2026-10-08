@@ -370,6 +370,32 @@ function New-CustomDetectionRegistration {
     }
 }
 
+function Set-XdrCustomDetectionDependencyCriteria {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Template,
+        [Parameter(Mandatory = $true)]
+        [object[]]$Criteria
+    )
+
+    $contentPackages = @($Template.resources | Where-Object {
+        ([string]$_.type) -ieq 'Microsoft.OperationalInsights/workspaces/providers/contentPackages'
+    })
+    if ($contentPackages.Count -ne 1) {
+        throw "Expected exactly one solution contentPackages resource while adding Custom Detection dependencies; found $($contentPackages.Count)."
+    }
+
+    $dependencies = $contentPackages[0].properties.dependencies
+    if ($null -eq $dependencies -or $null -eq $dependencies.PSObject.Properties['criteria']) {
+        throw 'The solution contentPackages resource has no dependency criteria to extend with Custom Detections.'
+    }
+
+    $sentinelCriteria = @($dependencies.criteria | Where-Object {
+        ([string]$_.kind) -ine 'CustomDetection'
+    })
+    $dependencies.criteria = @($sentinelCriteria) + @($Criteria)
+}
+
 function Add-XdrCustomDetectionsToSolution {
     param(
         [Parameter(Mandatory = $true)]
@@ -423,6 +449,7 @@ function Add-XdrCustomDetectionsToSolution {
     $analyticRuleIndex = Get-AnalyticRuleContentTemplateIndex -Template $Template
     $parserNames = @(Get-CustomDetectionParserNames -SolutionPath (Join-Path $repoRoot "Solutions/$SolutionName"))
     $seenIds = @{}
+    $dependencyCriteria = @()
     $count = 0
     foreach ($configuredPath in @($detectionProperty.Value)) {
         $detectionPath = Resolve-CustomDetectionPath -RepositoryRoot $repoRoot -SolutionName $SolutionName -ConfiguredPath ([string]$configuredPath)
@@ -505,10 +532,17 @@ function Add-XdrCustomDetectionsToSolution {
                 $contentVersion = $defaultContentVersion
             }
         }
-        $Template.resources += New-CustomDetectionRegistration -DeploymentName $deploymentName -DetectionResource $detectionResource -DetectionDocument $detectionDocument -ContentVersion $contentVersion -ExtensionVersion $extensionVersion
+        $registration = New-CustomDetectionRegistration -DeploymentName $deploymentName -DetectionResource $detectionResource -DetectionDocument $detectionDocument -ContentVersion $contentVersion -ExtensionVersion $extensionVersion
+        $Template.resources += $registration
+        $dependencyCriteria += [pscustomobject]@{
+            kind      = 'CustomDetection'
+            contentId = [string]$registration.properties.contentId
+            version   = [string]$registration.properties.version
+        }
         $count++
     }
 
+    Set-XdrCustomDetectionDependencyCriteria -Template $Template -Criteria $dependencyCriteria
     Write-Host "Added $count XDR Custom Detection(s) to the hybrid solution template."
     return $count
 }

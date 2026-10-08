@@ -86,6 +86,11 @@ $repoRoot = $repoRoot.Replace('\', '/')
 
 # Resolve solution name (supports partial/fuzzy matching)
 $solutionsDir = Join-Path $repoRoot "Solutions"
+$solutionsRoot = [System.IO.Path]::GetFullPath($solutionsDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+if ([System.IO.Path]::IsPathRooted($SolutionName) -or $SolutionName.Contains('/') -or $SolutionName.Contains('\') -or $SolutionName -in @('.', '..')) {
+    Write-Host "❌ Solution must be a folder name directly under Solutions/: '$SolutionName'" -ForegroundColor Red
+    exit 2
+}
 $solutionPath = Join-Path $solutionsDir $SolutionName
 
 if (-not (Test-Path $solutionPath)) {
@@ -126,6 +131,15 @@ if (-not (Test-Path $solutionPath)) {
         Write-Host "Please re-run with the exact solution name from the list above." -ForegroundColor Yellow
         exit 2
     }
+}
+
+$solutionPath = [System.IO.Path]::GetFullPath($solutionPath)
+$solutionsPrefix = $solutionsRoot + [System.IO.Path]::DirectorySeparatorChar
+if (-not $solutionPath.StartsWith($solutionsPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+    -not (Test-Path $solutionPath -PathType Container) -or
+    ((Get-Item $solutionPath).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+    Write-Host "❌ Invalid solution folder: '$solutionPath'. Expected an existing folder directly under '$solutionsRoot'." -ForegroundColor Red
+    exit 2
 }
 
 $dataPath = Join-Path $solutionPath "Data"
@@ -288,12 +302,67 @@ if (-not $SkipValidation) {
 
     $validateScript = Join-Path $repoRoot ".script/local-validation/validate.js"
 
-    if (-not (Test-Path $validateScript)) {
-        Write-Host "❌ Validation script not found: $validateScript" -ForegroundColor Red
-        Write-Host "   Run 'npx tsc' from the repo root to compile TypeScript first." -ForegroundColor Yellow
+    $validateSource = Join-Path $repoRoot ".script/local-validation/validate.ts"
+    if (-not (Test-Path $validateSource)) {
+        Write-Host "❌ TypeScript validation source not found: $validateSource" -ForegroundColor Red
         $overallSuccess = $false
     }
     else {
+        # validate.js and its imported checker modules are generated from TypeScript and
+        # ignored by git. Compile them here so this wrapper cannot execute stale output.
+        $typescriptCompileSucceeded = $false
+        $tscSw = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            Push-Location $repoRoot
+            $tscOutput = & npm run tsc 2>&1
+            $tscExitCode = $LASTEXITCODE
+            Pop-Location
+            $tscSw.Stop()
+
+            $tscOutput | ForEach-Object {
+                $line = "$_"
+                if ($line.Trim()) { Write-Host "     $line" -ForegroundColor Gray }
+            }
+
+            if ($tscExitCode -eq 0) {
+                $typescriptCompileSucceeded = $true
+                $null = $reportEntries.Add(@{
+                    Step = 2; Name = "TypeScript Compilation"; Status = "passed"
+                    Passed = 1; Failed = 0; Skipped = 0; FileCount = 0
+                    Duration = $tscSw.Elapsed
+                })
+            }
+            else {
+                Write-Host "❌ TypeScript compilation failed — local validation will not run stale JavaScript output." -ForegroundColor Red
+                $overallSuccess = $false
+                $tscErrors = @($tscOutput | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+                $null = $reportEntries.Add(@{
+                    Step = 2; Name = "TypeScript Compilation"; Status = "failed"
+                    Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
+                    Duration = $tscSw.Elapsed; Errors = $tscErrors
+                })
+            }
+        }
+        catch {
+            $tscSw.Stop()
+            Pop-Location -ErrorAction SilentlyContinue
+            Write-Host "❌ TypeScript compilation error: $($_.Exception.Message)" -ForegroundColor Red
+            $overallSuccess = $false
+            $null = $reportEntries.Add(@{
+                Step = 2; Name = "TypeScript Compilation"; Status = "failed"
+                Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
+                Duration = $tscSw.Elapsed; Errors = @($_.Exception.Message)
+            })
+        }
+
+        if (-not $typescriptCompileSucceeded) {
+            Write-Host "⏭  Local TypeScript validators skipped because compilation failed." -ForegroundColor Yellow
+        }
+        elseif (-not (Test-Path $validateScript)) {
+            Write-Host "❌ Validation script not found after TypeScript compilation: $validateScript" -ForegroundColor Red
+            $overallSuccess = $false
+        }
+        else {
         # Build the validation command — use --json for structured output
         $solutionRelativePath = "Solutions/$SolutionName"
         $validateArgs = @("$validateScript", "--path", "$solutionRelativePath", "--json")
@@ -391,6 +460,7 @@ if (-not $SkipValidation) {
             $overallSuccess = $false
         }
     }
+    }
 
     Write-Host ""
 }
@@ -441,9 +511,9 @@ if (-not $SkipValidation) {
         # at initialization time. We can't prevent discovery, but --filter restricts which tests
         # actually EXECUTE. This turns a 30-minute full-repo run into a 30-second scoped run.
         #
-        # Display names look like: TestMethod(fileName: "SomeRule.yaml", ...)
-        # We match on bare filenames. Filenames with filter-special chars ( ) | & ! are handled
-        # by truncating to the safe prefix before the first special character.
+        # Detection Schema exposes only the basename in its display name, so duplicate or
+        # filter-sensitive names are skipped. KQL and Non-ASCII expose the full path and are
+        # filtered by its encoded value to avoid matching same-named files elsewhere.
 
         function Get-SolutionContentFiles {
             param([string]$SolPath, [string[]]$SubDirs, [string[]]$Extensions)
@@ -460,14 +530,18 @@ if (-not $SkipValidation) {
         }
 
         function Build-DotnetTestFilter {
-            param([System.IO.FileInfo[]]$Files)
+            param([System.IO.FileInfo[]]$Files, [switch]$UseEncodedPath)
             $parts = @()
             foreach ($f in $Files) {
-                $name = $f.Name
-                # Truncate at first filter-special character to avoid breaking dotnet test --filter parser
-                $idx = $name.IndexOfAny([char[]]@('(', ')', '|', '&', '!'))
-                if ($idx -gt 0) {
-                    $name = $name.Substring(0, $idx).TrimEnd(' ', '-', '_')
+                if ($UseEncodedPath) {
+                    # KQL and Non-ASCII test cases include the full path as an argument.
+                    $name = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($f.FullName))
+                }
+                else {
+                    $name = $f.Name
+                    if ($name.IndexOfAny([char[]]@('(', ')', '|', '&', '!')) -ge 0) {
+                        throw "Cannot safely construct a dotnet test filter for filename '$name'."
+                    }
                 }
                 if ($name.Length -gt 3) {
                     $parts += "DisplayName~$name"
@@ -498,6 +572,29 @@ if (-not $SkipValidation) {
             $detFiles = Get-SolutionContentFiles -SolPath $solutionPath -SubDirs @("Analytic Rules") -Extensions @("*.yaml")
 
             if ($detFiles.Count -gt 0) {
+                # These tests expose only the basename as their filterable argument. If another
+                # solution has a same-named rule, filtering by that name would execute it too.
+                $allDetectionFiles = @(
+                    Get-ChildItem (Join-Path $repoRoot "Detections"), $solutionsDir -Recurse -Filter "*.yaml" -File |
+                        Where-Object { $_.FullName -match '[\\/]Detections[\\/]' -or $_.FullName -match '[\\/]Solutions[\\/].*[\\/]Analytic Rules[\\/]' }
+                )
+                $collidingNames = @($detFiles | Where-Object {
+                    $targetName = $_.Name
+                    @($allDetectionFiles | Where-Object { $_.Name -eq $targetName }).Count -gt 1
+                } | Select-Object -ExpandProperty Name -Unique)
+                $filterUnsafeNames = @($detFiles | Where-Object {
+                    $_.Name.IndexOfAny([char[]]@('(', ')', '|', '&', '!')) -ge 0
+                } | Select-Object -ExpandProperty Name -Unique)
+                if ($collidingNames.Count -gt 0 -or $filterUnsafeNames.Count -gt 0) {
+                    $collisionDetail = "Cannot safely scope Detection Schema by basename; duplicate file name(s): $($collidingNames -join ', '); filter-sensitive file name(s): $($filterUnsafeNames -join ', ')"
+                    Write-Host "  ⏭  Detection Schema validation skipped — $collisionDetail." -ForegroundColor Yellow
+                    $null = $reportEntries.Add(@{
+                        Step = 3; Name = "Detection Schema"; Status = "skipped"
+                        Passed = 0; Failed = 0; Skipped = $detFiles.Count; FileCount = $detFiles.Count
+                        Duration = [TimeSpan]::Zero; SkipReason = $collisionDetail
+                    })
+                }
+                else {
                 $detFilter = Build-DotnetTestFilter -Files $detFiles
                 Write-Host "  🔍 Detection Schema Validation (scoped to $SolutionName — $($detFiles.Count) files)..." -ForegroundColor White
                 $detSw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -548,6 +645,7 @@ if (-not $SkipValidation) {
                         Duration = $detSw.Elapsed; Errors = @($_.Exception.Message)
                     })
                 }
+                }
             }
             else {
                 Write-Host "  ⏭  Detection Schema validation skipped — no Analytic Rules found in $SolutionName." -ForegroundColor Yellow
@@ -579,7 +677,7 @@ if (-not $SkipValidation) {
                 -Extensions @("*.yaml", "*.json")
 
             if ($naFiles.Count -gt 0) {
-                $naFilter = Build-DotnetTestFilter -Files $naFiles
+                $naFilter = Build-DotnetTestFilter -Files $naFiles -UseEncodedPath
                 Write-Host "  🔍 Non-ASCII Validation (scoped to $SolutionName — $($naFiles.Count) files)..." -ForegroundColor White
                 $naSw = [System.Diagnostics.Stopwatch]::StartNew()
                 try {
@@ -660,7 +758,7 @@ if (-not $SkipValidation) {
                 -Extensions @("*.yaml", "*.json")
 
             if ($kqlFiles.Count -gt 0) {
-                $kqlFilter = Build-DotnetTestFilter -Files $kqlFiles
+                $kqlFilter = Build-DotnetTestFilter -Files $kqlFiles -UseEncodedPath
                 Write-Host "  🔍 KQL Validation (scoped to $SolutionName — $($kqlFiles.Count) files)..." -ForegroundColor White
 
                 # KQL's GitHubApiClient.Create() throws without GitHub App credentials.
@@ -847,8 +945,7 @@ if (-not $SkipValidation) {
     Write-Host "  STEP 4: CI PowerShell Validators & Secret Scanning" -ForegroundColor Cyan
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  ℹ️  These validators check committed changes (git diff HEAD^ HEAD)." -ForegroundColor Gray
-    Write-Host "     Commit your changes before running for full coverage." -ForegroundColor Gray
+    Write-Host "  ℹ️  Solution-scoped validators inspect current files under $solutionPath." -ForegroundColor Gray
     Write-Host ""
 
     # Ensure powershell-yaml module is available (needed by all 3 PS validators)
@@ -873,7 +970,8 @@ if (-not $SkipValidation) {
                 -runId "local-validation" `
                 -pullRequestNumber 0 `
                 -instrumentationKey "" `
-                -baseFolderPath $repoRoot 2>&1
+                -baseFolderPath $repoRoot `
+                -SolutionPath $solutionPath 2>&1
             $ftExitCode = $LASTEXITCODE
             Pop-Location
             $ftSw.Stop()
@@ -892,6 +990,14 @@ if (-not $SkipValidation) {
                     Step = 4; Name = "Field Types"; Status = "failed"
                     Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
                     Duration = $ftSw.Elapsed; Errors = $ftErrors
+                })
+            }
+            elseif (($ftOutput | ForEach-Object { "$_" }) -match "no current Package/mainTemplate\.json") {
+                Write-Host "  ⏭  Field Types validation skipped — the selected solution has no current Package/mainTemplate.json." -ForegroundColor Yellow
+                $null = $reportEntries.Add(@{
+                    Step = 4; Name = "Field Types"; Status = "skipped"
+                    Passed = 0; Failed = 0; Skipped = 1; FileCount = 0
+                    Duration = $ftSw.Elapsed; SkipReason = "No current Package/mainTemplate.json in the selected solution"
                 })
             }
             else {
@@ -937,7 +1043,8 @@ if (-not $SkipValidation) {
                 -runId "local-validation" `
                 -pullRequestNumber 0 `
                 -instrumentationKey "" `
-                -baseFolderPath $repoRoot 2>&1
+                -baseFolderPath $repoRoot `
+                -SolutionPath $solutionPath 2>&1
             $caiExitCode = $LASTEXITCODE
             Pop-Location
             $caiSw.Stop()
@@ -952,19 +1059,33 @@ if (-not $SkipValidation) {
                 $overallSuccess = $false
                 $caiErrors = @($caiOutput | Where-Object { "$_" -match "Error|FAIL|failed|classic|deprecated" } | ForEach-Object { "$_".Trim() })
                 $null = $reportEntries.Add(@{
-                    Step = 4; Name = "Classic App Insights"; Status = "failed"
+                    Step = 4; Name = "Classic App Insights (Solution)"; Status = "failed"
                     Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
                     Duration = $caiSw.Elapsed; Errors = $caiErrors
+                })
+            }
+            elseif (($caiOutput | ForEach-Object { "$_" }) -match "no current azuredeploy files found in the selected folder") {
+                Write-Host "  ⏭  Classic App Insights validation skipped — no current azuredeploy files in the selected solution." -ForegroundColor Yellow
+                $null = $reportEntries.Add(@{
+                    Step = 4; Name = "Classic App Insights (Solution)"; Status = "skipped"
+                    Passed = 0; Failed = 0; Skipped = 1; FileCount = 0
+                    Duration = $caiSw.Elapsed; SkipReason = "No current azuredeploy files in the selected solution"
                 })
             }
             else {
                 Write-Host "  ✅ Classic App Insights validation passed" -ForegroundColor Green
                 $null = $reportEntries.Add(@{
-                    Step = 4; Name = "Classic App Insights"; Status = "passed"
+                    Step = 4; Name = "Classic App Insights (Solution)"; Status = "passed"
                     Passed = 1; Failed = 0; Skipped = 0; FileCount = 0
                     Duration = $caiSw.Elapsed
                 })
             }
+            $null = $reportEntries.Add(@{
+                Step = 4; Name = "Classic App Insights (Standalone DataConnectors)"; Status = "skipped"
+                Passed = 0; Failed = 0; Skipped = 1; FileCount = 0
+                Duration = [TimeSpan]::Zero
+                SkipReason = "Standalone DataConnectors are outside the selected solution folder"
+            })
         }
         catch {
             $caiSw.Stop()
@@ -972,7 +1093,7 @@ if (-not $SkipValidation) {
             Write-Host "  ❌ Classic App Insights validation error: $($_.Exception.Message)" -ForegroundColor Red
             $overallSuccess = $false
             $null = $reportEntries.Add(@{
-                Step = 4; Name = "Classic App Insights"; Status = "failed"
+                Step = 4; Name = "Classic App Insights (Solution)"; Status = "failed"
                 Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
                 Duration = $caiSw.Elapsed; Errors = @($_.Exception.Message)
             })
@@ -1017,7 +1138,8 @@ if (-not $SkipValidation) {
                     -runId "local-validation" `
                     -pullRequestNumber 0 `
                     -instrumentationKey "" `
-                    -baseFolderPath $repoRoot 2>&1
+                    -baseFolderPath $repoRoot `
+                    -SolutionPath $solutionPath 2>&1
                 $hlExitCode = $LASTEXITCODE
                 Pop-Location
                 $hlSw.Stop()
@@ -1072,7 +1194,15 @@ if (-not $SkipValidation) {
 
     # --- TruffleHog Secret Scanning ---
     $trufflehogCmd = Get-Command trufflehog -ErrorAction SilentlyContinue
-    if ($trufflehogCmd) {
+    if ($trufflehogCmd -and $solutionPath) {
+        Write-Host "  ⏭  TruffleHog secret scanning skipped — it scans repository history and cannot be constrained to one solution folder." -ForegroundColor Yellow
+        $null = $reportEntries.Add(@{
+            Step = 4; Name = "TruffleHog (Secrets)"; Status = "skipped"
+            Passed = 0; Failed = 0; Skipped = 0; FileCount = 0
+            Duration = [TimeSpan]::Zero; SkipReason = "Repository-history scan cannot be scoped to a solution folder"
+        })
+    }
+    elseif ($trufflehogCmd) {
         Write-Host "  🔍 TruffleHog Secret Scanning..." -ForegroundColor White
         $thSw = [System.Diagnostics.Stopwatch]::StartNew()
         try {

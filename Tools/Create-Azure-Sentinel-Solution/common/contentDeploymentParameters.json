@@ -2,7 +2,7 @@
   "DeployAnalyticsRule": {
     "kinds": ["AnalyticsRule", "AnalyticsRuleTemplate"],
     "defaultValue": true,
-    "description": "Deploy the Sentinel analytic rules carried by this solution (ContentKind AnalyticsRule and its AnalyticsRuleTemplate registration face)."
+    "description": "Deploy the Microsoft Sentinel analytic rules carried by this solution (ContentKind AnalyticsRule and its AnalyticsRuleTemplate registration face)."
   },
   "DeployPlaybook": {
     "kinds": ["Playbook", "PlaybookTemplate", "AzureFunction", "LogicAppsCustomConnector"],
@@ -12,7 +12,7 @@
   "DeployWorkbook": {
     "kinds": ["Workbook", "WorkbookTemplate"],
     "defaultValue": true,
-    "description": "Deploy the Sentinel workbook content and its Content Hub registration carried by this solution (ContentKind Workbook and WorkbookTemplate)."
+    "description": "Deploy the Microsoft Sentinel workbook content and its Content Hub registration carried by this solution (ContentKind Workbook and WorkbookTemplate)."
   },
   "DeployDataConnector": {
     "kinds": ["DataConnector", "ResourceDataConnector", "ResourcesDataConnector", "DataType"],
@@ -27,12 +27,12 @@
   "DeployHuntingQuery": {
     "kinds": ["HuntingQuery"],
     "defaultValue": true,
-    "description": "Deploy the Sentinel hunting queries carried by this solution."
+    "description": "Deploy the Microsoft Sentinel hunting queries carried by this solution."
   },
   "DeployInvestigationQuery": {
     "kinds": ["InvestigationQuery"],
     "defaultValue": true,
-    "description": "Deploy the Sentinel investigation queries carried by this solution."
+    "description": "Deploy the Microsoft Sentinel investigation queries carried by this solution."
   },
   "DeployParser": {
     "kinds": ["Parser"],
@@ -52,7 +52,7 @@
   "DeployAutomationRule": {
     "kinds": ["AutomationRule"],
     "defaultValue": true,
-    "description": "Deploy the Sentinel automation rules carried by this solution."
+    "description": "Deploy the Microsoft Sentinel automation rules carried by this solution."
   },
   "DeploySummaryRule": {
     "kinds": ["SummaryRule"],

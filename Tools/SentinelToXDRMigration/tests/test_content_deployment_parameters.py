@@ -21,6 +21,29 @@ FIVE = (
 PREFIX = "Microsoft.OperationalInsights/workspaces/providers/"
 
 
+class ContentDeploymentDescriptionTests(unittest.TestCase):
+    def test_sentinel_content_descriptions_use_microsoft_branding(self):
+        expected = {
+            "DeployAnalyticsRule": (
+                "Deploy the Microsoft Sentinel analytic rules carried by this solution "
+                "(ContentKind AnalyticsRule and its AnalyticsRuleTemplate registration face)."
+            ),
+            "DeployWorkbook": (
+                "Deploy the Microsoft Sentinel workbook content and its Content Hub registration "
+                "carried by this solution (ContentKind Workbook and WorkbookTemplate)."
+            ),
+            "DeployHuntingQuery": "Deploy the Microsoft Sentinel hunting queries carried by this solution.",
+            "DeployInvestigationQuery": (
+                "Deploy the Microsoft Sentinel investigation queries carried by this solution."
+            ),
+            "DeployAutomationRule": "Deploy the Microsoft Sentinel automation rules carried by this solution.",
+        }
+        self.assertEqual(
+            expected,
+            {name: CONTRACT[name]["description"] for name in expected},
+        )
+
+
 def registration(kind, name):
     return {
         "type": PREFIX + "contentTemplates", "apiVersion": "2023-04-01-preview",
@@ -224,6 +247,114 @@ class ContentDeploymentTests(unittest.TestCase):
         template = json.loads((self.solution / "Package/mainTemplate.json").read_text())
         self.assertFalse(set(CONTRACT) & template["parameters"].keys())
         self.assertTrue(all("condition" not in r for r in template["resources"]))
+
+    def test_custom_detection_dependencies_use_registration_identity_and_version(self):
+        entry = self.prepare_integration()
+        self.write_metadata(attribution.TRACKING_ID)
+        data = json.loads(self.data.read_text())
+        source_rule = json.loads(
+            (self.solution / "Analytic Rules/Test.yaml").read_text().split("\n", 1)[1]
+        )
+        source_detection = json.loads(
+            (self.solution / "XDR Detections/Test.yaml").read_text().split("\n", 1)[1]
+        )
+        identities = [
+            ("11111111-2222-3333-4444-555555555555", "3.1.0", "Test"),
+            ("22222222-2222-3333-4444-555555555555", "3.1.1", "Second"),
+            ("33333333-2222-3333-4444-555555555555", "3.1.2", "Third"),
+        ]
+        analytic_paths = []
+        detection_paths = []
+        for content_id, version, stem in identities:
+            rule = copy.deepcopy(source_rule)
+            rule.update(id=content_id, name=f"{stem} rule")
+            rule_path = self.solution / f"Analytic Rules/{stem}.yaml"
+            rule_path.write_text("---\n" + json.dumps(rule))
+            analytic_paths.append(str(rule_path.relative_to(self.solution)))
+
+            detection = copy.deepcopy(source_detection)
+            detection["version"] = version
+            detection["contentProvenance"]["source"]["id"] = content_id
+            detection["properties"]["id"] = content_id
+            detection["properties"]["displayName"] = f"{stem} detection"
+            detection_path = self.solution / f"XDR Detections/{stem}.yaml"
+            detection_path.write_text("---\n" + json.dumps(detection))
+            detection_paths.append(str(detection_path.relative_to(self.solution)))
+
+        data["Analytic Rules"] = analytic_paths
+        data["XDR Detections"] = []
+        self.data.write_text(json.dumps(data))
+        result = self.package(entry, False)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        sentinel_only = json.loads(
+            (self.solution / "Package/mainTemplate.json").read_text(encoding="utf-8-sig")
+        )
+        package = next(
+            resource for resource in sentinel_only["resources"]
+            if resource["type"].endswith("/contentPackages")
+        )
+        sentinel_dependencies = package["properties"]["dependencies"]
+        self.assertEqual("AND", sentinel_dependencies["operator"])
+        self.assertFalse(any(
+            criterion["kind"] == "CustomDetection"
+            for criterion in sentinel_dependencies["criteria"]
+        ))
+
+        data["XDR Detections"] = detection_paths
+        self.data.write_text(json.dumps(data))
+        result = self.package(entry, False)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        hybrid = json.loads(
+            (self.solution / "Package/mainTemplate.json").read_text(encoding="utf-8-sig")
+        )
+        package = next(
+            resource for resource in hybrid["resources"]
+            if resource["type"].endswith("/contentPackages")
+        )
+        dependencies = package["properties"]["dependencies"]
+        registrations = [
+            resource for resource in hybrid["resources"]
+            if resource.get("properties", {}).get("contentKind") == "CustomDetection"
+        ]
+        custom_detection_criteria = [
+            criterion for criterion in dependencies["criteria"]
+            if criterion["kind"] == "CustomDetection"
+        ]
+        self.assertEqual("AND", dependencies["operator"])
+        self.assertEqual(
+            sentinel_dependencies["criteria"],
+            dependencies["criteria"][:-len(custom_detection_criteria)],
+        )
+        self.assertEqual(3, len(custom_detection_criteria))
+        self.assertEqual(
+            [
+                {
+                    "kind": "CustomDetection",
+                    "contentId": registration["properties"]["contentId"],
+                    "version": registration["properties"]["version"],
+                }
+                for registration in registrations
+            ],
+            custom_detection_criteria,
+        )
+        self.assertEqual(
+            [(content_id, version) for content_id, version, _ in identities],
+            [(item["contentId"], item["version"]) for item in custom_detection_criteria],
+        )
+
+        result = self.package(entry, False)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        regenerated = json.loads(
+            (self.solution / "Package/mainTemplate.json").read_text(encoding="utf-8-sig")
+        )
+        regenerated_package = next(
+            resource for resource in regenerated["resources"]
+            if resource["type"].endswith("/contentPackages")
+        )
+        self.assertEqual(
+            dependencies["criteria"],
+            regenerated_package["properties"]["dependencies"]["criteria"],
+        )
 
     def test_python_rejects_legacy_stale_or_unsupported_selections(self):
         template = {"parameters": {"DeployAnalyticsRule": {"type": "bool", "defaultValue": True}}}

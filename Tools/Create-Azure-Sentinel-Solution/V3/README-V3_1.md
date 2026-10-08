@@ -99,12 +99,17 @@ unchanged.
 
 The content package and customer usage attribution marker remain unconditional;
 the legacy workspace query container is shared infrastructure with independently
-gated children. All selections false is permitted: package-only installation
-(plus shared infrastructure/attribution when present), not an uninstall operation.
-There is no new all-off runtime check. Existing package dependency criteria,
-including `AND` and external prerequisites, are deliberately unchanged. A
-selection can leave prerequisites unmet: the booleans do not rewrite dependency
-semantics, guarantee Content Hub acceptance, or provision missing dependencies.
+gated children. Each packaged Custom Detection is appended to the content
+package's `dependencies.criteria` as `kind: CustomDetection`, using the same
+literal `contentId` and independent XDR `version` as its registration. Existing
+Sentinel criteria retain their order and the package keeps `operator: AND`.
+These catalog dependencies are unconditional even when
+`DeployCustomDetection=false`; the deployment switch controls emitted resources,
+not package inventory. All selections false is permitted: package-only
+installation (plus shared infrastructure/attribution when present), not an
+uninstall operation. There is no new all-off runtime check. A selection can
+leave prerequisites unmet: the booleans do not rewrite dependency semantics,
+guarantee Content Hub acceptance, or provision missing external dependencies.
 
 **Compatibility:** `E5Flavor` and `RegisterE5Content` are no longer generated.
 Update external parameter files to use only controls declared by that package;
