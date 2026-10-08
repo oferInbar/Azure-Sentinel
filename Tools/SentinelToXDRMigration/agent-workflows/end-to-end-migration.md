@@ -63,6 +63,61 @@ missing or declined. A configured tenant or workspace does not imply consent.
 Qualification requires an approved non-production tenant and workspace plus
 separate approval immediately before deployment or ingestion writes.
 
+For the contributor-facing authoring sequence, local configuration, provider
+boundaries, review decisions, V3.1 packaging, and pending orchestration
+capabilities, follow the toolkit README's
+[Contributor authoring guide](../README.md#contributor-authoring-guide).
+That guide describes current deterministic CLI behavior separately from
+autonomous MCP dispatch, cross-provider research, and interactive decision
+experience, which are not implemented by this Python package.
+
+### Solution-local target configuration
+
+Qualification may use a credential-free `Solutions/<solution>/.env`, copied
+from the placeholder-only `Tools/SentinelToXDRMigration/.env.example`. Replace
+its two literal values, `AZURE_TENANT_ID` and
+`SENTINEL_WORKSPACE_RESOURCE_ID`; never put credentials or shell expressions
+in this file or real identifiers in the shared example. The strict parser
+accepts only those assignments and does not source the file, expand variables,
+or execute commands. The solution `.env` is Git-ignored and excluded from
+package inputs and optional evidence exports. It is not read by Authoring, and
+no global or process-environment target defaults are silently applied.
+
+Inspect the selected solution before approving it:
+
+```powershell
+sentinel-xdr-migration doctor --solution "Solutions\<solution>"
+```
+
+For a new configured Qualification run, explicitly opt in to Qualification and
+confirm the displayed target:
+
+```powershell
+sentinel-xdr-migration workflow-init `
+  --solution "Solutions\<solution>" `
+  --workflow-profile qualification `
+  --confirm-configured-target `
+  --version-bump none
+```
+
+The workspace subscription is derived from its validated ARM ID. Only after
+explicit target confirmation does the resolver verify `az account show` has
+the configured tenant and derived active subscription, then issue a single
+exact `az resource show --ids <workspace-arm-id>` request for the customer ID.
+It never lists or scans workspaces. Authentication or exact-read failures stop
+initialization; sign in separately to the approved identity and retry.
+Explicit command-line values remain supported, but conflicts with `.env` fail
+with an actionable error instead of silently choosing either value. Supplying
+both `--tenant-id` and `--workspace-resource-id` is also explicit target
+confirmation; the subscription is derived and the customer ID may be resolved
+or supplied.
+
+An existing locked Qualification run remains authoritative on resume. Changes
+to `.env` cannot retarget it; a conflicting local value blocks resumption and
+must use the existing explicit target diagnosis/repair contract. Local `.env`
+does not store the derived customer ID; that resolved identity is persisted in
+the locked run target after the exact read.
+
 ## Initialize or resume
 
 Install the CLI when necessary:
@@ -83,16 +138,16 @@ sentinel-xdr-migration workflow-init `
 ```
 
 For an approved qualification run, use `qualification` and include
-the complete locked target:
+the complete locked target. Alternatively, after reviewing the per-solution
+configuration above, use `--confirm-configured-target` instead of supplying
+tenant/workspace values; the workflow derives the subscription and reads the
+customer ID only from that exact approved workspace:
 
 ```powershell
 sentinel-xdr-migration workflow-init `
   --solution "<solution-path>" `
   --workflow-profile qualification `
-  --tenant-id "<tenant-guid>" `
-  --subscription-id "<subscription-guid>" `
-  --workspace-resource-id "<workspace-arm-id>" `
-  --workspace-customer-id "<workspace-customer-guid>" `
+  --confirm-configured-target `
   --version-bump "<none-patch-minor-or-major>"
 ```
 
@@ -167,6 +222,8 @@ resumption; reconcile explicitly rather than selecting stale evidence.
 Never delete legacy state or initialize a replacement to bypass this gate.
 
 All solution Logs are Git-ignored and excluded from content/package inputs.
+The solution-local `.env` target file is separately Git-ignored and excluded
+from package/evidence content.
 They may contain raw provider responses and lab identifiers, and must not be
 force-added to a PR. An optional, explicit local-only PR evidence export is available:
 

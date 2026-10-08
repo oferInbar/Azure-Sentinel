@@ -209,6 +209,83 @@ def _json_output(result: subprocess.CompletedProcess[str]) -> Any:
         raise RuntimeError("Azure CLI returned invalid JSON") from exc
 
 
+def resolve_workspace_customer_id(
+    tenant_id: str,
+    workspace_resource_id: str,
+    *,
+    runner: CommandRunner = subprocess.run,
+) -> str:
+    """Read only the explicitly selected workspace after checking Azure CLI scope."""
+    tenant = _guid(tenant_id, "tenant ID")
+    workspace = workspace_identity(workspace_resource_id)
+    account_result = _run_az(("account", "show"), runner=runner)
+    if account_result.returncode:
+        raise RuntimeError(
+            "Azure CLI authentication scope could not be verified. Sign in to the "
+            "approved tenant, then retry Qualification target resolution."
+        )
+    account = _json_output(account_result)
+    if not isinstance(account, dict):
+        raise RuntimeError(
+            "Azure CLI did not return a valid authenticated tenant and subscription"
+        )
+    try:
+        active_tenant = _guid(account.get("tenantId", ""), "authenticated tenant ID")
+        active_subscription = _guid(
+            account.get("id", ""), "authenticated subscription ID"
+        )
+    except (AttributeError, ValueError) as exc:
+        raise RuntimeError(
+            "Azure CLI did not return a valid authenticated tenant and subscription"
+        ) from exc
+    if active_tenant != tenant:
+        raise RuntimeError(
+            "authenticated Azure tenant does not match AZURE_TENANT_ID; sign in "
+            "to the explicitly selected tenant before retrying"
+        )
+    if active_subscription != workspace["subscriptionId"]:
+        raise RuntimeError(
+            "active Azure subscription does not match the subscription derived "
+            "from the selected workspace ARM ID"
+        )
+
+    result = _run_az(
+        (
+            "resource",
+            "show",
+            "--ids",
+            workspace["workspaceResourceId"],
+            "--api-version",
+            "2023-09-01",
+        ),
+        runner=runner,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            "the exact selected Log Analytics workspace could not be read. Verify "
+            "the ARM ID and current account access; no workspace discovery was run"
+        )
+    resource = _json_output(result)
+    if not isinstance(resource, dict):
+        raise RuntimeError(
+            "Azure CLI did not return the exact selected workspace ARM resource"
+        )
+    actual_id = str(resource.get("id") or "")
+    if not actual_id or not _same_arm_id(actual_id, workspace["workspaceResourceId"]):
+        raise RuntimeError(
+            "Azure CLI did not return the exact selected workspace ARM resource"
+        )
+    properties = resource.get("properties")
+    customer_id = (
+        properties.get("customerId") if isinstance(properties, dict) else None
+    )
+    return _guid(str(customer_id or ""), "workspace customer ID")
+
+
+def _same_arm_id(left: str, right: str) -> bool:
+    return left.rstrip("/").casefold() == right.rstrip("/").casefold()
+
+
 def diagnose_target(
     solution: str | Path,
     *,

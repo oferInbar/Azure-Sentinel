@@ -367,6 +367,9 @@ Solutions/**/XDR Detections/workflow-state.json
 
 # Solution-local runtime logs, state, configuration, and evidence remain private.
 /Solutions/**/Logs/
+# Ignore only per-solution runtime configuration; keep the shared template tracked.
+/Solutions/**/.env
+!/Tools/SentinelToXDRMigration/.env.example
 
 # Local generated packaging workspaces.
 **/_ws/

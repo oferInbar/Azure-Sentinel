@@ -140,11 +140,23 @@ def package_solution_v3_1(
     for values in before.values():
         if isinstance(values, list):
             for value in values:
-                if isinstance(value, str) and any(
+                parts = (
+                    value.replace("\\", "/").split("/")
+                    if isinstance(value, str)
+                    else []
+                )
+                if any(
                     part.lower() in {"logs", "reports", "evidence"}
-                    for part in value.replace("\\", "/").split("/")
+                    for part in parts
                 ):
                     raise ValueError("solution Data content arrays must never include Logs, Reports or Evidence")
+                if any(
+                    part.lower() == ".env" or part.lower().startswith(".env.")
+                    for part in parts
+                ):
+                    raise ValueError(
+                        "solution Data content arrays must never include local .env configuration"
+                    )
     xdr_files = _xdr_references(root, before)
     repository = repository_root(root)
     script = (
@@ -277,6 +289,14 @@ def package_solution_v3_1(
                 for part in name.replace("\\", "/").split("/")
             ):
                 raise RuntimeError("generated package ZIP must not contain Logs, Reports or Evidence")
+            if any(
+                part.lower() == ".env" or part.lower().startswith(".env.")
+                for name in archive.namelist()
+                for part in name.replace("\\", "/").split("/")
+            ):
+                raise RuntimeError(
+                    "generated package ZIP must not contain local .env configuration"
+                )
     except (OSError, zipfile.BadZipFile) as exc:
         raise RuntimeError(f"generated package ZIP is invalid: {zip_path}: {exc}") from exc
     missing_entries = {"mainTemplate.json", "createUiDefinition.json"} - names

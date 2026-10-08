@@ -88,6 +88,18 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.run.iterdir()})
         self.assertNotIn("raw-private-response", json.dumps(evidence))
 
+    def test_solution_env_is_never_read_or_copied_into_optional_evidence(self):
+        private_marker = "PRIVATE_ENV_SENTINEL_DO_NOT_EXPORT"
+        (self.solution / ".env").write_text(
+            f"PRIVATE_SETTING={private_marker}\n", encoding="utf-8"
+        )
+        evidence = self.export()
+        exported = json.dumps(evidence) + "\n" + (
+            self.solution / "Evidence" / self.run_id / "summary.md"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn(private_marker, exported)
+        self.assertTrue((self.solution / ".env").is_file())
+
     def test_runtime_result_records_exact_current_query_binding(self):
         source_query = "DeviceEvents | where TimeGenerated > ago(4h)"
         target_query = "DeviceEvents | where Timestamp >= ago(2h)"

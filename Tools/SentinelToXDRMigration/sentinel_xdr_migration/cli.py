@@ -29,6 +29,7 @@ from .alert_parity import (
 from .runtime import record_runtime_validation, validate_advanced_hunting
 from .solution_report import build_solution_report
 from .target_context import diagnose_target, repair_target, require_locked_target
+from .target_config import resolve_qualification_target
 from .workflow import (
     STAGES,
     WORKFLOW_PROFILES,
@@ -121,7 +122,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     setup_parser.add_argument("--skip-sentinel-auth", action="store_true")
     setup_parser.add_argument("--skip-hunting-auth", action="store_true")
-    subparsers.add_parser("doctor", help="Report setup and runtime readiness.")
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Report setup and runtime readiness."
+    )
+    doctor_parser.add_argument(
+        "--solution",
+        help="Also inspect this solution's local .env Qualification target.",
+    )
     workspace_config = subparsers.add_parser(
         "configure-workspace",
         help="Persist one approved workspace for reuse across solution workflows.",
@@ -248,6 +255,11 @@ def main(argv: list[str] | None = None) -> int:
     workflow_init.add_argument("--workspace-resource-id")
     workflow_init.add_argument("--workspace-customer-id")
     workflow_init.add_argument(
+        "--confirm-configured-target",
+        action="store_true",
+        help="Confirm the tenant/workspace shown by doctor for a new Qualification run.",
+    )
+    workflow_init.add_argument(
         "--version-bump",
         choices=["none", "patch", "minor", "major"],
     )
@@ -332,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
                 hunting_auth_method=args.hunting_auth_method,
             )
         elif args.command == "doctor":
-            result = doctor()
+            result = doctor(solution=args.solution)
         elif args.command == "configure-workspace":
             result = configure_workspace(
                 args.workspace_resource_id,
@@ -431,12 +443,52 @@ def main(argv: list[str] | None = None) -> int:
                 provider_gap_evidence=args.provider_gap_evidence,
             )
         elif args.command == "workflow-init":
+            if args.new_run and args.run_id:
+                raise ValueError("--new-run and --run-id cannot be combined")
+            if (
+                args.confirm_configured_target
+                and args.workflow_profile != "qualification"
+            ):
+                raise ValueError(
+                    "--confirm-configured-target is only valid for Qualification"
+                )
+            locked_context = None
+            if not args.new_run:
+                try:
+                    current = workflow_status(args.solution)
+                except ValueError as exc:
+                    if "workflow state does not exist" not in str(exc):
+                        raise
+                else:
+                    context = current.get("context") or {}
+                    if (
+                        context.get("workflowProfile") == "qualification"
+                        and context.get("targetContextLocked") is True
+                    ):
+                        locked_context = context
+            target = None
+            if args.workflow_profile == "qualification":
+                target = resolve_qualification_target(
+                    args.solution,
+                    tenant_id=args.tenant_id,
+                    subscription_id=args.subscription_id,
+                    workspace_resource_id=args.workspace_resource_id,
+                    workspace_customer_id=args.workspace_customer_id,
+                    confirm_configured_target=args.confirm_configured_target,
+                    locked_context=locked_context,
+                )
             result = initialize_workflow(
                 args.solution,
-                tenant_id=args.tenant_id,
-                subscription_id=args.subscription_id,
-                workspace_resource_id=args.workspace_resource_id,
-                workspace_customer_id=args.workspace_customer_id,
+                tenant_id=target["tenantId"] if target else args.tenant_id,
+                subscription_id=(
+                    target["subscriptionId"] if target else args.subscription_id
+                ),
+                workspace_resource_id=(
+                    target["workspaceResourceId"] if target else args.workspace_resource_id
+                ),
+                workspace_customer_id=(
+                    target["workspaceCustomerId"] if target else args.workspace_customer_id
+                ),
                 version_bump=args.version_bump,
                 workflow_profile=args.workflow_profile,
                 new_run=args.new_run,

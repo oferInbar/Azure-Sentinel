@@ -132,6 +132,14 @@ class PackagingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Evidence"):
             package_solution_v3_1(self.solution, version_bump="none")
 
+    def test_rejects_local_env_in_any_content_array(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        document = json.loads(data.read_text())
+        document["Playbooks"] = [".env"]
+        data.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, "local .env configuration"):
+            package_solution_v3_1(self.solution, version_bump="none")
+
     @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
     @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
     def test_rejects_evidence_in_marketplace_zip(self, run, which) -> None:
@@ -148,6 +156,15 @@ class PackagingTests(unittest.TestCase):
         with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip", "a") as archive:
             archive.writestr("Logs/sentinel-xdr-migration/workflow-state.json", "{}")
         with self.assertRaisesRegex(RuntimeError, "must not contain Logs"):
+            package_solution_v3_1(self.solution, version_bump="none")
+
+    @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
+    @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
+    def test_rejects_local_env_in_marketplace_zip(self, run, which) -> None:
+        run.return_value = CompletedProcess([], 0, "Starting Package Creation using V3.1 tool", "")
+        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip", "a") as archive:
+            archive.writestr("configuration/.env", "PRIVATE_ENV_SENTINEL")
+        with self.assertRaisesRegex(RuntimeError, "must not contain local .env"):
             package_solution_v3_1(self.solution, version_bump="none")
 
     @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")

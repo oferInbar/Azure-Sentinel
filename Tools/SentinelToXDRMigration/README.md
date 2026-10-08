@@ -698,6 +698,67 @@ sentinel-xdr-migration configure-workspace `
 user to confirm the workspace for each new workflow, but it does not require
 the ID to be re-entered.
 
+### Per-solution Qualification target configuration
+
+For a solution-specific Qualification target, copy the shared placeholder-only
+example and replace its two values with the approved lab tenant and full
+Log Analytics workspace ARM ID:
+
+```powershell
+$targetConfig = "Solutions\<solution>\.env"
+if (Test-Path $targetConfig) {
+  throw "Review the existing target config instead of overwriting it."
+}
+Copy-Item Tools\SentinelToXDRMigration\.env.example $targetConfig
+```
+
+`Solutions/<solution>/.env` accepts only literal `KEY=value` lines for
+`AZURE_TENANT_ID` and `SENTINEL_WORKSPACE_RESOURCE_ID`. It is local
+configuration, not authentication: do not put credentials, tokens, passwords,
+or shell expressions in it. The example contains no real tenant/workspace data;
+never edit it with customer identifiers. The solution `.env` is Git-ignored
+and excluded from package content and optional evidence exports. It is not
+automatically populated from process environment variables or the shared
+`~/.sentinel-xdr-migration/config.json`; there are no implicit global target
+defaults. Resolution is deterministic: an existing locked run is authoritative;
+otherwise explicit CLI tenant/workspace values must agree with `.env`, and
+`.env` supplies missing tenant/workspace values. Any disagreement fails closed
+instead of applying a silent precedence rule. The subscription is always derived
+from the validated workspace ARM ID.
+
+Inspect the literal target before opting into a new Qualification workflow:
+
+```powershell
+sentinel-xdr-migration doctor --solution "Solutions\<solution>"
+```
+
+Then explicitly select Qualification and confirm the displayed local target:
+
+```powershell
+sentinel-xdr-migration workflow-init `
+  --solution "Solutions\<solution>" `
+  --workflow-profile qualification `
+  --confirm-configured-target `
+  --version-bump none
+```
+
+The workflow initializer validates the ARM ID, derives its subscription ID,
+checks the current Azure CLI tenant and active subscription, and only then
+performs an exact `az resource show --ids <workspace-arm-id>` read to obtain
+the workspace customer ID. It does not list or search for workspaces. A scope
+mismatch or inaccessible exact resource stops initialization with an
+actionable error; authenticate separately with the approved identity and retry.
+Alternatively, explicitly supply both `--tenant-id` and
+`--workspace-resource-id` on `workflow-init`; the subscription is derived, and
+the workspace customer ID may be supplied or resolved from the exact resource.
+Conflicting CLI and `.env` tenant/workspace values fail rather than silently
+choosing one.
+
+Once a Qualification run is locked, its persisted target remains authoritative.
+Changing `.env` cannot retarget that run; a conflicting edit blocks resumption
+and requires the normal explicit target-diagnosis/repair contract. Authoring
+does not read or require `.env`, a tenant, Azure authentication, or a workspace.
+
 Conversion and structural validation always remain available in offline mode.
 Missing runtime access is reported explicitly and never blocks YAML generation.
 For unattended inspection without opening sign-in prompts:
@@ -721,6 +782,60 @@ Guest identities may not work. The agent should verify that
 provider.
 
 ## Command line
+
+### Contributor authoring guide
+
+Select **Authoring**, **Qualification**, or **Cancel** before initialization;
+there is no default profile. Authoring is the normal offline-capable content
+workflow. Qualification is an explicit optional lab workflow, not a requirement
+for publishing. Follow the [canonical stages and gates](agent-workflows/end-to-end-migration.md).
+
+Authoring reviews the discovered source and existing output, converts the
+complete solution, resolves each `needsReview` item with scoped evidence and an
+explicit content-owner decision, structurally validates source and generated
+YAML, and then packages through the repository's V3.1 entry point. Generated
+detection IDs use `xdr-<full source Sentinel template GUID>` and remain
+disabled by default; see [source-derived detection identity](#source-derived-detection-identity).
+
+```powershell
+sentinel-xdr-migration inspect --solution "Solutions\<solution>"
+sentinel-xdr-migration convert --solution "Solutions\<solution>"
+sentinel-xdr-migration validate --solution "Solutions\<solution>"
+sentinel-xdr-migration package-v3-1 `
+  --solution "Solutions\<solution>" `
+  --version-bump none
+```
+
+Use the one version-bump action explicitly selected at workflow initialization
+for the packaging command as well; do not apply a second, additional version
+bump. V3.1 packaging is the current repository entry point for hybrid/XDR
+content. The package command does not validate KQL, deploy content, enable
+detections, or prove registration support or alert parity.
+
+Structural `validate` is distinct from live query execution. When live
+validation is explicitly authorized, prefer capabilities actually advertised
+by the official Sentinel Triage MCP. If a provider-level failure prevents a
+complete query family from running, rerun that **entire family** through its
+approved fallback—Log Analytics for the Sentinel source family or Microsoft
+Graph Advanced Hunting for the XDR family—and record the provider gap. Do not
+mix providers within a family or use fallback to conceal a genuine KQL error.
+Imported results must bind to the exact persisted query hashes. Zero returned
+rows show only that a query executed; they do not demonstrate behavioral
+coverage, alert parity, or that data is present.
+
+Keep operational reports, provider responses, workspace IDs, and raw lab
+evidence under the ignored solution `Logs/` run directory. Review outputs
+before sharing. The separate `export-evidence` command is an explicit,
+allowlisted optional public snapshot under `Evidence/<run-id>`; it omits raw
+messages and tenant identifiers, cannot be used to resume, and is not included
+in a Marketplace package. Do not commit `.env` or `Logs/`.
+
+The deterministic CLI provides conversion, structural validation, query-plan
+and result-recording contracts, packaging, and reports. Autonomous selection
+and dispatch of advertised MCP tools, cross-provider research, and an
+interactive accept/reject decision experience are not implemented by this
+package itself; follow the agent capabilities actually available and never
+claim these pending orchestration features ran when they did not.
 
 ### Single-rule conversion
 

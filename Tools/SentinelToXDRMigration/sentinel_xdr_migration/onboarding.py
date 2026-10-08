@@ -194,6 +194,7 @@ def doctor(
     state_dir: str | Path | None = None,
     runner: CommandRunner = subprocess.run,
     environment: Mapping[str, str] | None = None,
+    solution: str | Path | None = None,
 ) -> dict[str, Any]:
     state_root = _state_dir(state_dir)
     env = environment if environment is not None else os.environ
@@ -253,7 +254,7 @@ def doctor(
             "Run `sentinel-xdr-migration setup` for the one-time Advanced Hunting sign-in."
         )
 
-    return {
+    result = {
         "toolVersion": __version__,
         "firstRun": not setup_state.exists(),
         "mode": "runtime" if runtime_ready else "offline",
@@ -266,6 +267,11 @@ def doctor(
         "checks": checks,
         "recommendedActions": actions,
     }
+    if solution is not None:
+        from .target_config import doctor_solution_target
+
+        result["solutionTarget"] = doctor_solution_target(solution)
+    return result
 
 
 def _login_advanced_hunting(
