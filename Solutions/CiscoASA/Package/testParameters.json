@@ -33,7 +33,7 @@
     "type": "bool",
     "defaultValue": true,
     "metadata": {
-      "description": "Deploy the Sentinel analytic rules carried by this solution (ContentKind AnalyticsRule and its AnalyticsRuleTemplate registration face)."
+      "description": "Deploy the Microsoft Sentinel analytic rules carried by this solution (ContentKind AnalyticsRule and its AnalyticsRuleTemplate registration face)."
     }
   },
   "DeployPlaybook": {
@@ -47,7 +47,7 @@
     "type": "bool",
     "defaultValue": true,
     "metadata": {
-      "description": "Deploy the Sentinel workbook content and its Content Hub registration carried by this solution (ContentKind Workbook and WorkbookTemplate)."
+      "description": "Deploy the Microsoft Sentinel workbook content and its Content Hub registration carried by this solution (ContentKind Workbook and WorkbookTemplate)."
     }
   },
   "DeployDataConnector": {

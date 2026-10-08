@@ -60,7 +60,7 @@
             "type": "Microsoft.Common.CheckBox",
             "label": "DeployAnalyticsRule",
             "defaultValue": true,
-            "toolTip": "Deploy the Sentinel analytic rules carried by this solution (ContentKind AnalyticsRule and its AnalyticsRuleTemplate registration face)."
+            "toolTip": "Deploy the Microsoft Sentinel analytic rules carried by this solution (ContentKind AnalyticsRule and its AnalyticsRuleTemplate registration face)."
           },
           {
             "name": "DeployPlaybook",
@@ -74,7 +74,7 @@
             "type": "Microsoft.Common.CheckBox",
             "label": "DeployWorkbook",
             "defaultValue": true,
-            "toolTip": "Deploy the Sentinel workbook content and its Content Hub registration carried by this solution (ContentKind Workbook and WorkbookTemplate)."
+            "toolTip": "Deploy the Microsoft Sentinel workbook content and its Content Hub registration carried by this solution (ContentKind Workbook and WorkbookTemplate)."
           },
           {
             "name": "DeployDataConnector",
