@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +31,10 @@ from .onboarding import (
 from .report import write_runtime_validation_report
 
 ADVANCED_HUNTING_ENDPOINT = "https://graph.microsoft.com/v1.0/security/runHuntingQuery"
+MAX_GRAPH_IN_FLIGHT_REQUESTS = 5
+MAX_ADVANCED_HUNTING_RETRIES = 3
+ADVANCED_HUNTING_RETRY_BUDGET_SECONDS = 5 * 60
+_GRAPH_REQUEST_SEMAPHORE = threading.BoundedSemaphore(MAX_GRAPH_IN_FLIGHT_REQUESTS)
 PROVIDER_PLATFORMS = {
     "graph": "Microsoft Defender XDR Advanced Hunting",
     "triage-mcp": "Microsoft Sentinel Triage MCP",
@@ -80,6 +87,7 @@ def _write_runtime_artifacts(
     *,
     table_availability: dict[str, Any] | None = None,
     provider_fallback: dict[str, Any] | None = None,
+    provider_failure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output = report_directory(root, create=True)
     summary = {
@@ -96,6 +104,8 @@ def _write_runtime_artifacts(
         "providerFallback": provider_fallback,
         "results": results,
     }
+    if provider_failure:
+        summary["providerFailure"] = provider_failure
     json_path = output / f"runtime-validation.{provider}.json"
     html_path = output / f"runtime-validation.{provider}.html"
     summary["jsonReport"] = str(json_path)
@@ -323,6 +333,28 @@ def _advanced_hunting_token(
     return credential.get_token(GRAPH_SCOPE).token
 
 
+def _retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        retry_at = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    now = datetime.fromtimestamp(time.time(), timezone.utc)
+    return max(0.0, (retry_at - now).total_seconds())
+
+
+def _http_retry_after(exc: urllib.error.HTTPError) -> float | None:
+    headers = getattr(exc, "headers", None)
+    value = headers.get("Retry-After") if headers is not None else None
+    return _retry_after_seconds(value)
+
+
 def run_advanced_hunting_query(
     query: str,
     *,
@@ -331,6 +363,13 @@ def run_advanced_hunting_query(
     retries: int = 2,
     _token: str | None = None,
 ) -> dict[str, Any]:
+    """Run one Graph Advanced Hunting read within this process's provider bounds.
+
+    The in-process semaphore limits actual Graph requests to five at a time;
+    imported Log Analytics/MCP results are external and are not governed here.
+    Transient attempts share a five-minute wall-clock budget, including request
+    durations and retry waits. The public retry default remains two.
+    """
     token = _token or _advanced_hunting_token(_state_dir(state_dir))
     request = urllib.request.Request(
         ADVANCED_HUNTING_ENDPOINT,
@@ -342,9 +381,29 @@ def run_advanced_hunting_query(
         method="POST",
     )
     result: dict[str, Any] = {}
-    for attempt in range(retries + 1):
+    retry_limit = max(0, min(retries, MAX_ADVANCED_HUNTING_RETRIES))
+    deadline = time.monotonic() + ADVANCED_HUNTING_RETRY_BUDGET_SECONDS
+    for attempt in range(retry_limit + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        acquired = _GRAPH_REQUEST_SEMAPHORE.acquire(timeout=remaining)
+        if not acquired:
+            result = {
+                "ok": False,
+                "statusCode": 0,
+                "rowCount": 0,
+                "schema": [],
+                "error": "Timed out waiting for an available Graph request slot",
+                "errorDetails": "The Advanced Hunting retry budget expired while waiting for a request slot",
+                "failureKind": "provider",
+            }
+            return result
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            with urllib.request.urlopen(request, timeout=min(timeout, remaining)) as response:
                 body = json.loads(response.read().decode("utf-8"))
                 status_code = response.status
             rows = body.get("results") or body.get("Results") or []
@@ -371,9 +430,11 @@ def run_advanced_hunting_query(
                 "schema": [],
                 "error": message[:2000],
                 "errorDetails": body[:8000],
+                "failureKind": "query" if exc.code == 400 else "provider",
             }
-            if exc.code not in {429, 502, 503, 504} or attempt == retries:
+            if exc.code not in {429, 502, 503, 504} or attempt == retry_limit:
                 return result
+            retry_after = _http_retry_after(exc)
         except (TimeoutError, urllib.error.URLError) as exc:
             result = {
                 "ok": False,
@@ -382,11 +443,47 @@ def run_advanced_hunting_query(
                 "schema": [],
                 "error": str(exc),
                 "errorDetails": str(exc),
+                "failureKind": "provider",
             }
-            if attempt == retries:
+            if attempt == retry_limit:
                 return result
-        time.sleep(2 * (attempt + 1))
-    return result
+            retry_after = None
+        finally:
+            _GRAPH_REQUEST_SEMAPHORE.release()
+
+        remaining = deadline - time.monotonic()
+        delay = retry_after if retry_after is not None else 2 * (attempt + 1)
+        if delay >= remaining:
+            return result
+        if delay:
+            time.sleep(delay)
+    if result:
+        return result
+    return {
+        "ok": False,
+        "statusCode": 0,
+        "rowCount": 0,
+        "schema": [],
+        "error": "Advanced Hunting retry budget expired before a request could complete",
+        "errorDetails": "The five-minute request and retry budget was exhausted",
+        "failureKind": "provider",
+    }
+
+
+def _not_run_result(
+    path: Path, output: Path, query: str, *, status_code: int = 0
+) -> dict[str, Any]:
+    return {
+        "detection": path.relative_to(output).as_posix(),
+        "status": "not-run",
+        "valid": False,
+        "querySha256": _query_sha256(query),
+        "statusCode": status_code,
+        "rowCount": 0,
+        "schemaColumnCount": 0,
+        "error": None,
+        "errorDetails": None,
+    }
 
 
 def validate_advanced_hunting(
@@ -406,10 +503,18 @@ def validate_advanced_hunting(
     results: list[dict[str, Any]] = []
     token = _advanced_hunting_token(_state_dir(state_dir), tenant_id=tenant_id)
     table_status: dict[str, dict[str, Any]] = {}
+    detections: list[tuple[Path, dict[str, Any], str]] = []
     for path in _detection_files(output):
         with path.open(encoding="utf-8-sig") as handle:
             document = yaml.safe_load(handle) or {}
         query = document["properties"]["queryCondition"]["queryText"]
+        detections.append((path, document, query))
+
+    provider_failure: dict[str, Any] | None = None
+    for path, document, query in detections:
+        if provider_failure:
+            results.append(_not_run_result(path, output, query))
+            continue
         unavailable: list[str] = []
         dependencies = (
             referenced_catalog_tables(query)
@@ -423,7 +528,33 @@ def validate_advanced_hunting(
                 )
             if not table_status[dependency]["ok"]:
                 unavailable.append(dependency)
+                if table_status[dependency].get("failureKind") == "provider":
+                    break
         if unavailable:
+            provider_error = next(
+                (
+                    table_status[dependency]
+                    for dependency in unavailable
+                    if table_status[dependency].get("failureKind") == "provider"
+                ),
+                None,
+            )
+            if provider_error:
+                provider_failure = {
+                    "provider": "graph",
+                    "statusCode": provider_error["statusCode"],
+                    "error": provider_error["error"],
+                    "errorDetails": provider_error["errorDetails"],
+                }
+                results.append(
+                    _not_run_result(
+                        path,
+                        output,
+                        query,
+                        status_code=provider_error["statusCode"],
+                    )
+                )
+                continue
             results.append(
                 {
                     "detection": path.relative_to(output).as_posix(),
@@ -442,6 +573,19 @@ def validate_advanced_hunting(
             )
             continue
         runtime = run_advanced_hunting_query(query, _token=token)
+        if runtime.get("failureKind") == "provider":
+            provider_failure = {
+                "provider": "graph",
+                "statusCode": runtime["statusCode"],
+                "error": runtime["error"],
+                "errorDetails": runtime["errorDetails"],
+            }
+            results.append(
+                _not_run_result(
+                    path, output, query, status_code=runtime["statusCode"]
+                )
+            )
+            continue
         binding_errors = custom_detail_schema_errors(document, runtime["schema"]) if runtime["ok"] else []
         results.append(
             {
@@ -469,6 +613,7 @@ def validate_advanced_hunting(
             for table, status in table_status.items()
         },
         provider_fallback=provider_fallback,
+        provider_failure=provider_failure,
     )
 
 
