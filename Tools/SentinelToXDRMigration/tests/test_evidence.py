@@ -7,12 +7,14 @@ import shutil
 import subprocess
 import unittest
 import uuid
+from copy import deepcopy
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 import yaml
 
+from sentinel_xdr_migration.authoring_contract import seal_authoring_contract
 from sentinel_xdr_migration.artifacts import report_directory, using_run
 from sentinel_xdr_migration.cli import main
 from sentinel_xdr_migration.content_paths import yaml_files
@@ -48,6 +50,108 @@ class EvidenceTests(unittest.TestCase):
     def export(self):
         result = export_evidence(self.solution)
         return json.loads((self.solution / result["evidence"]).read_text())
+
+    def authoring_contract(self, statuses, *, rule_ids=None, qualification_statuses=None):
+        inventory = []
+        results = []
+        rule_ids = rule_ids or [f"source-rule-{index}" for index in range(len(statuses))]
+        qualification_statuses = qualification_statuses or ["untested"] * len(statuses)
+        for index, (status, rule_id, qualification) in enumerate(
+            zip(statuses, rule_ids, qualification_statuses)
+        ):
+            source_hash = f"{index + 1:064x}"
+            inventory.append({
+                "ruleId": rule_id,
+                "sha256": source_hash,
+                "evidenceReferences": [{
+                    "path": "evidence/private-tenant-secret.json",
+                    "sha256": "c" * 64,
+                    "kind": "source",
+                }],
+            })
+            findings = []
+            if index == 0:
+                findings.extend([
+                    {
+                        "findingId": "warning-1",
+                        "kind": "warning",
+                        "message": "PRIVATE_WARNING_PROSE",
+                        "unresolved": False,
+                        "evidenceReferences": [],
+                    },
+                    {
+                        "findingId": "assumption-1",
+                        "kind": "assumption",
+                        "message": "PRIVATE_ASSUMPTION_PROSE",
+                        "unresolved": False,
+                        "evidenceReferences": [],
+                    },
+                ])
+            if status in {"blocked", "suppressed"}:
+                findings.append({
+                    "findingId": "error-1",
+                    "kind": "error",
+                    "message": "PRIVATE_ERROR_PROSE",
+                    "unresolved": True,
+                    "evidenceReferences": [],
+                })
+            qualification_references = []
+            if qualification == "qualified":
+                qualification_references = [
+                    {
+                        "path": f"evidence/runtime-{index}.json",
+                        "sha256": "d" * 64,
+                        "kind": "runtimeVerification",
+                    },
+                    {
+                        "path": f"evidence/parity-{index}.json",
+                        "sha256": "e" * 64,
+                        "kind": "alertParity",
+                    },
+                ]
+            results.append({
+                "ruleId": rule_id,
+                "sourceSha256": source_hash,
+                "status": status,
+                "deploymentDisposition": {
+                    "migrated": "normal",
+                    "blocked": "deploymentBlocked",
+                    "suppressed": "suppressed",
+                    "unprocessed": "normal",
+                }[status],
+                "target": {
+                    "path": f"XDR Detections/private-tenant-{index}.yaml",
+                    "sha256": "b" * 64,
+                    "structurallyValid": True,
+                } if status != "unprocessed" else None,
+                "reviewRequired": index == 0,
+                "mappingAssumptions": ["PRIVATE_MAPPING_ASSUMPTION_PROSE"] if index == 0 else [],
+                "findings": findings,
+                "qualificationStatus": qualification,
+                "qualificationEvidenceReferences": qualification_references,
+                "evidenceReferences": [],
+            })
+        return seal_authoring_contract({
+            "schemaVersion": "1.0.0",
+            "runId": self.run_id,
+            "source": {
+                "identity": "PRIVATE_SOURCE_IDENTITY workspace tenant /Users/private",
+                "sha256": "a" * 64,
+            },
+            "inventory": {"complete": True, "rules": inventory},
+            "results": results,
+            "environmentErrors": [{
+                "code": "providerUnavailable",
+                "message": "PRIVATE_ENVIRONMENT_ERROR tenant workspace",
+                "evidenceReferences": [],
+            }],
+            "entityValueParityPolicy": {
+                "assertion": "value-preserved-in-actual-corresponding-alert",
+                "comparison": "value-only",
+                "entityTypeIdentifierAndCustomFieldMayDiffer": True,
+                "requiredForQualification": True,
+            },
+        })
 
     def manifest(self):
         self.write("manifest.json", {"total": 3, "converted": 1, "needsReview": 1, "excluded": 1, "results": [
@@ -207,7 +311,7 @@ class EvidenceTests(unittest.TestCase):
         destination = self.solution / "Evidence" / self.run_id
         original = (destination / "evidence.json").read_bytes()
         with self.assertRaisesRegex(ValueError, "never overwrite"):
-            self.export()
+            export_evidence(self.solution, authoring_contract=self.authoring_contract(["migrated"]))
         self.assertEqual(original, (destination / "evidence.json").read_bytes())
         (destination / "workflow-state.json").write_text('{"workflowStatus":"completed"}')
         self.assertEqual("inProgress", workflow_status(self.solution)["workflowStatus"])
@@ -224,6 +328,120 @@ class EvidenceTests(unittest.TestCase):
         shutil.rmtree(destination)
         self.export()
         self.assertEqual(original, {p.name: p.read_bytes() for p in destination.iterdir()})
+
+    def test_authoring_contract_projects_every_rule_counts_and_validated_digests_only(self):
+        contract = self.authoring_contract(["migrated", "blocked", "suppressed", "unprocessed"])
+        result = export_evidence(self.solution, authoring_contract=contract)
+        evidence_path = self.solution / result["evidence"]
+        evidence = json.loads(evidence_path.read_text())
+        projection = evidence["authoringContract"]
+        self.assertEqual(4, len(projection["rules"]))
+        self.assertEqual(
+            ["source-rule-0", "source-rule-1", "source-rule-2", "source-rule-3"],
+            [item["sourceRuleId"] for item in projection["rules"]],
+        )
+        self.assertEqual(
+            ["migrated", "blocked", "suppressed", "unprocessed"],
+            [item["outcome"] for item in projection["rules"]],
+        )
+        self.assertEqual(["untested"] * 4, [item["qualificationStatus"] for item in projection["rules"]])
+        self.assertTrue(all(item["qualificationStatus"] != "qualified" for item in projection["rules"]))
+        first = projection["rules"][0]
+        self.assertTrue(first["targetStructurallyValid"])
+        self.assertTrue(first["reviewRequired"])
+        self.assertEqual(0, first["unresolvedErrorCount"])
+        self.assertEqual(1, first["mappingAssumptionCount"])
+        self.assertEqual(1, first["assumptionFindingCount"])
+        self.assertEqual({"error": 0, "warning": 1, "assumption": 1}, first["findingCounts"])
+        self.assertEqual(1, projection["rules"][1]["unresolvedErrorCount"])
+        self.assertEqual(1, projection["rules"][2]["unresolvedErrorCount"])
+        self.assertEqual({"N": 4, "M": 1, "E": 2}, {
+            key: projection["coverage"][key] for key in ("N", "M", "E")
+        })
+        self.assertFalse(projection["coverage"]["migrationThreshold"]["met"])
+        self.assertFalse(projection["coverage"]["errorStopThreshold"]["reached"])
+        self.assertEqual(80, projection["coverage"]["migrationThreshold"]["successPercent"])
+        self.assertEqual("strictlyGreaterThan", projection["coverage"]["errorStopThreshold"]["comparison"])
+        self.assertEqual("advisory-only", projection["coverage"]["scope"])
+        for key in ("coverageAuthorizesOperations", "packagingAuthorized", "deploymentAuthorized",
+                    "ingestionAuthorized", "prCreationAuthorized"):
+            self.assertFalse(projection["coverage"][key])
+        self.assertEqual("validated-record-only-not-rehashed-or-authenticated",
+                         projection["evidenceDigestBinding"])
+        for item in projection["rules"]:
+            self.assertTrue(all(len(digest) == 64 for digest in item["evidenceDigests"]))
+            self.assertNotIn("path", item)
+        self.assertIn("c" * 64, first["evidenceDigests"])
+        published = evidence_path.read_text() + (self.solution / result["summary"]).read_text()
+        for private_text in (
+            "PRIVATE_SOURCE_IDENTITY", "PRIVATE_WARNING_PROSE", "PRIVATE_ASSUMPTION_PROSE",
+            "PRIVATE_MAPPING_ASSUMPTION_PROSE", "PRIVATE_ERROR_PROSE",
+            "PRIVATE_ENVIRONMENT_ERROR", "private-tenant-secret.json",
+            "XDR Detections/private-tenant-0.yaml",
+        ):
+            self.assertNotIn(private_text, published)
+        summary = (self.solution / result["summary"]).read_text()
+        self.assertIn("Coverage is advisory only and never authorizes packaging", summary)
+        self.assertIn("c" * 64, summary)
+
+    def test_sensitive_source_rule_id_is_withheld_without_dropping_inventory_row(self):
+        contract = self.authoring_contract(
+            ["unprocessed"], rule_ids=["private-tenant-token"],
+        )
+        result = export_evidence(self.solution, authoring_contract=contract)
+        projection = json.loads((self.solution / result["evidence"]).read_text())["authoringContract"]
+        self.assertEqual(1, len(projection["rules"]))
+        self.assertIsNone(projection["rules"][0]["sourceRuleId"])
+        self.assertEqual("withheld", projection["rules"][0]["sourceRuleIdAvailability"])
+        self.assertNotIn("private-tenant-token", json.dumps(projection))
+
+    def test_authoring_contract_thresholds_and_qualification_counts_are_exact(self):
+        success = self.authoring_contract(
+            ["migrated"] * 8 + ["unprocessed"] * 2,
+            qualification_statuses=["qualified"] + ["untested"] * 9,
+        )
+        success_result = export_evidence(self.solution, authoring_contract=success)
+        success_projection = json.loads((self.solution / success_result["evidence"]).read_text())["authoringContract"]
+        self.assertEqual((10, 8, 0), tuple(success_projection["coverage"][key] for key in ("N", "M", "E")))
+        self.assertTrue(success_projection["coverage"]["migrationThreshold"]["met"])
+        self.assertEqual(1, success_projection["coverage"]["qualified"])
+        self.assertEqual(9, success_projection["coverage"]["untested"])
+        shutil.rmtree(self.solution / "Evidence")
+
+        stop = self.authoring_contract(["blocked"] * 6 + ["unprocessed"] * 4)
+        stop_result = export_evidence(self.solution, authoring_contract=stop)
+        stop_projection = json.loads((self.solution / stop_result["evidence"]).read_text())["authoringContract"]
+        self.assertEqual((10, 0, 6), tuple(stop_projection["coverage"][key] for key in ("N", "M", "E")))
+        self.assertTrue(stop_projection["coverage"]["errorStopThreshold"]["reached"])
+        self.assertFalse(stop_projection["coverage"]["deploymentAuthorized"])
+        self.assertFalse(stop_projection["coverage"]["prCreationAuthorized"])
+
+    def test_authoring_contract_validation_and_run_binding_fail_before_writing(self):
+        contract = self.authoring_contract(["migrated"])
+        invalid = deepcopy(contract)
+        invalid["inventory"]["rules"][0]["sha256"] = "not-a-sha256"
+        with self.assertRaises(ValueError):
+            export_evidence(self.solution, authoring_contract=invalid)
+        self.assertFalse((self.solution / "Evidence").exists())
+
+        mismatched = deepcopy(contract)
+        mismatched["runId"] = "another-run"
+        mismatched.pop("coverage")
+        mismatched.pop("operationEligibility")
+        mismatched = seal_authoring_contract(mismatched)
+        with self.assertRaisesRegex(ValueError, "does not match the selected evidence run"):
+            export_evidence(self.solution, authoring_contract=mismatched)
+        self.assertFalse((self.solution / "Evidence").exists())
+
+    @mock.patch("sentinel_xdr_migration.evidence._utc_now", return_value="2026-10-07T15:00:00+00:00")
+    def test_authoring_contract_projection_has_stable_snapshot_bytes(self, clock):
+        contract = self.authoring_contract(["migrated", "blocked", "unprocessed"])
+        result = export_evidence(self.solution, authoring_contract=contract)
+        destination = self.solution / "Evidence" / self.run_id
+        original = {path.name: path.read_bytes() for path in destination.iterdir()}
+        shutil.rmtree(destination)
+        export_evidence(self.solution, authoring_contract=contract)
+        self.assertEqual(original, {path.name: path.read_bytes() for path in destination.iterdir()})
 
     @mock.patch("sentinel_xdr_migration.evidence._utc_now", return_value="2026-10-07T15:00:00+00:00")
     def test_header_public_name_current_version_and_requested_action(self, clock):

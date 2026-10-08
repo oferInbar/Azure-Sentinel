@@ -8,11 +8,12 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import yaml
 
 from . import __version__
+from .authoring_contract import AuthoringContract, calculate_coverage, validate_authoring_contract
 from .artifacts import RUN_MARKER, report_directory
 from .content_paths import content_path
 from .workflow import STAGES
@@ -87,6 +88,90 @@ def _public_solution_name(value: Any) -> str | None:
     ):
         return None
     return value
+
+
+def _public_authoring_rule_id(value: Any) -> str | None:
+    if (
+        not isinstance(value, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", value)
+        or SENSITIVE.search(value)
+        or re.search(r"(?i)(?:https?\b|www\b|\.{2})", value)
+    ):
+        return None
+    return value
+
+
+def _authoring_contract_projection(contract: AuthoringContract) -> dict:
+    results = {result.rule_id: result for result in contract.results}
+    rules = []
+    for index, source_rule in enumerate(sorted(contract.inventory, key=lambda rule: rule.rule_id), start=1):
+        result = results[source_rule.rule_id]
+        findings = Counter(finding.kind for finding in result.findings)
+        digests = {
+            source_rule.sha256,
+            *(reference.sha256 for reference in source_rule.evidence_references),
+            *(reference.sha256 for reference in result.evidence_references),
+            *(reference.sha256 for reference in result.qualification_evidence_references),
+            *(reference.sha256 for finding in result.findings for reference in finding.evidence_references),
+        }
+        target_sha256 = result.target.sha256 if result.target is not None else None
+        if target_sha256 is not None:
+            digests.add(target_sha256)
+        rule_id = _public_authoring_rule_id(source_rule.rule_id)
+        rules.append({
+            "inventoryIndex": index,
+            "sourceRuleId": rule_id,
+            "sourceRuleIdAvailability": "available" if rule_id is not None else "withheld",
+            "outcome": result.status,
+            "qualificationStatus": result.qualification_status,
+            "targetStructurallyValid": result.target_structurally_valid,
+            "reviewRequired": result.review_required,
+            "unresolvedErrorCount": result.unresolved_error_count,
+            "mappingAssumptionCount": len(result.mapping_assumptions),
+            "assumptionFindingCount": findings["assumption"],
+            "findingCounts": {
+                "error": findings["error"],
+                "warning": findings["warning"],
+                "assumption": findings["assumption"],
+            },
+            "sourceSha256": source_rule.sha256,
+            "targetSha256": target_sha256,
+            "evidenceDigests": sorted(digests),
+        })
+    coverage = calculate_coverage(contract)
+    return {
+        "schemaVersion": "1.0.0",
+        "runId": contract.run_id,
+        "inventoryComplete": True,
+        "rules": rules,
+        "coverage": {
+            "N": coverage.N,
+            "M": coverage.M,
+            "E": coverage.E,
+            "qualified": coverage.qualified,
+            "untested": coverage.untested,
+            "qualificationFailed": coverage.qualification_failed,
+            "migrationThreshold": {
+                "successPercent": 80,
+                "comparison": "greaterThanOrEqual",
+                "formula": "100*M >= 80*N",
+                "met": coverage.migration_threshold_met,
+            },
+            "errorStopThreshold": {
+                "errorPercent": 50,
+                "comparison": "strictlyGreaterThan",
+                "formula": "100*E > 50*N",
+                "reached": coverage.stop_threshold_reached,
+            },
+            "scope": "advisory-only",
+            "coverageAuthorizesOperations": False,
+            "packagingAuthorized": False,
+            "deploymentAuthorized": False,
+            "ingestionAuthorized": False,
+            "prCreationAuthorized": False,
+        },
+        "evidenceDigestBinding": "validated-record-only-not-rehashed-or-authenticated",
+    }
 
 
 class _Snapshot:
@@ -390,6 +475,42 @@ def _markdown(evidence: dict) -> str:
         "relative paths, hashes, version decisions and provenance mismatches.", "",
         f"Source-query provenance mismatches detected: **{mismatches}**.",
         "Missing/unsupported provenance remains unverified, even when this count is zero.", "",
+    ])
+    authoring_contract = _object(evidence.get("authoringContract"))
+    if authoring_contract:
+        coverage = _object(authoring_contract.get("coverage"))
+        migration_threshold = _object(coverage.get("migrationThreshold"))
+        error_threshold = _object(coverage.get("errorStopThreshold"))
+        lines.extend([
+            "## B1 authoring-contract projection", "",
+            "This is a validated-record projection, not an attestation; evidence digests were not rehashed.",
+            "Coverage is advisory only and never authorizes packaging, deployment, ingestion, or PR creation.", "",
+            f"Inventory coverage: **N={coverage.get('N', 0)}, M={coverage.get('M', 0)}, E={coverage.get('E', 0)}**",
+            f"Migration threshold: **{migration_threshold.get('successPercent', 80)}% success, "
+            f"{migration_threshold.get('comparison', 'greaterThanOrEqual')}, "
+            f"{migration_threshold.get('formula', '100*M >= 80*N')}, "
+            f"met={str(migration_threshold.get('met', False)).lower()}**",
+            f"Error stop threshold: **>{error_threshold.get('errorPercent', 50)}% errors, "
+            f"{error_threshold.get('formula', '100*E > 50*N')}, "
+            f"reached={str(error_threshold.get('reached', False)).lower()}**", "",
+            "| Source rule ID | Outcome | Qualification | Target valid | Review required | Unresolved errors | Mapping assumptions | Assumption findings | Evidence digests |",
+            "| --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |",
+        ])
+        for rule in authoring_contract.get("rules", []):
+            item = _object(rule)
+            rule_id = item.get("sourceRuleId") or f"withheld (inventory {item.get('inventoryIndex', 'unknown')})"
+            lines.append(
+                f"| {rule_id} | {item.get('outcome', 'unknown')} | "
+                f"{item.get('qualificationStatus', 'unknown')} | "
+                f"{str(item.get('targetStructurallyValid', False)).lower()} | "
+                f"{str(item.get('reviewRequired', False)).lower()} | "
+                f"{item.get('unresolvedErrorCount', 0)} | "
+                f"{item.get('mappingAssumptionCount', 0)} | "
+                f"{item.get('assumptionFindingCount', 0)} | "
+                f"{', '.join(item.get('evidenceDigests', [])) or 'not-recorded'} |"
+            )
+        lines.append("")
+    lines.extend([
         "## Limitations", "",
         "- Raw messages, provider records, alerts, credentials and lab identities are omitted.",
         "- Historical commands/tool versions and baseline decisions have no supported persisted contract.",
@@ -400,7 +521,11 @@ def _markdown(evidence: dict) -> str:
     return "\n".join(lines)
 
 
-def export_evidence(solution: str | Path) -> dict:
+def export_evidence(
+    solution: str | Path,
+    *,
+    authoring_contract: Mapping[str, Any] | None = None,
+) -> dict:
     root = Path(solution).expanduser().resolve()
     run = report_directory(root)
     if not (run / RUN_MARKER).is_file():
@@ -415,6 +540,12 @@ def export_evidence(solution: str | Path) -> dict:
     marker, marker_status = snapshot.document(run / RUN_MARKER)
     if marker_status != "available" or marker.get("runId") != run.name:
         raise ValueError("invalid evidence run identity")
+    contract_projection = None
+    if authoring_contract is not None:
+        validated_contract = validate_authoring_contract(authoring_contract)
+        if validated_contract.run_id != run.name:
+            raise ValueError("authoring contract does not match the selected evidence run")
+        contract_projection = _authoring_contract_projection(validated_contract)
     state, state_status = snapshot.document(run / "workflow-state.json")
     if state and state.get("runId") != run.name:
         raise ValueError("workflow state does not match the selected evidence run")
@@ -452,6 +583,8 @@ def export_evidence(solution: str | Path) -> dict:
             "details": "withheld" if value.get("message") else "not-recorded",
         }
     evidence["reports"] = {kind: _report(snapshot, kind, name) for kind, name in REPORTS.items()}
+    if contract_projection is not None:
+        evidence["authoringContract"] = contract_projection
     payload = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
     summary = _markdown(evidence)
     if not snapshot.unchanged():
