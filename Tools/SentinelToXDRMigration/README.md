@@ -19,6 +19,41 @@ The package metadata and CLI enforce the supported Python range. If the active
 interpreter is unsupported, select or install Python 3.11/3.12. Do not modify
 toolkit source files as an environment workaround during a migration run.
 
+## Offline authoring-contract foundation
+
+`sentinel_xdr_migration.authoring_contract` provides the versioned
+`schema/authoring-contract.schema.json` record and offline typed helpers for
+validating a complete source-rule inventory, per-rule findings and generated
+target hashes, evidence references, qualification state, and separate shared
+environment errors. Use `seal_authoring_contract(core_record)` to validate a
+core JSON-like record and attach computed summaries;
+`validate_authoring_contract(record)` verifies those summaries and returns an
+immutable typed record. `calculate_coverage(validated)` returns exact counts,
+and `calculate_operation_eligibility(coverage)` returns advisory threshold
+signals. References must be repository-relative and hashes must be lowercase
+SHA-256. Validation checks reference shape and consistency but does not open,
+re-hash, or authenticate the referenced evidence artifacts.
+
+Coverage uses the complete unique inventory as `N`. `M` counts structurally
+valid migrated targets with no unresolved rule-specific errors; warnings and
+retained mapping assumptions do not reduce it. Blocked, suppressed, and
+unprocessed rules remain in `N` and not in `M`; `E` counts affected rules once,
+regardless of the number of findings. Shared provider/environment failures
+remain separate. The success/PR threshold is tested as `100*M >= 80*N`; the
+stop signal is `100*E > 50*N`, without rounding. Qualification counts are
+separate: an untested target may count in `M`, while a qualified result needs
+runtime-verification and actual-alert-parity evidence. Entity parity records
+the value-preservation policy even when entity type, identifier, or custom
+field differs. Mapping assumptions and `reviewRequired` are preserved; neither
+confidence nor review state grants eligibility.
+
+These are pure, in-memory calculations only. The stop signal does not persist a
+stopped workflow or implement autoresume behavior. Threshold results are
+advisory and never authorize deployment, packaging, ingestion, PR creation, or
+any other environment operation; exact-scope runtime authorization remains a
+separate requirement. Parallel orchestration, durable coverage state, gates,
+and CLI integration are pending work and are not implemented by this contract.
+
 ## Protected implementation
 
 The XDR Solution Manager treats its prompts, skills, migration backends,
