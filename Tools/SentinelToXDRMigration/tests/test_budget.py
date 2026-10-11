@@ -320,8 +320,11 @@ class CampaignBudgetTests(unittest.TestCase):
         receipt = self._begin("conversionPass")
         self._finish(receipt)
         path = (
-            self.solution / "Logs" / "sentinel-xdr-migration" / "run-1"
-            / "campaigns" / self.campaign_id / "budget.json"
+            self.solution / "Logs" / "sentinel-xdr-migration-campaigns"
+            / self.campaign_id / "budget.json"
+        )
+        self.assertFalse(
+            (self.solution / "Logs" / "sentinel-xdr-migration" / "run-1" / "campaigns").exists()
         )
         document = json.loads(path.read_text())
         valid = json.dumps(document)

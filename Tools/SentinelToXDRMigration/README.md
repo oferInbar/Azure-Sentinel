@@ -948,16 +948,17 @@ export; the default export remains unchanged.
 
 #### Durable campaign budget
 
-Every new YOLO run requires an explicit `--campaign-id`. A standard workflow
-uses a stable per-solution campaign identity when one is omitted; it never
-derives a fresh identity from the run ID. Its frozen inventory,
-policy, linked run IDs, and hash-chained append-only receipts are stored under
-the solution's ignored
-`Logs/sentinel-xdr-migration/<campaign-storage-run>/campaigns/<campaign-id>/`
-directory. Resumes retain that binding. An explicitly linked replacement run
-must use the same campaign ID and exact solution/inventory; changing the run ID
-does not reset usage. A different campaign ID is a separate explicitly
-initialized campaign, never an automatic retry identity.
+Every new YOLO run requires an explicit `--campaign-id`. Campaign budgets are
+opt-in for ordinary authoring workflows: pass `--campaign-id` to
+`workflow-init` to bind one; without it, ordinary workflow initialization and
+packaging retain their unbudgeted behavior and create no campaign artifacts.
+The frozen inventory, policy, linked run IDs, and hash-chained append-only
+receipts are stored outside the files-only run directories under the solution's
+ignored `Logs/sentinel-xdr-migration-campaigns/<campaign-id>/` directory.
+Resumes retain that binding. An explicitly linked replacement run must use the
+same campaign ID and exact solution/inventory; changing the run ID does not
+reset usage. A different campaign ID is a separate explicitly initialized
+campaign, never an automatic retry identity.
 Changing source inventory under an existing campaign is rejected; starting
 another campaign requires an explicit campaign ID and reviewed scope.
 

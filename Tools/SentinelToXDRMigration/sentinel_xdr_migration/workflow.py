@@ -22,12 +22,13 @@ from .artifacts import (
 )
 from .budget import (
     BudgetError,
+    BudgetReceiptError,
     budget_summary,
     create_or_link_campaign,
-    default_campaign_id,
     ensure_work_available,
     measured_operation,
     package_history,
+    validate_campaign_binding,
 )
 from .authoring_contract import (
     AUTHORING_SCHEMA_VERSION,
@@ -311,6 +312,30 @@ def _budget_source_inventory(
         json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     return digest, sorted(rule_ids)
+
+
+def _preflight_campaign_binding(
+    solution: Path,
+    campaign_id: str | None,
+    *,
+    yolo: bool,
+    inventory: list[dict[str, Any]] | None = None,
+) -> tuple[str, list[str]] | None:
+    if campaign_id is None:
+        return None
+    if yolo:
+        frozen = inventory if inventory is not None else _source_inventory(solution)
+        inventory_hash = calculate_inventory_sha256(frozen)
+        rule_ids = [rule["ruleId"] for rule in frozen]
+    else:
+        inventory_hash, rule_ids = _budget_source_inventory(solution, yolo=False)
+    validate_campaign_binding(
+        solution,
+        campaign_id,
+        inventory_sha256=inventory_hash,
+        rule_ids=rule_ids,
+    )
+    return inventory_hash, rule_ids
 
 
 def _initial_rule_result(rule: dict[str, Any]) -> dict[str, Any]:
@@ -1555,8 +1580,6 @@ def initialize_workflow(
     if campaign_id is not None:
         from .budget import _safe_campaign_id
         campaign_id = _safe_campaign_id(campaign_id)
-    elif yolo is not True:
-        campaign_id = default_campaign_id(root)
     if yolo is True and campaign_id is None and new_run:
         raise ValueError("new YOLO workflows require an explicit --campaign-id")
     target = None
@@ -1597,6 +1620,11 @@ def initialize_workflow(
     if new_run:
         if requested_run_id(root):
             raise ValueError("--new-run and --run-id cannot be combined")
+        _preflight_campaign_binding(
+            root,
+            campaign_id,
+            yolo=yolo is True,
+        )
         run = create_run(root)
         with using_run(root, run.name):
             return initialize_workflow(
@@ -1621,20 +1649,12 @@ def initialize_workflow(
             context = state["context"]
             for key, value in requested_context.items():
                 if key == "targetContextLocked":
-                    if value:
-                        context[key] = True
                     continue
                 if value is not None and context.get(key) not in (None, value):
                     raise ValueError(
                         f"workflow already uses {key}={context.get(key)!r}, "
                         f"not {value!r}"
                     )
-                if value is not None and context.get(key) is None:
-                    context[key] = value
-            _select_workflow_profile(state, workflow_profile)
-            _write_unlocked(path, state)
-            if target:
-                write_target(root, target)
             if "authoring" in state:
                 state = _recover_yolo_state(root, path, state)
                 record, _ = _current_yolo_record(root, path, state)
@@ -1651,6 +1671,7 @@ def initialize_workflow(
                     or campaign_id
                 )
             existing_budget = state.get("budget")
+            link_campaign = False
             if existing_budget:
                 if explicit_campaign_id and explicit_campaign_id != existing_budget["campaignId"]:
                     raise ValueError(
@@ -1665,12 +1686,30 @@ def initialize_workflow(
                 budget_summary(
                     root, existing_budget["campaignId"], expected_inventory=inventory_hash,
                 )
-            else:
-                if not budget_campaign_id:
-                    raise ValueError(
-                        "pre-existing YOLO run has unmeasured usage; provide "
-                        "--campaign-id to link it conservatively"
+            elif budget_campaign_id:
+                campaign_exists = validate_campaign_binding(
+                    root,
+                    budget_campaign_id,
+                    inventory_sha256=inventory_hash,
+                    rule_ids=rule_ids,
+                )
+                if campaign_exists and state["runId"] not in budget_summary(
+                    root, budget_campaign_id, expected_inventory=inventory_hash,
+                )["linkedRunIds"]:
+                    raise BudgetReceiptError(
+                        "an unbudgeted existing workflow cannot be joined to an active "
+                        "campaign; initialize an explicitly linked replacement run"
                     )
+                link_campaign = True
+            for key, value in requested_context.items():
+                if key == "targetContextLocked":
+                    if value:
+                        context[key] = True
+                    continue
+                if value is not None and context.get(key) is None:
+                    context[key] = value
+            _select_workflow_profile(state, workflow_profile)
+            if link_campaign:
                 create_or_link_campaign(
                     root,
                     budget_campaign_id,
@@ -1686,7 +1725,9 @@ def initialize_workflow(
                     "status": "active",
                     "stopReason": None,
                 }
-                _write_unlocked(path, state)
+            _write_unlocked(path, state)
+            if target:
+                write_target(root, target)
             return {
                 **state,
                 "statePath": str(path),
@@ -1697,6 +1738,12 @@ def initialize_workflow(
     frozen_inventory = _source_inventory(root) if yolo is True else None
     if frozen_inventory is not None and not campaign_id:
         raise ValueError("new YOLO workflows require an explicit --campaign-id")
+    preflight_inventory = _preflight_campaign_binding(
+        root,
+        campaign_id,
+        yolo=yolo is True,
+        inventory=frozen_inventory,
+    )
     if yolo is True and requested_run_id(root) is None:
         run = create_run(root)
         with using_run(root, run.name):
@@ -1749,26 +1796,26 @@ def initialize_workflow(
         campaign_inventory_hash = record["inventory"]["sha256"]
         campaign_rule_ids = [rule["ruleId"] for rule in record["inventory"]["rules"]]
     else:
-        campaign_inventory_hash, campaign_rule_ids = _budget_source_inventory(
-            root, yolo=False,
+        campaign_inventory_hash, campaign_rule_ids = (
+            preflight_inventory
+            if preflight_inventory is not None
+            else _budget_source_inventory(root, yolo=False)
         )
-        campaign_id = campaign_id or default_campaign_id(root)
-    if not campaign_id:
-        raise ValueError("workflow initialization requires a durable campaign identity")
-    create_or_link_campaign(
-        root,
-        campaign_id,
-        inventory_sha256=campaign_inventory_hash,
-        run_id=path.parent.name,
-        rule_ids=campaign_rule_ids,
-    )
-    state["budget"] = {
-        "schemaVersion": "1.0.0",
-        "campaignId": campaign_id,
-        "inventorySha256": campaign_inventory_hash,
-        "status": "active",
-        "stopReason": None,
-    }
+    if campaign_id:
+        create_or_link_campaign(
+            root,
+            campaign_id,
+            inventory_sha256=campaign_inventory_hash,
+            run_id=path.parent.name,
+            rule_ids=campaign_rule_ids,
+        )
+        state["budget"] = {
+            "schemaVersion": "1.0.0",
+            "campaignId": campaign_id,
+            "inventorySha256": campaign_inventory_hash,
+            "status": "active",
+            "stopReason": None,
+        }
     _write(path, state)
     if target:
         write_target(root, target)
@@ -1958,30 +2005,31 @@ def package_workflow_v3_1(
         if state.get("authoring") and state["authoring"]["status"] != "active":
             raise ValueError("stopped or conflicted YOLO runs cannot be packaged")
         campaign_budget = state.get("budget")
-        if not campaign_budget:
+        if not campaign_budget and state.get("authoring"):
             raise ValueError(
-                "V3.1 package builds require a persisted campaign budget; resume workflow-init "
-                "to link this run conservatively before packaging"
+                "YOLO V3.1 package builds require a persisted campaign budget; resume "
+                "workflow-init with its explicit --campaign-id to link this run conservatively"
             )
-        if campaign_budget.get("status") == "stopped":
+        if campaign_budget and campaign_budget.get("status") == "stopped":
             raise ValueError(
                 "budget-stopped workflow runs cannot be resumed by an extension; "
                 "initialize an explicitly linked replacement run"
             )
-        current_inventory_hash, _ = _budget_source_inventory(
-            root,
-            yolo=bool(state.get("authoring")),
-        )
-        if current_inventory_hash != campaign_budget["inventorySha256"]:
-            raise ValueError(
-                "campaign frozen source inventory changed; package inputs are no longer "
-                "bound to this campaign"
+        if campaign_budget:
+            current_inventory_hash, _ = _budget_source_inventory(
+                root,
+                yolo=bool(state.get("authoring")),
             )
-        budget_summary(
-            root,
-            campaign_budget["campaignId"],
-            expected_inventory=current_inventory_hash,
-        )
+            if current_inventory_hash != campaign_budget["inventorySha256"]:
+                raise ValueError(
+                    "campaign frozen source inventory changed; package inputs are no longer "
+                    "bound to this campaign"
+                )
+            budget_summary(
+                root,
+                campaign_budget["campaignId"],
+                expected_inventory=current_inventory_hash,
+            )
         if any(
             state["stages"][dependency]["status"] != "passed"
             for dependency in _dependencies(state, "packaging")

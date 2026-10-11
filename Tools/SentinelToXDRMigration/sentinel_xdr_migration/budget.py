@@ -97,11 +97,16 @@ def _campaign_directory(
     base = reports_base(solution)
     campaign_id = _safe_campaign_id(campaign_id)
     runs = list_runs(solution)
-    matches = [
+    legacy_matches = [
         base / run_id / "campaigns" / campaign_id
         for run_id in runs
         if (base / run_id / "campaigns" / campaign_id / "budget.json").exists()
     ]
+    campaign_root = base.parent / f"{base.name}-campaigns"
+    canonical = campaign_root / campaign_id
+    matches = legacy_matches + (
+        [canonical] if (canonical / "budget.json").exists() else []
+    )
     if len(matches) > 1:
         raise BudgetReceiptError(
             "campaign ID has multiple competing budget files; reconcile them before continuing"
@@ -111,12 +116,16 @@ def _campaign_directory(
     elif create_run_id is not None:
         if create_run_id not in runs:
             raise BudgetReceiptError("campaign storage run is not an initialized workflow run")
-        directory = base / create_run_id / "campaigns" / campaign_id
+        directory = canonical
     else:
         raise BudgetReceiptError(f"campaign budget does not exist: {campaign_id}")
-    if directory.parent.is_symlink() or directory.is_symlink():
+    if (
+        directory.parent.is_symlink()
+        or directory.is_symlink()
+        or campaign_root.is_symlink()
+    ):
         raise BudgetReceiptError("symlink campaign directories are not supported")
-    resolved_base = base.resolve()
+    resolved_base = base.parent.resolve()
     resolved_directory = directory.resolve()
     if not resolved_directory.is_relative_to(resolved_base):
         raise BudgetReceiptError("campaign path escapes the solution migration Logs directory")
@@ -575,6 +584,47 @@ def create_or_link_campaign(
             })
             _write_state(path, state)
         return budget_summary(root, campaign_id, expected_inventory=inventory_sha256)
+
+
+def validate_campaign_binding(
+    solution: str | Path,
+    campaign_id: str,
+    *,
+    inventory_sha256: str,
+    rule_ids: list[str],
+) -> bool:
+    """Validate an existing campaign before workflow initialization creates run artifacts."""
+    campaign_id = _safe_campaign_id(campaign_id)
+    if not SHA256_PATTERN.fullmatch(inventory_sha256):
+        raise ValueError("frozen inventory SHA-256 must be lowercase hexadecimal")
+    if len(set(rule_ids)) != len(rule_ids) or not all(
+        isinstance(value, str) for value in rule_ids
+    ):
+        raise ValueError("campaign rule IDs must be unique strings")
+    root = Path(solution).expanduser().resolve()
+    runs = list_runs(root)
+    try:
+        directory = _campaign_directory(
+            root,
+            campaign_id,
+            create_run_id=runs[0] if runs else None,
+        )
+    except BudgetReceiptError as exc:
+        if not runs and str(exc) == f"campaign budget does not exist: {campaign_id}":
+            return False
+        raise
+    path = directory / "budget.json"
+    if not path.exists():
+        return False
+    state = _read_state(
+        path,
+        campaign_id=campaign_id,
+        solution=root,
+        inventory_sha256=inventory_sha256,
+    )
+    if state["inventoryRuleIds"] != sorted(rule_ids):
+        raise BudgetReceiptError("campaign frozen rule IDs do not match this run")
+    return True
 
 
 def _check_legacy_usage(state: dict[str, Any]) -> None:

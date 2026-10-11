@@ -26,10 +26,18 @@ from sentinel_xdr_migration.workflow import (
 from sentinel_xdr_migration.artifacts import (
     artifact_path,
     create_run,
+    list_runs,
     migrate_reports,
     using_run,
 )
-from sentinel_xdr_migration.budget import BudgetExhausted, budget_summary, extend_budget
+from sentinel_xdr_migration.budget import (
+    BudgetExhausted,
+    BudgetReceiptError,
+    begin_operation,
+    budget_summary,
+    extend_budget,
+    finish_operation,
+)
 from sentinel_xdr_migration.converter import convert_solution
 from sentinel_xdr_migration.packaging import package_input_identity
 from sentinel_xdr_migration import cli as cli_module
@@ -122,6 +130,7 @@ class WorkflowTests(unittest.TestCase):
             self.solution,
             version_bump=version_bump,
             workflow_profile="authoring",
+            campaign_id="test-campaign",
         )
         for stage in ("discovery", "conversion", "validation"):
             self._complete_passed_stage(stage)
@@ -406,6 +415,29 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual("qualification", changed["context"]["workflowProfile"])
         self.assertEqual("pending", changed["stages"]["deployment"]["status"])
         self.assertEqual("deployment", changed["next"])
+
+    def test_ordinary_authoring_new_runs_remain_unbudgeted_across_inventory_changes(self) -> None:
+        first = initialize_workflow(self.solution, workflow_profile="authoring")
+        rules = self.solution / "Analytic Rules"
+        rules.mkdir()
+        (rules / "Rule.yaml").write_text("first inventory", encoding="utf-8")
+
+        second = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+            new_run=True,
+        )
+
+        self.assertNotIn("budget", first)
+        self.assertNotIn("budget", second)
+        self.assertFalse(
+            (self.solution / "Logs" / "sentinel-xdr-migration-campaigns").exists()
+        )
+        for run_id in (first["runId"], second["runId"]):
+            run_directory = (
+                self.solution / "Logs" / "sentinel-xdr-migration" / run_id
+            )
+            self.assertFalse((run_directory / "campaigns").exists())
 
     def test_packaging_cannot_pass_without_v3_1_evidence(self) -> None:
         initialize_workflow(self.solution, workflow_profile="authoring")
@@ -810,6 +842,48 @@ class WorkflowTests(unittest.TestCase):
             state["budgetSummary"]["campaignId"],
             replacement["budget"]["campaignId"],
         )
+        operation = begin_operation(
+            self.solution,
+            "test-campaign",
+            inventory_sha256=replacement["budget"]["inventorySha256"],
+            run_id=replacement["runId"],
+            dimension="conversionPass",
+        )
+        finish_operation(
+            self.solution,
+            "test-campaign",
+            operation["operationId"],
+            status="failed",
+            elapsed_seconds=0.25,
+        )
+        with using_run(self.solution, replacement["runId"]):
+            self.assertEqual(
+                1,
+                workflow_status(self.solution)["budgetSummary"]["usage"]["conversionPasses"],
+            )
+
+    def test_yolo_campaign_inventory_conflict_does_not_create_a_partial_run(self) -> None:
+        self._create_source_rules()
+        initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+            yolo=True,
+            campaign_id="test-campaign",
+        )
+        before = list_runs(self.solution)
+        source = self.solution / "Analytic Rules" / "Nested" / "Rule0.yaml"
+        source.write_text(source.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(BudgetReceiptError, "different frozen source inventory"):
+            initialize_workflow(
+                self.solution,
+                workflow_profile="authoring",
+                yolo=True,
+                campaign_id="test-campaign",
+                new_run=True,
+            )
+
+        self.assertEqual(before, list_runs(self.solution))
 
     def test_qualification_profile_is_explicit_and_retains_locked_target(self) -> None:
         self._create_source_rules()
