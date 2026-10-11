@@ -1243,6 +1243,38 @@ def _entity_recommendation(source: dict[str, Any], conversion_notes: list[str]) 
     return None
 
 
+def _current_source_whitelist(
+    root: Path,
+    runtime_reports: list[dict[str, Any]],
+) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, Any]]:
+    from .runtime import current_runtime_evidence
+
+    try:
+        evidence = current_runtime_evidence(root)
+    except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as exc:
+        return {}, {
+            "passed": False,
+            "sourceStatus": "unavailable",
+            "sourceWhitelist": [],
+            "runtimeUnavailable": str(exc),
+        }
+    reports_by_provider = {
+        str(report.get("provider") or ""): report for report in runtime_reports
+    }
+    assessments: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in evidence.get("sourceWhitelist") or []:
+        provider = str(evidence.get("sentinelProvider") or "")
+        report = reports_by_provider.get(provider) or {}
+        assessments[(provider, str(item.get("detection") or ""))] = {
+            **item,
+            "provider": provider,
+            "surface": report.get("querySurface"),
+            "sourceExecutionPassed": False,
+            "runtimeQualified": bool(evidence.get("passed")),
+        }
+    return assessments, evidence
+
+
 def build_solution_report(
     solution: str | Path,
     *,
@@ -1263,6 +1295,9 @@ def build_solution_report(
         _read_json(path)
         for path in existing_artifacts(root, "runtime-validation.*.json")
     ]
+    current_source_whitelist, runtime_evidence = _current_source_whitelist(
+        root, runtime_reports
+    )
     deployment = _read_json(existing_artifact_path(root, "deployment.graph.json"))
     analytic_deployment = _read_json(
         existing_artifact_path(root, "deployment.sentinel.json")
@@ -1321,6 +1356,7 @@ def build_solution_report(
         identity_projection = identity_projection_by_id.get(detection_id)
         analytic_runtime: list[dict[str, Any]] = []
         custom_runtime: list[dict[str, Any]] = []
+        rule_warnings = list(conversion.get("warnings") or [])
         errors: list[dict[str, Any]] = []
         for value in conversion.get("errors") or []:
             errors.append(_error("conversion", value, provider="local-cli"))
@@ -1370,6 +1406,19 @@ def build_solution_report(
                 "rowCount": item.get("rowCount"),
                 "providerFallback": report.get("providerFallback"),
             }
+            source_whitelist = (
+                current_source_whitelist.get((provider, detection_name))
+                if is_sentinel
+                else None
+            )
+            if source_whitelist:
+                runtime_item["sourceWhitelist"] = source_whitelist
+                rule_warnings.append(
+                    f"Source runtime whitelist classified the raw failed query for "
+                    f"{source_whitelist['table']}: {source_whitelist['reason']} "
+                    "The source query remains failed; this does not qualify XDR runtime, "
+                    "schema bindings, validation review gates, or alert parity."
+                )
             (analytic_runtime if is_sentinel else custom_runtime).append(runtime_item)
             if stale_query_message or item.get("status") in {"failed", "blocked"}:
                 errors.append(
@@ -1530,7 +1579,7 @@ def build_solution_report(
                         "customDetectionRows"
                     ),
                 },
-                "warnings": list(conversion.get("warnings") or []),
+                "warnings": rule_warnings,
                 "informational": list(
                     conversion.get("informational") or []
                     if "informational" in conversion
@@ -1569,13 +1618,33 @@ def build_solution_report(
                     key: stage.get(key)
                     for key in (
                         "status", "attempts", "message", "evidence", "updatedAt",
-                        "startedAt", "completedAt",
+                        "startedAt", "completedAt", "artifacts",
                     )
                     if stage.get(key) is not None
                 }
                 for name, stage in (workflow.get("stages") or {}).items()
             },
             "packageFreshness": _package_freshness(root, workflow),
+        },
+        "runtimeAssessment": {
+            "validationStageStatus": (
+                ((workflow.get("stages") or {}).get("validation") or {}).get("status")
+            ),
+            "sourceStatus": runtime_evidence.get("sourceStatus", "not-run"),
+            "sourceWhitelist": [
+                {
+                    **item,
+                    "provider": runtime_evidence.get("sentinelProvider"),
+                    "runtimeQualified": bool(runtime_evidence.get("passed")),
+                }
+                for item in runtime_evidence.get("sourceWhitelist") or []
+            ],
+            "fullyRuntimeQualified": (
+                bool(runtime_evidence.get("passed"))
+                if runtime_reports
+                else None
+            ),
+            "runtimeUnavailable": runtime_evidence.get("runtimeUnavailable"),
         },
         "summary": {
             "conversionScope": manifest.get("scope") or {},

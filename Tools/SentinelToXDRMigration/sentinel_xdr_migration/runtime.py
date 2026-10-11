@@ -29,6 +29,7 @@ from .onboarding import (
     _state_dir,
 )
 from .report import write_runtime_validation_report
+from .source_runtime_waiver import SOURCE_PROVIDERS
 
 ADVANCED_HUNTING_ENDPOINT = "https://graph.microsoft.com/v1.0/security/runHuntingQuery"
 MAX_GRAPH_IN_FLIGHT_REQUESTS = 5
@@ -111,6 +112,92 @@ def _write_runtime_artifacts(
         summary["familyComplete"] = family_complete
     if provider_failure:
         summary["providerFailure"] = provider_failure
+    if provider in SOURCE_PROVIDERS:
+        from .source_runtime_waiver import missing_schema_whitelist_match
+
+        detection_paths = {
+            path.relative_to(root / "XDR Detections").as_posix(): path
+            for path in _detection_files(root / "XDR Detections")
+        }
+        expected_query_hashes = {
+            name: current_runtime_query_hash(root, path, provider=provider)
+            for name, path in detection_paths.items()
+        }
+        classified = []
+        hash_bound_names: set[str] = set()
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("detection") or "").replace("\\", "/")
+            match = missing_schema_whitelist_match(item, provider=provider)
+            if match:
+                expected_hash = expected_query_hashes.get(name)
+                hash_matches = (
+                    expected_hash is not None
+                    and item.get("querySha256") == expected_hash
+                )
+                assessment = {
+                    "detection": item.get("detection"),
+                    "querySha256": item.get("querySha256"),
+                    **match,
+                    "status": "candidate-blocked",
+                    "applied": False,
+                }
+                if hash_matches:
+                    hash_bound_names.add(name)
+                else:
+                    assessment["blockedReason"] = (
+                        "The failed result query hash does not match the current "
+                        "source query hash."
+                    )
+                classified.append(assessment)
+        result_names = [
+            str(item.get("detection") or "").replace("\\", "/")
+            for item in results
+            if isinstance(item, dict)
+        ]
+        inventory_matches = (
+            len(result_names) == len(expected_query_hashes)
+            and len(result_names) == len(set(result_names))
+            and set(result_names) == set(expected_query_hashes)
+        )
+        family_can_apply = (
+            bool(hash_bound_names)
+            and provider_failure is None
+            and provider_fallback is None
+            and family_complete is True
+            and inventory_matches
+            and all(isinstance(item, dict) for item in results)
+            and all(
+                (
+                    item.get("status") == "passed"
+                    and item.get("querySha256")
+                    == expected_query_hashes.get(
+                        str(item.get("detection") or "").replace("\\", "/")
+                    )
+                )
+                or (
+                    item.get("status") == "failed"
+                    and str(item.get("detection") or "").replace("\\", "/")
+                    in hash_bound_names
+                    and item.get("querySha256")
+                    == expected_query_hashes.get(
+                        str(item.get("detection") or "").replace("\\", "/")
+                    )
+                )
+                for item in results
+            )
+        )
+        for item in classified:
+            name = str(item.get("detection") or "").replace("\\", "/")
+            item["applied"] = family_can_apply and name in hash_bound_names
+            if item["applied"]:
+                item["status"] = "source-waived"
+            elif "blockedReason" not in item:
+                item["blockedReason"] = (
+                    "The complete source family contains another failure or is not confirmed complete."
+                )
+        summary["sourceWhitelist"] = classified
     json_path = output / f"runtime-validation.{provider}.json"
     html_path = output / f"runtime-validation.{provider}.html"
     summary["jsonReport"] = str(json_path)
@@ -181,50 +268,179 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
         provider: str,
         report_path: Path,
         expected_hashes: dict[str, str],
-    ) -> tuple[bool, list[str]]:
+        *,
+        require_actual_schema: bool = False,
+    ) -> tuple[bool, list[str], bool, list[dict[str, Any]]]:
         if not report_path.is_file():
-            return False, [f"{provider} runtime report is missing"]
+            return False, [f"{provider} runtime report is missing"], False, []
         try:
             report = json.loads(report_path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
-            return False, [f"{provider} runtime report is invalid"]
+            return False, [f"{provider} runtime report is invalid"], False, []
         if not isinstance(report, dict) or report.get("provider") != provider:
-            return False, [f"{provider} runtime report provider does not match"]
+            return False, [f"{provider} runtime report provider does not match"], False, []
         entries = report.get("results")
         if not isinstance(entries, list):
-            return False, [f"{provider} runtime report has no results list"]
+            return False, [f"{provider} runtime report has no results list"], False, []
+        from .source_runtime_waiver import missing_schema_whitelist_match
+
+        def candidate_assessments() -> list[dict[str, Any]]:
+            if provider not in SOURCE_PROVIDERS:
+                return []
+            candidates = []
+            for candidate in entries:
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_name = str(candidate.get("detection") or "").replace("\\", "/")
+                expected_hash = expected_hashes.get(candidate_name)
+                if expected_hash is None:
+                    continue
+                match = missing_schema_whitelist_match(
+                    candidate,
+                    provider=provider,
+                    expected_query_sha256=expected_hash,
+                )
+                if match:
+                    candidates.append({
+                        "detection": candidate_name,
+                        "querySha256": expected_hash,
+                        **match,
+                        "status": "candidate-blocked",
+                        "applied": False,
+                        "blockedReason": (
+                            "The source report has a provider, surface, family-completion, "
+                            "fallback, or inventory failure."
+                        ),
+                    })
+            return candidates
+
+        if (
+            report.get("querySurface") not in (
+                None,
+                PROVIDER_QUERY_SURFACES.get(provider),
+            )
+            or report.get("providerFailure")
+            or report.get("familyComplete") is False
+        ):
+            return False, [
+                f"{provider} runtime report has a provider, surface, or family-completion failure"
+            ], False, candidate_assessments()
         by_name: dict[str, dict[str, Any]] = {}
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
             name = str(entry.get("detection") or "").replace("\\", "/")
             if name in by_name:
-                return False, [f"{provider} runtime report has duplicate results for {name}"]
+                return False, [f"{provider} runtime report has duplicate results for {name}"], False, candidate_assessments()
             by_name[name] = entry
         if set(by_name) != set(expected_hashes):
             return False, [
                 f"{provider} runtime report is not a complete detection family "
                 f"(missing={sorted(set(expected_hashes) - set(by_name))}, "
                 f"unknown={sorted(set(by_name) - set(expected_hashes))})"
-            ]
+            ], False, candidate_assessments()
+        source_whitelist: list[dict[str, Any]] = []
+
         failures = []
         for name, expected_hash in expected_hashes.items():
             entry = by_name[name]
             hash_matches = entry.get("querySha256") == expected_hash
+            source_match = (
+                missing_schema_whitelist_match(
+                    entry,
+                    provider=provider,
+                    expected_query_sha256=expected_hash,
+                )
+                if provider in SOURCE_PROVIDERS
+                and not report.get("providerFallback")
+                else None
+            )
+            if source_match:
+                source_whitelist.append({
+                    "detection": name,
+                    "querySha256": expected_hash,
+                    **source_match,
+                })
+            if (
+                provider == "graph"
+                and require_actual_schema
+                and entry.get("status") == "passed"
+                and hash_matches
+            ):
+                schema = entry.get("schema")
+                if not isinstance(schema, list):
+                    failures.append(
+                        "graph output schema is missing for "
+                        f"{name}; schemaColumnCount is not sufficient evidence"
+                    )
+                else:
+                    schema_columns = []
+                    malformed_schema = False
+                    seen_schema_names: set[str] = set()
+                    for column in schema:
+                        if not isinstance(column, dict):
+                            malformed_schema = True
+                            break
+                        column_name = column.get("name", column.get("Name"))
+                        column_type = column.get("type", column.get("Type"))
+                        if (
+                            not isinstance(column_name, str)
+                            or not column_name.strip()
+                            or not isinstance(column_type, str)
+                            or not column_type.strip()
+                            or column_name.casefold() in seen_schema_names
+                        ):
+                            malformed_schema = True
+                            break
+                        seen_schema_names.add(column_name.casefold())
+                        schema_columns.append(column)
+                    if not schema_columns or malformed_schema:
+                        failures.append(
+                            "graph output schema for "
+                            f"{name} must contain usable, uniquely named columns with types"
+                        )
+                        continue
+                    try:
+                        document = yaml.safe_load(
+                            paths[name].read_text(encoding="utf-8-sig")
+                        ) or {}
+                    except (OSError, yaml.YAMLError) as exc:
+                        failures.append(
+                            f"cannot verify current XDR output bindings for {name}: {exc}"
+                        )
+                    else:
+                        binding_errors = custom_detail_schema_errors(document, schema)
+                        failures.extend(
+                            f"graph output schema for {name}: {error}"
+                            for error in binding_errors
+                        )
             if entry.get("status") == "failed" and hash_matches:
+                if source_match:
+                    continue
                 current_query_failures.append(
                     f"{provider} query validation failed for {name}: "
                     f"{entry.get('error') or 'provider reported a KQL/runtime failure'}"
                 )
             if entry.get("status") != "passed":
                 failures.append(f"{provider} validation for {name} is {entry.get('status')!r}")
-            elif not hash_matches:
+            if not hash_matches:
                 failures.append(
                     f"{provider} validation for {name} is stale or unbound to the exact current query"
                 )
-        return not failures, failures
+        waived_failure = bool(source_whitelist) and not failures
+        for item in source_whitelist:
+            item["applied"] = waived_failure
+            if not waived_failure:
+                item["status"] = "candidate-blocked"
+                item["blockedReason"] = (
+                    "The complete source query family has another failed, blocked, "
+                    "not-run, stale, or incomplete result."
+                )
+        return not failures and not waived_failure, failures, waived_failure, source_whitelist
 
     source_passed = False
+    source_waiver_only_blocker = False
+    source_whitelist: list[dict[str, Any]] = []
     source_provider_used = None
     source_issues: list[str] = []
     available_source_reports = [
@@ -233,6 +449,15 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
         if report_path.is_file()
     ]
     for index, (provider, report_path) in enumerate(available_source_reports):
+        try:
+            selected_report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            break
+        unverified_fallback_claim = (
+            index == 0
+            and isinstance(selected_report, dict)
+            and bool(selected_report.get("providerFallback"))
+        )
         if index:
             previous_provider, previous_path = available_source_reports[0]
             try:
@@ -245,11 +470,7 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
                 or not isinstance(previous_report.get("providerFailure"), dict)
             ):
                 break
-            try:
-                fallback_report = json.loads(report_path.read_text(encoding="utf-8-sig"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                break
-            proof = fallback_report.get("providerFallback") if isinstance(fallback_report, dict) else None
+            proof = selected_report.get("providerFallback") if isinstance(selected_report, dict) else None
             if (
                 not isinstance(proof, dict)
                 or proof.get("mcpProvider") != "triage-mcp"
@@ -260,7 +481,7 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
             ):
                 continue
         current_failures_before = len(current_query_failures)
-        passed, family_issues = inspect_family(
+        passed, family_issues, waiver_only, current_whitelist = inspect_family(
             provider,
             report_path,
             {
@@ -268,10 +489,26 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
                 for name, path in paths.items()
             },
         )
-        if passed:
+        if passed and not unverified_fallback_claim:
             source_passed = True
             source_provider_used = provider
+            source_whitelist = current_whitelist
             break
+        if unverified_fallback_claim:
+            source_issues.extend(family_issues)
+            source_issues.append(
+                f"{provider} runtime report claims an unverified provider fallback"
+            )
+            if len(current_query_failures) > current_failures_before:
+                break
+            break
+        if waiver_only:
+            source_whitelist = current_whitelist
+            source_waiver_only_blocker = True
+            source_provider_used = provider
+            break
+        if current_whitelist:
+            source_whitelist = current_whitelist
         source_issues.extend(family_issues)
         if len(current_query_failures) > current_failures_before:
             break
@@ -285,15 +522,36 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
             or not isinstance(report.get("providerFailure"), dict)
         ):
             break
-    if not source_passed:
+    if not source_passed and not source_waiver_only_blocker:
         issues.extend(source_issues or ["no Sentinel runtime validation report is available"])
 
-    graph_passed, graph_issues = inspect_family("graph", graph_path, graph_hashes)
+    graph_passed, graph_issues, _, _ = inspect_family(
+        "graph",
+        graph_path,
+        graph_hashes,
+        require_actual_schema=bool(source_whitelist),
+    )
     if not graph_passed:
         issues.extend(graph_issues)
+    source_waived = source_waiver_only_blocker
+    source_waiver_only_blocker = source_waiver_only_blocker and graph_passed
+    if source_waiver_only_blocker:
+        issues.append(
+            "Sentinel source IdentityInfo query remains failed in raw evidence; "
+            "the built-in source table whitelist is not runtime success"
+        )
     return {
         "passed": source_passed and graph_passed,
         "sentinelProvider": source_provider_used,
+        "sourceStatus": (
+            "source-waived"
+            if source_waived
+            else "passed"
+            if source_passed
+            else "blocked"
+        ),
+        "sourceWhitelist": source_whitelist,
+        "sourceWaiverOnlyBlocker": source_waiver_only_blocker,
         "currentQueryFailures": current_query_failures,
         "issues": issues,
         "sentinelReport": (
@@ -645,6 +903,7 @@ def validate_advanced_hunting(
                 "statusCode": runtime["statusCode"],
                 "rowCount": runtime["rowCount"],
                 "schemaColumnCount": len(runtime["schema"]),
+                "schema": runtime["schema"],
                 "error": "; ".join(binding_errors) if binding_errors else runtime["error"],
                 "errorDetails": runtime["errorDetails"],
             }
@@ -950,6 +1209,8 @@ def record_runtime_validation(
                 "error": error,
                 "errorDetails": entry.get("errorDetails"),
             }
+        if provider == "graph" and isinstance(schema, list):
+            normalized_entry["schema"] = schema
         for field in ("tables", "partialError", "failureKind", "attempts", "durationMs"):
             if field in entry:
                 normalized_entry[field] = entry[field]

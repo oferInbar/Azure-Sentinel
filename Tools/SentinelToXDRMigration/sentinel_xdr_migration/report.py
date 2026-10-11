@@ -112,9 +112,27 @@ def render_runtime_validation_report(summary: dict[str, Any]) -> str:
             f'<p class="muted">Advertised tool: {escape(str(fallback.get("advertisedTool")))}</p></section>'
         )
     rows: list[str] = []
+    source_whitelist = {
+        str(item.get("detection") or ""): item
+        for item in summary.get("sourceWhitelist") or []
+        if isinstance(item, dict)
+    }
     for result in summary["results"]:
         status = str(result["status"])
         error = str(result.get("error") or "")
+        whitelist = source_whitelist.get(str(result.get("detection") or ""))
+        whitelist_text = ""
+        if whitelist:
+            label = (
+                "source-waived (raw query remains failed)"
+                if whitelist.get("applied") is True
+                else "candidate only — not applied"
+            )
+            whitelist_text = (
+                f'<strong>{escape(label)}</strong><br>'
+                f'Table: {escape(str(whitelist.get("table") or "IdentityInfo"))}<br>'
+                f'{escape(str(whitelist.get("reason") or ""))}'
+            )
         rows.append(
             f"""
             <tr>
@@ -122,6 +140,7 @@ def render_runtime_validation_report(summary: dict[str, Any]) -> str:
               <td><span class="status {escape(status)}">{escape(status)}</span></td>
               <td>{result.get("rowCount", 0)}</td>
               <td>{result.get("schemaColumnCount", 0)}</td>
+              <td>{whitelist_text or '<span class="muted">—</span>'}</td>
               <td>{escape(error) if error else '<span class="muted">None</span>'}</td>
             </tr>
             """
@@ -150,10 +169,11 @@ def render_runtime_validation_report(summary: dict[str, Any]) -> str:
   {fallback_notice}
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Detection</th><th>Status</th><th>Rows</th><th>Schema columns</th><th>Error</th></tr></thead>
+      <thead><tr><th>Detection</th><th>Raw status</th><th>Rows</th><th>Schema columns</th><th>Source whitelist assessment</th><th>Raw error</th></tr></thead>
       <tbody>{''.join(rows)}</tbody>
     </table>
   </div>
+  <p class="muted">Whitelist assessment is derived from the exact source diagnostic and does not rewrite the raw provider result or qualify XDR execution, output schema, technical review, packaging, deployment, ingestion, or parity.</p>
 </main>
 </body>
 </html>

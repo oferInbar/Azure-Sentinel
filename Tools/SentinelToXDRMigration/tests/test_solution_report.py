@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 import yaml
 
 from sentinel_xdr_migration.converter import convert_solution
-from sentinel_xdr_migration.artifacts import report_directory
+from sentinel_xdr_migration.artifacts import existing_artifact_path, report_directory
 from sentinel_xdr_migration.report_dashboard import _deployment_planning_html
 from sentinel_xdr_migration.solution_report import (
     _package_resource_inventory,
@@ -24,6 +24,35 @@ from test_converter import RULE
 
 
 class SolutionReportTests(unittest.TestCase):
+    def test_runtime_evidence_unavailable_does_not_hide_structural_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "Example"
+            analytic = root / "Analytic Rules"
+            analytic.mkdir(parents=True)
+            (analytic / "Rule.yaml").write_text(RULE, encoding="utf-8")
+            convert_solution(root)
+            target = root / "XDR Detections" / "Rule.yaml"
+            target.write_text(
+                yaml.safe_dump({"kind": "InvalidCustomDetection", "properties": {}}),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "sentinel_xdr_migration.runtime.current_runtime_evidence",
+                side_effect=ValueError("invalid current XDR runtime target"),
+            ):
+                report = build_solution_report(root)
+
+            self.assertTrue(any(
+                error["stage"] == "structural-validation"
+                for error in report["rules"][0]["errors"]
+            ))
+            self.assertEqual(
+                "invalid current XDR runtime target",
+                report["runtimeAssessment"]["runtimeUnavailable"],
+            )
+            self.assertEqual("unavailable", report["runtimeAssessment"]["sourceStatus"])
+
     def test_selected_package_report_is_bound_to_current_workflow_attempt(self) -> None:
         report_bytes = b"current package report"
         report_hash = hashlib.sha256(report_bytes).hexdigest()
@@ -380,6 +409,173 @@ class SolutionReportTests(unittest.TestCase):
                 "passed",
                 refreshed["rules"][0]["customDetection"]["runtime"][0]["status"],
             )
+
+    def test_source_waiver_is_visible_without_hiding_failure_or_blocked_validation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "Example"
+            analytic = root / "Analytic Rules"
+            analytic.mkdir(parents=True)
+            for index in range(14):
+                rule = yaml.safe_load(RULE)
+                rule["id"] = str(__import__("uuid").UUID(int=index + 1))
+                rule["name"] = f"Example rule {index + 1}"
+                rule["query"] = (
+                    "DeviceEvents\n"
+                    f"| where DeviceId == '{index + 1}'\n"
+                    "| project TimeGenerated, AccountUpn, IPAddress"
+                )
+                (analytic / f"Rule{index + 1:02}.yaml").write_text(
+                    yaml.safe_dump(rule), encoding="utf-8"
+                )
+            convert_solution(root)
+            report_dir = report_directory(root)
+            source_results = []
+            for path in sorted(analytic.glob("*.yaml")):
+                rule = yaml.safe_load(path.read_text(encoding="utf-8"))
+                result = {
+                    "detection": path.name,
+                    "status": "passed",
+                    "rowCount": 1,
+                    "querySha256": hashlib.sha256(
+                        rule["query"].encode("utf-8")
+                    ).hexdigest(),
+                }
+                if path.name == "Rule01.yaml":
+                    diagnostic = (
+                        "'summarize' operator: Failed to resolve table or "
+                        "column expression named 'IdentityInfo'"
+                    )
+                    result.update({
+                        "status": "failed",
+                        "statusCode": 400,
+                        "failureKind": "query",
+                        "error": {
+                            "code": "BadArgumentError",
+                            "message": diagnostic,
+                            "innererror": {
+                                "code": "SemanticError",
+                                "innererror": {
+                                    "code": "SEM0100",
+                                    "message": diagnostic,
+                                },
+                            },
+                        },
+                        "errorDetails": {
+                            "code": "BadArgumentError",
+                            "innererror": {
+                                "code": "SemanticError",
+                                "innererror": {
+                                    "code": "SEM0100",
+                                    "message": diagnostic,
+                                },
+                            },
+                        },
+                    })
+                source_results.append(result)
+            (report_dir / "runtime-validation.azure-monitor-sdk.json").write_text(
+                json.dumps({
+                    "provider": "azure-monitor-sdk",
+                    "querySurface": "log-analytics-workspace",
+                    "platform": "Microsoft Sentinel Log Analytics",
+                    "total": 14,
+                    "familyComplete": True,
+                    "results": source_results,
+                }),
+                encoding="utf-8",
+            )
+            graph_results = []
+            for path in sorted((root / "XDR Detections").glob("*.yaml")):
+                detection = yaml.safe_load(path.read_text(encoding="utf-8"))
+                target_query = detection["properties"]["queryCondition"]["queryText"]
+                graph_results.append({
+                    "detection": path.name,
+                    "status": "not-run",
+                    "statusCode": 0,
+                    "rowCount": None,
+                    "querySha256": hashlib.sha256(
+                        target_query.encode("utf-8")
+                    ).hexdigest(),
+                    "error": "XDR runtime validation was not run.",
+                })
+            (report_dir / "runtime-validation.graph.json").write_text(
+                json.dumps({
+                    "provider": "graph",
+                    "querySurface": "defender-advanced-hunting",
+                    "platform": "Defender Advanced Hunting",
+                    "total": 14,
+                    "notRun": 14,
+                    "results": graph_results,
+                }),
+                encoding="utf-8",
+            )
+            workflow_path = existing_artifact_path(root, "workflow-state.json")
+            workflow_path.write_text(
+                json.dumps({
+                    "runId": report_dir.parent.name,
+                    "workflowStatus": "active",
+                    "stages": {
+                        "validation": {
+                            "status": "blocked",
+                            "message": "Graph validation remains not run.",
+                        }
+                    },
+                }),
+                encoding="utf-8",
+            )
+            report = build_solution_report(root)
+
+            rule = next(
+                item for item in report["rules"]
+                if any(
+                    runtime["status"] == "failed"
+                    for runtime in item["analyticRule"]["runtime"]
+                )
+            )
+            source_runtime = next(
+                runtime for runtime in rule["analyticRule"]["runtime"]
+                if runtime["status"] == "failed"
+            )
+            self.assertEqual("failed", source_runtime["status"])
+            self.assertEqual("IdentityInfo", source_runtime["sourceWhitelist"]["table"])
+            self.assertEqual(
+                "source-waived", source_runtime["sourceWhitelist"]["status"]
+            )
+            self.assertEqual(
+                "failed", source_runtime["sourceWhitelist"]["rawFailure"]["status"]
+            )
+            self.assertEqual(14, len(report["rules"]))
+            self.assertEqual(
+                14,
+                sum(
+                    runtime["status"] == "not-run"
+                    for item in report["rules"]
+                    for runtime in item["customDetection"]["runtime"]
+                ),
+            )
+            self.assertEqual("not-run", rule["customDetection"]["runtime"][0]["status"])
+            self.assertTrue(any(
+                error["stage"] == "analytic-rule-runtime-validation"
+                for error in rule["errors"]
+            ))
+            self.assertEqual("blocked", report["runtimeAssessment"]["validationStageStatus"])
+            self.assertFalse(report["runtimeAssessment"]["fullyRuntimeQualified"])
+            self.assertEqual("source-waived", report["runtimeAssessment"]["sourceStatus"])
+            self.assertEqual(1, len(report["runtimeAssessment"]["sourceWhitelist"]))
+            self.assertEqual(13, report["summary"]["analyticRuntimePassed"])
+            self.assertEqual(0, report["summary"]["customRuntimePassed"])
+            self.assertEqual(1, report["summary"]["errors"])
+            self.assertEqual(0, report["summary"]["strictParityPassed"])
+            self.assertEqual(0, report["summary"]["queryParityPassed"])
+            self.assertIn("does not qualify", rule["warnings"][-1])
+            self.assertEqual(14, report["summary"]["rules"])
+            persisted = json.loads(Path(report["jsonReport"]).read_text(encoding="utf-8"))
+            self.assertEqual(
+                "source-waived",
+                persisted["runtimeAssessment"]["sourceWhitelist"][0]["status"],
+            )
+            html = Path(report["htmlReport"]).read_text(encoding="utf-8")
+            self.assertIn("Source runtime whitelist", html)
+            self.assertIn("IdentityInfo", html)
 
     def test_information_uses_manifest_with_provenance_fallback_without_status_changes(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

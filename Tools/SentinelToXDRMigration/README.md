@@ -424,6 +424,9 @@ unknown, and longer-source-lookback cases retain their schedule diagnostics.
 Late-arriving events whose event timestamp falls outside the inserted bound can
 be missed, so generated transforms still require normal runtime validation and
 qualification; conversion does not promote a rule to runtime-validated.
+
+## Runtime query validation
+
 When this or another conversion changes the persisted Advanced Hunting query,
 the converter blocks previously passed validation and downstream workflow
 stages while retaining the old reports as historical. Runtime results bind to
@@ -438,13 +441,46 @@ fallback must rerun the complete family. Zero rows establish execution only.
 Hash-scoped review decisions also expire when either source or converted-query
 hash changes.
 
+The built-in source-runtime missing-schema whitelist applies across all
+solutions, source queries, and runs. It contains exactly `IdentityInfo`,
+matched case-insensitively and reported canonically as `IdentityInfo`. It
+classifies only a current Sentinel/Log Analytics result that is a failed
+HTTP 400 query with `SEM0100` explicitly identifying that table as unresolved.
+The Azure Monitor SDK's preserved nested error structure and the message
+`'summarize' operator: Failed to resolve table or column expression named
+'IdentityInfo'` are supported, as is the equivalent explicit
+`Failed to resolve table 'IdentityInfo'` diagnostic represented by provider
+evidence. A missing column, another table, mixed/multiple errors, partial
+provider/family failure, authentication/authorization/tenant/transport/timeout
+failure, stale query hash, or changed inventory is not whitelisted.
+
+No manual acceptance, actor, reason, run/rule authorization, or separate
+decision artifact is required. The runtime derives the classification from
+the exact current source query hash and complete family. It never rewrites or
+relabels the raw provider result: that query remains `failed`. Reports preserve
+the raw error alongside the canonical whitelist table and reason, and use
+`source-waived` (never passed/success/executed) for the source disposition.
+The status remains visible when Validation is blocked by XDR or other gates.
+
+The whitelist does not relax any XDR runtime, exact-query hash, actual output
+schema, `customDetails` binding, mapping-review, technical-validation,
+packaging, deployment, ingestion, or parity gate. Validation may complete as
+`runtimeStatus=source-waived` only when every other current source query,
+every current XDR query and required schema check, and every unrelated
+technical/review gate passes. Direct workflow-stage completion independently
+enforces this. Any other failed, blocked, stale, incomplete, or not-run check
+keeps Validation blocked. The Defender `IdentityInfo` documentation does not
+prove availability in a selected Sentinel source workspace.
+
 ## Content-creator authoring policy and pending implementation
 
 This section records the approved authoring policy and its implementation gaps.
 It does **not** introduce a validation mode, waive an existing gate, or assert
 that a schema resolver is implemented. The canonical
 [workflow](agent-workflows/end-to-end-migration.md#validation) still governs
-stage completion.
+stage completion. The finite global `IdentityInfo` source-runtime whitelist is
+documented separately under [Runtime query validation](#runtime-query-validation);
+it does not create an optional-validation mode or waive unrelated gates.
 
 ### Schema responsibility and evidence
 
@@ -1500,6 +1536,15 @@ This creates `runtime-validation.triage-mcp.json` and
 the MCP or fallback provider. Missing/stale hashes are recorded as blocked.
 The public CLI does not implement or host an MCP server; the repository skill
 invokes the configured official MCP.
+
+The runtime report includes a derived `sourceWhitelist` assessment for an
+eligible `IdentityInfo` missing-table result, bound to its exact
+`querySha256`. The raw `results[]` entry remains failed and unchanged; the
+assessment records the canonical table, reason, raw failure, and whether the
+complete source family permits the source-only disposition. No manual
+acceptance command or separate decision artifact exists. The consolidated
+solution JSON/HTML and workflow dashboard also expose the classification
+while keeping any XDR or unrelated validation blocker visible.
 
 For a complete original Sentinel query family, the toolkit also provides a
 native Azure Monitor Query SDK runner. It is an explicit Qualification-only

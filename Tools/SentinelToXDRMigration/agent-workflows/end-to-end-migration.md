@@ -437,9 +437,10 @@ and downstream stages are blocked with historical evidence retained.
 Do not pass solution conversion/validation stages or package from scoped results:
 the workflow and toolkit packager reject them. Full-solution conversion and the
 normal gates are required before proceeding. Structural validation of existing
-files alone is not conversion coverage. No scoped runtime/deployment or waiver
-is introduced; run-local evidence cannot authorize reuse of stale evidence from
-other runs sharing the same content. See the README's
+files alone is not conversion coverage. This pilot does not introduce scoped
+runtime/deployment qualification or a generic waiver. The global source-runtime
+missing-schema whitelist is limited to `IdentityInfo` and cannot authorize
+scoped conversion, deployment, or reuse of stale query evidence. See the README's
 [single-rule CLI contract](../README.md#single-rule-conversion).
 
 Explain entity mapping differences using the restricted target mapping contract:
@@ -557,14 +558,13 @@ queries. Present this disclosure while retaining actual static/schema checks:
 
 > KQL has not been validated because this migration runs without runtime validation. Enable full validation, or review/accept the specific migration checks below.
 
-This is presentation policy, not a new completion mode or waiver. A supported
+This disclosure does not create a general no-runtime completion mode. A
 specific review acceptance is not runtime verification. Report unexecuted
 checks as not run; keep failed, blocked, and unresolved-review results visible.
-No optional-runtime gate/state implementation is introduced by this policy.
 Do not complete an unmet stage, silently bypass it, or treat declined runtime
-checks as an environment-only error. The existing validation procedure and
-Authoring exception below remain unchanged; if their evidence cannot be
-obtained, report the unmet gate and pending implementation rather than success.
+checks as an environment-only error. The Authoring exception below remains
+unchanged; if its evidence cannot be obtained, report the unmet gate and pending
+implementation rather than success.
 
 Run structural validation. When runtime validation is authorized, validate
 original Sentinel and converted Advanced Hunting queries. Prefer capabilities
@@ -593,6 +593,41 @@ validated only with complete current-hash Sentinel and Advanced Hunting reports.
 Authoring may explicitly record `runtimeStatus=environment-blocked` when no
 current exact-query KQL/runtime failure exists; this is not runtime
 qualification. Qualification cannot use that exception.
+
+The source-runtime missing-schema whitelist is global across solutions, source
+queries, and runs, and contains exactly `IdentityInfo` (case-insensitive
+matching; canonical report name `IdentityInfo`). It automatically classifies
+only a current Sentinel/Log Analytics source result with HTTP 400,
+`failureKind=query`, and `SEM0100` explicitly stating that the `IdentityInfo`
+table could not be resolved. This includes the preserved Azure Monitor SDK
+error structure/message (`'summarize' operator: Failed to resolve table or
+column expression named 'IdentityInfo'`) and the equivalent explicit
+`Failed to resolve table 'IdentityInfo'` wording already present in provider
+evidence. A missing column, another table, mixed/multiple error codes or
+diagnostics, partial family/provider failure, authentication/authorization,
+tenant, transport, timeout, stale query hash, or changed inventory is not
+whitelisted. The classifier is structure-aware and source-provider-only.
+
+There is no per-run allowlist, actor, reason, or acceptance command. The
+derived runtime assessment is bound to each exact current source-query hash
+and the complete source family. It does not create or mutate a decision
+artifact: the raw source result remains `failed`, with its original provider
+error. A qualifying result is represented as `source-waived`, never passed,
+successful, or executed, and reports include both the whitelist table/reason
+and the unchanged raw failure.
+
+The whitelist only classifies source missing-table failures. Validation may
+complete as `runtimeStatus=source-waived` only when every other current source
+query passes, every converted XDR query has exact successful execution and
+actual output-schema evidence (including verified `customDetails` bindings),
+and full-solution structural, technical, and review gates pass. Direct stage
+completion enforces those gates independently. A source-waived query alone
+never completes Validation when XDR is unrun, has missing schema, or any
+unrelated gate remains. Whitelist status remains visible in reports while the
+overall Validation stage is blocked. No XDR schema, mapping review,
+technical validation, packaging, deployment, ingestion, or parity gate is
+weakened. Documentation that `IdentityInfo` exists in Advanced Hunting does
+not establish availability in a selected Sentinel source workspace.
 
 When investigating table/schema uncertainty, use standard-table documentation,
 provider query schemas, and solution-owned parser or custom connector DCR/table

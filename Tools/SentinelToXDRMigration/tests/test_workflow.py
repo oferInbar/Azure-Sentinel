@@ -1241,6 +1241,138 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(0, refreshed["environmentErrorCount"])
         self.assertEqual("passed", stored["results"][0]["validationStatus"])
 
+    def test_yolo_identityinfo_failure_is_nonblocking_but_not_runtime_passed(self) -> None:
+        _, record = self._run_yolo(count=1)
+        run = self.solution / "Logs" / "sentinel-xdr-migration" / record["runId"]
+        self._runtime_reports(record)
+        triage_path = run / "runtime-validation.triage-mcp.json"
+        source_report = json.loads(triage_path.read_text(encoding="utf-8"))
+        diagnostic = (
+            "'summarize' operator: Failed to resolve table or column "
+            "expression named 'IdentityInfo'"
+        )
+        source_report.update({
+            "querySurface": "microsoft-sentinel-triage",
+            "familyComplete": True,
+        })
+        source_report["results"][0].update({
+            "status": "failed",
+            "statusCode": 400,
+            "failureKind": "query",
+            "partial": False,
+            "error": {
+                "code": "BadArgumentError",
+                "message": diagnostic,
+                "innererror": {
+                    "code": "SEM0100",
+                    "message": diagnostic,
+                },
+            },
+        })
+        raw_before = json.dumps(source_report, sort_keys=True).encode()
+        triage_path.write_bytes(raw_before)
+
+        graph_path = run / "runtime-validation.graph.json"
+        graph_report = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_report.update({
+            "querySurface": "defender-advanced-hunting",
+            "familyComplete": True,
+        })
+        graph_report["results"][0]["schema"] = [
+            {"name": "Timestamp", "type": "DateTime"}
+        ]
+        graph_path.write_text(json.dumps(graph_report), encoding="utf-8")
+
+        with using_run(self.solution, record["runId"]):
+            refreshed = refresh_yolo_authoring(self.solution)
+            stored = read_authoring_contract(self.solution)
+            evidence = workflow_module._current_runtime_status(
+                self.solution, "authoring", stored
+            )[2]
+        result = stored["results"][0]
+        self.assertEqual("active", refreshed["status"])
+        self.assertEqual("passed", workflow_status(self.solution)["stages"]["validation"]["status"])
+        self.assertEqual("source-waived", workflow_status(self.solution)["stages"]["validation"]["artifacts"]["runtimeStatus"])
+        self.assertFalse(evidence["passed"])
+        self.assertEqual("source-waived", evidence["sourceStatus"])
+        self.assertTrue(any(
+            finding["kind"] == "error"
+            and finding["unresolved"] is False
+            and "IdentityInfo" in finding["message"]
+            for finding in result["findings"]
+        ))
+        self.assertEqual(raw_before, triage_path.read_bytes())
+        self.assertEqual("failed", json.loads(triage_path.read_text())["results"][0]["status"])
+
+    def test_direct_yolo_source_waiver_rejects_changed_target_review_state(self) -> None:
+        _, record = self._run_yolo(count=1)
+        run = self.solution / "Logs" / "sentinel-xdr-migration" / record["runId"]
+        self._runtime_reports(record)
+        triage_path = run / "runtime-validation.triage-mcp.json"
+        source_report = json.loads(triage_path.read_text(encoding="utf-8"))
+        diagnostic = (
+            "'summarize' operator: Failed to resolve table or column "
+            "expression named 'IdentityInfo'"
+        )
+        source_report.update({
+            "querySurface": "microsoft-sentinel-triage",
+            "familyComplete": True,
+        })
+        source_report["results"][0].update({
+            "status": "failed",
+            "statusCode": 400,
+            "failureKind": "query",
+            "partial": False,
+            "error": {
+                "code": "BadArgumentError",
+                "message": diagnostic,
+                "innererror": {"code": "SEM0100", "message": diagnostic},
+            },
+        })
+        triage_path.write_text(json.dumps(source_report), encoding="utf-8")
+        graph_path = run / "runtime-validation.graph.json"
+        graph_report = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_report.update({
+            "querySurface": "defender-advanced-hunting",
+            "familyComplete": True,
+        })
+        graph_report["results"][0]["schema"] = [
+            {"name": "Timestamp", "type": "DateTime"}
+        ]
+        graph_path.write_text(json.dumps(graph_report), encoding="utf-8")
+
+        target = Path(record["results"][0]["target"]["path"])
+        target_path = self.solution / target
+        target_document = yaml.safe_load(target_path.read_text(encoding="utf-8"))
+        target_query = target_document["properties"]["queryCondition"]["queryText"]
+        target_document["contentProvenance"]["conversion"].update({
+            "reviewRequired": True,
+            "errors": ["new current-target conversion error"],
+        })
+        target_path.write_text(yaml.safe_dump(target_document), encoding="utf-8")
+        self.assertEqual(
+            target_query,
+            yaml.safe_load(target_path.read_text(encoding="utf-8"))[
+                "properties"
+            ]["queryCondition"]["queryText"],
+        )
+
+        with using_run(self.solution, record["runId"]):
+            start_workflow_stage(self.solution, "validation")
+            with self.assertRaisesRegex(ValueError, "generated target hash is stale"):
+                complete_workflow_stage(
+                    self.solution,
+                    "validation",
+                    status="passed",
+                    artifacts={"runtimeStatus": "source-waived"},
+                )
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="blocked",
+                message="The generated target changed and must be refreshed.",
+            )
+
     def test_yolo_sdk_source_family_rejects_stale_query_hash(self) -> None:
         _, record = self._run_yolo(count=1)
         run = self.solution / "Logs" / "sentinel-xdr-migration" / record["runId"]

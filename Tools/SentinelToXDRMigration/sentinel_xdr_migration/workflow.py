@@ -45,6 +45,7 @@ from .converter import (
     analytic_rule_files,
     inspect_solution,
     convert_solution,
+    validate_document,
     validate_solution,
     solution_paths,
     xdr_detection_files,
@@ -56,6 +57,7 @@ from .packaging import (
     solution_data_version,
     version_bump_was_consumed,
 )
+from .source_runtime_waiver import SOURCE_PROVIDERS, missing_schema_whitelist_match
 
 STATE_FILE_NAME = "workflow-state.json"
 SCHEMA_VERSION = "1.2.0"
@@ -682,6 +684,7 @@ def _runtime_observations(
         if not isinstance(entries, list):
             raise ValueError(f"existing {provider} runtime report has no results list")
         names: set[str] = set()
+        waived_source_failures: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
         for entry in entries:
             if not isinstance(entry, dict):
                 raise ValueError(f"existing {provider} runtime report contains a malformed result")
@@ -708,6 +711,28 @@ def _runtime_observations(
                 raise ValueError(f"invalid {provider} result status {status!r} for {detection}")
             if status == "blocked" and shared_failure:
                 continue
+            source_whitelist_match = None
+            if (
+                status == "failed"
+                and provider in SOURCE_PROVIDERS
+                and report.get("querySurface") in (
+                    None,
+                    SOURCE_PROVIDERS[provider],
+                )
+                and not report.get("providerFallback")
+                and report.get("familyComplete") is not False
+                and not shared_failure
+            ):
+                source_whitelist_match = missing_schema_whitelist_match(
+                    entry,
+                    provider=provider,
+                    expected_query_sha256=expected,
+                )
+            if source_whitelist_match:
+                waived_source_failures.append(
+                    (rule_id, entry, source_whitelist_match)
+                )
+                continue
             message = str(entry.get("error") or f"{provider} reported {status}")
             runtime_findings[rule_id].append({
                 "findingId": f"runtime-{provider}-{len(runtime_findings[rule_id]) + 1}",
@@ -720,6 +745,45 @@ def _runtime_observations(
             all_reports_passed = False
         if report.get("familyComplete") is False:
             all_reports_passed = False
+        family_is_complete = (
+            names == set(detection_to_rule)
+            and report.get("familyComplete") is not False
+            and not shared_failure
+            and not report.get("providerFallback")
+            and report.get("querySurface")
+            in (None, SOURCE_PROVIDERS.get(provider))
+        )
+        for rule_id, entry, match in waived_source_failures:
+            if family_is_complete:
+                finding_id = (
+                    f"runtime-whitelist-{provider}-"
+                    f"{len(runtime_findings[rule_id]) + 1}"
+                )
+                runtime_findings[rule_id].append({
+                    "findingId": finding_id,
+                    "kind": "error",
+                    "message": (
+                        f"Source query is source-waived for {match['table']}: "
+                        f"{match['reason']} Raw provider status remains "
+                        f"{entry.get('status')!r}: {entry.get('error')!s}"
+                    ),
+                    "unresolved": False,
+                    "evidenceReferences": [reference],
+                })
+            else:
+                runtime_findings[rule_id].append({
+                    "findingId": (
+                        f"runtime-{provider}-"
+                        f"{len(runtime_findings[rule_id]) + 1}"
+                    ),
+                    "kind": "error",
+                    "message": str(
+                        entry.get("error")
+                        or f"{provider} reported {entry.get('status')}"
+                    ),
+                    "unresolved": True,
+                    "evidenceReferences": [reference],
+                })
     if not expected_hashes:
         all_reports_passed = False
     return runtime_findings, environment_errors, all_reports_passed
@@ -953,6 +1017,7 @@ def _current_yolo_record(
     if document["inventory"]["sha256"] != authoring["inventorySha256"]:
         raise ValueError("workflow state and authoring contract inventory hashes differ")
     _verify_source_inventory(solution, document)
+    _verify_target_hashes(solution, document)
     return document, content
 
 
@@ -980,6 +1045,96 @@ def _verify_target_hashes(solution: Path, document: dict[str, Any]) -> None:
             raise ValueError(
                 f"generated target hash is stale: {target['path']}; preserve user edits and start a new run"
             )
+
+
+def _validate_current_yolo_targets(
+    solution: Path,
+    record: dict[str, Any],
+) -> None:
+    root = solution.expanduser().resolve()
+    inventory = record.get("inventory", {}).get("rules") or []
+    results = record.get("results") or []
+    results_by_id = {
+        item.get("ruleId"): item
+        for item in results
+        if isinstance(item, dict)
+    }
+    inventory_by_id = {
+        item.get("ruleId"): item
+        for item in inventory
+        if isinstance(item, dict)
+    }
+    if (
+        not inventory_by_id
+        or len(inventory_by_id) != len(inventory)
+        or set(results_by_id) != set(inventory_by_id)
+        or len(results_by_id) != len(results)
+    ):
+        raise ValueError(
+            "source-waived validation requires current YOLO results for the complete source inventory"
+        )
+
+    _verify_target_hashes(root, record)
+    expected_outputs: set[str] = set()
+    for rule_id, rule in inventory_by_id.items():
+        source_path = str(rule.get("path") or "").replace("\\", "/")
+        source_parts = Path(source_path).parts
+        if (
+            len(source_parts) < 2
+            or source_parts[0].casefold() not in {"analytic rules", "analytics rules"}
+        ):
+            raise ValueError(
+                "source-waived validation requires safe full-inventory YOLO source paths"
+            )
+        expected_output = (
+            Path("XDR Detections") / Path(*source_parts[1:])
+        ).as_posix()
+        expected_outputs.add(expected_output)
+        result = results_by_id[rule_id]
+        target = result.get("target")
+        if not isinstance(target, dict) or target.get("path") != expected_output:
+            raise ValueError(
+                "source-waived validation requires a current generated target for every YOLO inventory rule"
+            )
+        target_path = content_path(root, expected_output)
+        try:
+            document = yaml.safe_load(target_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raise ValueError(
+                f"current YOLO target is unreadable or invalid: {expected_output}"
+            ) from exc
+        if not isinstance(document, dict):
+            raise ValueError(f"current YOLO target is not a YAML object: {expected_output}")
+        provenance = document.get("contentProvenance") or {}
+        source = provenance.get("source") or {}
+        conversion = provenance.get("conversion") or {}
+        if (
+            source.get("path") != source_path
+            or source.get("id") != rule_id
+            or source.get("querySha256") != rule.get("querySha256")
+            or conversion.get("status") != "converted"
+            or conversion.get("reviewRequired") is not False
+            or conversion.get("errors") not in ([], None)
+        ):
+            raise ValueError(
+                "source-waived validation is blocked by current YOLO target provenance, "
+                "conversion errors, or review requirements"
+            )
+        structural_errors = validate_document(document)
+        if structural_errors:
+            raise ValueError(
+                "source-waived validation is blocked by current YOLO target technical errors: "
+                + "; ".join(structural_errors)
+            )
+
+    current_outputs = {
+        path.relative_to(root).as_posix()
+        for path in xdr_detection_files(root / "XDR Detections")
+    }
+    if current_outputs != expected_outputs:
+        raise ValueError(
+            "source-waived validation requires current YOLO targets to match the complete source inventory"
+        )
 
 
 def _refresh_yolo_record_unlocked(
@@ -1025,8 +1180,13 @@ def _refresh_yolo_record_unlocked(
         findings = runtime_findings[result["ruleId"]]
         if findings:
             result["findings"].extend(findings)
-            result["status"] = "blocked"
-            result["deploymentDisposition"] = "authoringBlocked"
+            if any(
+                finding.get("kind") == "error"
+                and finding.get("unresolved") is True
+                for finding in findings
+            ):
+                result["status"] = "blocked"
+                result["deploymentDisposition"] = "authoringBlocked"
             for finding in findings:
                 for reference in finding["evidenceReferences"]:
                     if reference not in result["evidenceReferences"]:
@@ -1132,6 +1292,162 @@ def _read_full_conversion_manifest(
     return document
 
 
+def _source_waiver_unrelated_blockers(record: dict[str, Any]) -> list[str]:
+    blockers = []
+    for result in record.get("results") or []:
+        if (
+            result.get("status") != "migrated"
+            or result.get("conversionStatus") != "converted"
+            or result.get("validationStatus") != "passed"
+            or result.get("reviewRequired") is True
+            or (result.get("target") or {}).get("structurallyValid") is not True
+            or any(
+                isinstance(finding, dict)
+                and finding.get("unresolved") is True
+                and finding.get("kind") in {"error", "review"}
+                for finding in result.get("findings") or []
+            )
+        ):
+            blockers.append(str(result.get("ruleId") or "<unknown>"))
+    return blockers
+
+
+def _validate_source_waiver_conversion_gates(
+    solution: Path,
+    state_path: Path,
+    state: dict[str, Any],
+) -> None:
+    if any(
+        state["stages"][stage].get("status") != "passed"
+        for stage in ("discovery", "conversion")
+    ):
+        raise ValueError(
+            "source-waived validation requires passed discovery and full-solution conversion stages"
+        )
+    conversion_stage = state["stages"]["conversion"]
+
+    if state.get("authoring"):
+        record, _ = _current_yolo_record(solution, state_path, state)
+        _validate_current_yolo_targets(solution, record)
+        blockers = _source_waiver_unrelated_blockers(record)
+        if blockers:
+            raise ValueError(
+                "source-waived validation is blocked by unrelated technical or review gates: "
+                + ", ".join(blockers)
+            )
+        return
+
+    manifest_path = state_path.parent / "manifest.json"
+    conversion_artifacts = conversion_stage.get("artifacts")
+    expected_hash = (
+        conversion_artifacts.get("manifestSha256")
+        if isinstance(conversion_artifacts, dict)
+        else None
+    )
+    if not manifest_path.is_file() or not isinstance(expected_hash, str):
+        raise ValueError(
+            "source-waived validation requires a current full-solution conversion manifest"
+        )
+    manifest_bytes = manifest_path.read_bytes()
+    if hashlib.sha256(manifest_bytes).hexdigest() != expected_hash:
+        raise ValueError("source-waived validation conversion manifest is stale")
+    try:
+        manifest = json.loads(manifest_bytes)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("source-waived validation conversion manifest is invalid") from exc
+    scope = manifest.get("scope") if isinstance(manifest, dict) else None
+    results = manifest.get("results") if isinstance(manifest, dict) else None
+    total = manifest.get("total") if isinstance(manifest, dict) else None
+    if (
+        not isinstance(scope, dict)
+        or scope.get("kind") != "solution"
+        or type(total) is not int
+        or total < 1
+        or scope.get("sourceTotal") != total
+        or scope.get("selectedTotal") != total
+        or not isinstance(results, list)
+        or len(results) != total
+        or manifest.get("converted") != total
+        or manifest.get("excluded") != 0
+        or manifest.get("needsReview") != 0
+        or manifest.get("reviewRequired") != 0
+        or manifest.get("conflicts") != 0
+    ):
+        raise ValueError(
+            "source-waived validation requires complete, technically clean full-solution conversion"
+        )
+
+    root = solution.expanduser().resolve()
+    expected_outputs: set[str] = set()
+    for item in results:
+        if (
+            not isinstance(item, dict)
+            or item.get("status") != "converted"
+            or item.get("reviewRequired") is not False
+            or item.get("errors") not in ([], None)
+        ):
+            raise ValueError(
+                "source-waived validation is blocked by unrelated conversion or review findings"
+            )
+        source_reference = str(item.get("sourceRelativePath") or "").replace("\\", "/")
+        output_reference = str(item.get("outputRelativePath") or "").replace("\\", "/")
+        parts = Path(source_reference).parts
+        if (
+            len(parts) < 2
+            or parts[0].casefold() not in {"analytic rules", "analytics rules"}
+            or output_reference != (Path("XDR Detections") / Path(*parts[1:])).as_posix()
+            or output_reference in expected_outputs
+        ):
+            raise ValueError(
+                "source-waived validation conversion manifest has incomplete or conflicting output paths"
+            )
+        expected_outputs.add(output_reference)
+        target_path = content_path(root, output_reference)
+        if not target_path.is_file() or target_path.is_symlink():
+            raise ValueError(
+                "source-waived validation conversion target is missing or unsafe"
+            )
+        try:
+            document = yaml.safe_load(target_path.read_text(encoding="utf-8-sig")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            raise ValueError("source-waived validation conversion target is invalid") from exc
+        conversion = (
+            ((document.get("contentProvenance") or {}).get("conversion") or {})
+            if isinstance(document, dict)
+            else {}
+        )
+        if (
+            not isinstance(conversion, dict)
+            or conversion.get("status") != "converted"
+            or conversion.get("reviewRequired") is not False
+            or conversion.get("errors") not in ([], None)
+        ):
+            raise ValueError(
+                "source-waived validation is blocked by current Custom Detection review or conversion findings"
+            )
+
+    output_directory = root / "XDR Detections"
+    current_outputs = {
+        path.relative_to(root).as_posix()
+        for path in xdr_detection_files(output_directory)
+    }
+    if current_outputs != expected_outputs:
+        raise ValueError(
+            "source-waived validation requires conversion targets to match the full manifest inventory"
+        )
+    structural = validate_solution(root)
+    if (
+        structural.get("conversionScope", {}).get("kind") != "solution"
+        or structural.get("total") != total
+        or structural.get("invalid") != 0
+        or len(structural.get("results") or []) != total
+        or any(item.get("valid") is not True for item in structural.get("results") or [])
+    ):
+        raise ValueError(
+            "source-waived validation requires current full-solution structural validation to pass"
+        )
+
+
 def _current_runtime_status(
     solution: Path,
     profile: str,
@@ -1140,6 +1456,30 @@ def _current_runtime_status(
     from .runtime import current_runtime_evidence
 
     evidence = current_runtime_evidence(solution)
+    if (
+        evidence.get("sourceWhitelist")
+        and not evidence.get("sourceWaiverOnlyBlocker")
+    ):
+        return (
+            "blocked",
+            "The IdentityInfo source failure is visible as source-waived, but XDR runtime "
+            "or another exact validation gate is incomplete; validation stays blocked.",
+            evidence,
+        )
+    if evidence.get("sourceWaiverOnlyBlocker"):
+        unrelated_blockers = _source_waiver_unrelated_blockers(record)
+        if unrelated_blockers:
+            return (
+                "blocked",
+                "Source waiver is recorded, but unrelated technical or review gates remain; validation stays blocked.",
+                evidence,
+            )
+        return (
+            "source-waived",
+            "Validation completed with the built-in IdentityInfo source-table whitelist. "
+            "The raw Sentinel query result remains failed; this run is not fully runtime-qualified.",
+            evidence,
+        )
     if evidence.get("passed"):
         return "passed", None, evidence
     if any(
@@ -1164,6 +1504,41 @@ def _current_runtime_status(
     )
 
 
+def _source_whitelist_stage_artifacts(
+    runtime_evidence: dict[str, Any],
+) -> dict[str, str]:
+    entries = runtime_evidence.get("sourceWhitelist")
+    if not isinstance(entries, list) or not entries:
+        return {}
+    summary = [
+        {
+            "detection": item.get("detection"),
+            "table": item.get("table"),
+            "status": item.get("status"),
+            "applied": item.get("applied") is True,
+            "querySha256": item.get("querySha256"),
+            "reason": item.get("reason"),
+            "rawStatus": (item.get("rawFailure") or {}).get("status"),
+            "rawStatusCode": (item.get("rawFailure") or {}).get("statusCode"),
+            "rawFailureKind": (item.get("rawFailure") or {}).get("failureKind"),
+        }
+        for item in entries
+        if isinstance(item, dict)
+    ]
+    return {
+        "sourceRuntimeWhitelistTable": "IdentityInfo",
+        "sourceRuntimeWhitelistCount": str(len(summary)),
+        "sourceRuntimeWhitelistStatus": (
+            "source-waived"
+            if summary and all(item["applied"] for item in summary)
+            else "candidate-blocked"
+        ),
+        "sourceRuntimeWhitelist": json.dumps(
+            summary, sort_keys=True, separators=(",", ":")
+        ),
+    }
+
+
 def _complete_runtime_pending_stage(
     solution: Path,
     state_path: Path,
@@ -1176,13 +1551,30 @@ def _complete_runtime_pending_stage(
         and str(stage.get("message") or "").startswith("Runtime validation is not complete")
     ):
         return state
-    status, message, _ = _current_runtime_status(
+    status, message, runtime_evidence = _current_runtime_status(
         solution, state["context"]["workflowProfile"], record
     )
-    if status not in {"passed", "environment-blocked"}:
+    if status not in {"passed", "environment-blocked", "source-waived"}:
         return state
+    if status == "source-waived":
+        _validate_source_waiver_conversion_gates(solution, state_path, state)
+        whitelist = runtime_evidence.get("sourceWhitelist") or []
+        if not whitelist or any(
+            item.get("table") != "IdentityInfo"
+            or item.get("rawFailure", {}).get("status") != "failed"
+            or item.get("applied") is not True
+            for item in whitelist
+        ):
+            return state
     _start_workflow_stage_unlocked(solution, "validation", state_path)
-    artifacts = {"runtimeStatus": status} if status == "environment-blocked" else {}
+    artifacts = (
+        {"runtimeStatus": status}
+        if status in {"environment-blocked", "source-waived"}
+        else {}
+    )
+    if status == "source-waived":
+        artifacts.update(_source_whitelist_stage_artifacts(runtime_evidence))
+        artifacts["sourceRuntimeWhitelistRawStatus"] = "failed"
     _complete_workflow_stage_unlocked(
         solution,
         "validation",
@@ -1190,6 +1582,7 @@ def _complete_runtime_pending_stage(
         status="passed",
         message=message,
         artifacts=artifacts,
+        evidence=None,
     )
     return _load(solution)[1]
 
@@ -1587,6 +1980,15 @@ def run_yolo_authoring(solution: str | Path) -> dict[str, Any]:
             if validation_status == "environment-blocked":
                 final_status = "passed"
                 final_artifacts = {"runtimeStatus": "environment-blocked"}
+            elif validation_status == "source-waived":
+                final_status = "passed"
+                whitelist = runtime_evidence.get("sourceWhitelist") or []
+                final_artifacts = {
+                    "runtimeStatus": "source-waived",
+                    "sourceRuntimeWhitelistTable": "IdentityInfo",
+                    "sourceRuntimeWhitelistCount": str(len(whitelist)),
+                    "sourceRuntimeWhitelistRawStatus": "failed",
+                }
             elif validation_status == "passed":
                 final_status = "passed"
                 final_artifacts = {}
@@ -1614,6 +2016,7 @@ def run_yolo_authoring(solution: str | Path) -> dict[str, Any]:
                 "resumed": conversion_stage["status"] == "running",
                 "workPerformed": True,
                 "validationStatus": final_status,
+                "runtimeStatus": validation_status,
                 "packageAuthorized": False,
                 "qualificationAuthorized": False,
                 "prCreationAuthorized": False,
@@ -2691,6 +3094,17 @@ def package_workflow_v3_1(
 
 def workflow_status(solution: str | Path) -> dict[str, Any]:
     path, state = _load(solution)
+    from .runtime import current_runtime_evidence
+
+    try:
+        runtime_evidence = current_runtime_evidence(solution)
+    except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as exc:
+        runtime_evidence = {
+            "passed": False,
+            "sourceStatus": "blocked",
+            "sourceWhitelist": [],
+            "issues": [f"current runtime assessment unavailable: {type(exc).__name__}"],
+        }
     authoring_summary = None
     if state.get("authoring"):
         document, _ = _load_contract_snapshot(path.parent, state["authoring"]["currentContract"])
@@ -2703,6 +3117,22 @@ def workflow_status(solution: str | Path) -> dict[str, Any]:
     return {
         **state,
         "packageFreshness": _package_freshness(solution, state),
+        "runtimeAssessment": {
+            "runtimeStatus": (
+                "passed"
+                if runtime_evidence.get("passed")
+                else "source-waived"
+                if runtime_evidence.get("sourceStatus") == "source-waived"
+                else "blocked"
+            ),
+            "sourceStatus": runtime_evidence.get("sourceStatus", "not-run"),
+            "fullyRuntimeQualified": bool(runtime_evidence.get("passed")),
+            "sourceWaiverOnlyBlocker": bool(
+                runtime_evidence.get("sourceWaiverOnlyBlocker")
+            ),
+            "sourceWhitelist": runtime_evidence.get("sourceWhitelist") or [],
+            "issues": runtime_evidence.get("issues") or [],
+        },
         "authoringSummary": authoring_summary,
         "budgetSummary": (
             budget_summary(solution, state["budget"]["campaignId"])
@@ -2965,7 +3395,45 @@ def _complete_workflow_stage_unlocked(
         from .runtime import current_runtime_evidence
 
         runtime_evidence = current_runtime_evidence(solution)
-        if runtime_status == "environment-blocked":
+        if runtime_status == "source-waived":
+            if not runtime_evidence.get("sourceWaiverOnlyBlocker"):
+                raise ValueError(
+                    "source-waived validation requires an exact IdentityInfo source failure "
+                    "and every other exact runtime gate to pass"
+                )
+            _validate_source_waiver_conversion_gates(
+                Path(solution).expanduser().resolve(),
+                path,
+                state,
+            )
+            whitelist = runtime_evidence.get("sourceWhitelist") or []
+            if not whitelist or any(
+                item.get("table") != "IdentityInfo"
+                or item.get("rawFailure", {}).get("status") != "failed"
+                or item.get("applied") is not True
+                for item in whitelist
+            ):
+                raise ValueError(
+                    "source-waived validation requires current failed raw results "
+                    "classified by the IdentityInfo whitelist"
+                )
+            final_artifacts.update(
+                _source_whitelist_stage_artifacts(runtime_evidence)
+            )
+            final_artifacts["runtimeStatus"] = "source-waived"
+            final_artifacts["sourceRuntimeWhitelistRawStatus"] = "failed"
+            final_artifacts.setdefault("sentinelRuntimeProvider", runtime_evidence["sentinelProvider"])
+            final_artifacts.setdefault("sentinelRuntimeReport", runtime_evidence["sentinelReport"])
+            final_artifacts.setdefault("advancedHuntingRuntimeReport", runtime_evidence["graphReport"])
+        elif runtime_status == "environment-blocked":
+            if (
+                runtime_evidence.get("sourceStatus") == "source-waived"
+                or runtime_evidence.get("sourceWhitelist")
+            ):
+                raise ValueError(
+                    "an IdentityInfo source whitelist match cannot be relabeled "
+                    "environment-blocked; XDR and source-waiver gates must be evaluated"
+                )
             if state["context"]["workflowProfile"] != "authoring":
                 raise ValueError(
                     "Qualification validation cannot pass as environment-blocked; "
@@ -2991,6 +3459,18 @@ def _complete_workflow_stage_unlocked(
             final_artifacts.setdefault("sentinelRuntimeProvider", runtime_evidence["sentinelProvider"])
             final_artifacts.setdefault("sentinelRuntimeReport", runtime_evidence["sentinelReport"])
             final_artifacts.setdefault("advancedHuntingRuntimeReport", runtime_evidence["graphReport"])
+    elif stage == "validation" and status in {"blocked", "failed"}:
+        from .runtime import current_runtime_evidence
+
+        try:
+            runtime_evidence = current_runtime_evidence(solution)
+        except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
+            runtime_evidence = {}
+        final_artifacts.update(
+            _source_whitelist_stage_artifacts(runtime_evidence)
+        )
+        if final_artifacts.get("sourceRuntimeWhitelistCount"):
+            final_artifacts["sourceRuntimeWhitelistRawStatus"] = "failed"
     if stage == "packaging" and status == "passed":
         _validate_packaging_evidence(state, final_artifacts, solution)
     if (

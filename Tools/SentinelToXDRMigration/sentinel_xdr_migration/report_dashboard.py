@@ -795,6 +795,14 @@ def _result_html(rule: dict[str, Any]) -> str:
                 f"<li>{name} runtime — {_text(runtime.get('provider'))}: "
                 f"{_text(_status_label(runtime.get('status')))} · {measurement}</li>"
             )
+            whitelist = runtime.get("sourceWhitelist")
+            if isinstance(whitelist, dict):
+                lines.append(
+                    f"<li>Source table whitelist — {_text(whitelist.get('table'))}: "
+                    f"{_text(whitelist.get('status'))}; raw result "
+                    f"{_text((whitelist.get('rawFailure') or {}).get('status'))}; "
+                    f"{_text(whitelist.get('reason'))}</li>"
+                )
         for field, label in (("deploymentStatus", "deployment"), ("alertStatus", "alerts")):
             value = side.get(field)
             if value not in {None, "not-run", "not-recorded"}:
@@ -817,8 +825,15 @@ def _run_html(report: dict[str, Any]) -> str:
     for name, stage in stages.items():
         label = STAGE_LABELS.get(name, name)
         status = stage.get("status")
+        runtime_status = (
+            (stage.get("artifacts") or {}).get("runtimeStatus")
+            if isinstance(stage.get("artifacts"), dict)
+            else None
+        )
         display_status = (
             "Pending" if status == "pending" and stage.get("attempts") != 0
+            else "Source waived — not fully runtime-qualified"
+            if name == "validation" and runtime_status == "source-waived"
             else _status_label(status)
         )
         stage_html.append(f'<li class="stage {_text(status)}">{_text(label)}: {_text(display_status)}</li>')
@@ -835,6 +850,23 @@ def _run_html(report: dict[str, Any]) -> str:
         bool(rule.get("analyticRule", {}).get("runtime") or rule["customDetection"].get("runtime"))
         for rule in report["rules"]
     )
+    runtime_assessment = (
+        report.get("runtimeAssessment")
+        if isinstance(report.get("runtimeAssessment"), dict)
+        else {}
+    )
+    whitelist_entries = (
+        runtime_assessment.get("sourceWhitelist")
+        if isinstance(runtime_assessment.get("sourceWhitelist"), list)
+        else []
+    )
+    whitelist_summary = ""
+    if whitelist_entries:
+        whitelist_summary = (
+            f"<p>Source runtime whitelist: {len(whitelist_entries)} IdentityInfo "
+            "missing-table result(s) classified; raw query results remain failed. "
+            "This does not indicate XDR runtime qualification.</p>"
+        )
     workspace = "Configured in run context" if workflow.get("workspaceConfigured") else "Not recorded in run context"
     return (
         '<section class="panel" aria-labelledby="run-heading"><h2 id="run-heading">Run context</h2>'
@@ -842,7 +874,8 @@ def _run_html(report: dict[str, Any]) -> str:
         f" · Run {_text(workflow.get('runId'))} · {_text(_status_label(workflow.get('status')))}</p>"
         '<ol class="stages">' + "".join(stage_html) + "</ol>"
         f"<p>Workspace: {workspace}. Runtime evidence available for {runtime_rules} of {len(report['rules'])} rules.</p>"
-        "<p class=\"muted\">Shared stage status does not override individual results. Missing evidence is not proof "
+        + whitelist_summary
+        + "<p class=\"muted\">Shared stage status does not override individual results. Missing evidence is not proof "
         "a check was skipped. Optional stages are marked Not required only when recorded by the workflow.</p>"
         "<details><summary>Run messages, environment reasons and historical evidence</summary>"
         "<p class=\"muted\">Recorded text may contain historical counts; current artifact counts appear below.</p>"
@@ -898,6 +931,7 @@ def _flow_stage(stage: Any, *, freshness: Any = None) -> dict[str, Any]:
         "stale": ("stale", "Stale"),
     }.get(raw, ("unknown", "Evidence unavailable" if raw is None else "Unknown status"))
     display = normalized[1]
+    artifacts = stage.get("artifacts") if isinstance(stage.get("artifacts"), dict) else {}
     freshness_status = None
     if isinstance(freshness, dict):
         freshness_status = freshness.get("status") if isinstance(freshness.get("status"), str) else None
@@ -906,11 +940,15 @@ def _flow_stage(stage: Any, *, freshness: Any = None) -> dict[str, Any]:
             normalized = ("stale", "Stale package")
         elif freshness_status != "current":
             normalized = ("unknown", "Freshness unverified")
+    if artifacts.get("runtimeStatus") == "source-waived":
+        display = "Source waived — not fully runtime-qualified"
+    else:
+        display = normalized[1]
     message = stage.get("message") if isinstance(stage.get("message"), str) else ""
     evidence = stage.get("evidence") if isinstance(stage.get("evidence"), list) else []
     return {
         "state": normalized[0],
-        "display": normalized[1],
+        "display": display,
         "raw": raw or "",
         "freshness": freshness_status or "",
         "freshnessReason": (
