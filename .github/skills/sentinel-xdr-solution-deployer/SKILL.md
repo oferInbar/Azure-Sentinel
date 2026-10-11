@@ -6,9 +6,12 @@ description: Deploy and verify Sentinel Analytic Rules and Defender XDR Custom D
 # Deploy Sentinel and XDR detections safely
 
 Use this skill only after conversion, runtime validation, and packaging have
-passed. Deployment is a write operation and always requires explicit user
-approval for the exact subscription, resource group, workspace, solution, and
-deployment mode.
+passed, except for the exact scoped CiscoASA 3.1.0 package-acceptance procedure
+documented in the canonical workflow. That exception permits separately
+recorded ARM validation only while retaining the failed packaging stage and
+all failed/skipped local checks. Deployment is a write operation and always
+requires separate explicit user approval for the exact subscription, resource
+group, workspace, solution, and deployment mode.
 
 ## Modes
 
@@ -27,6 +30,15 @@ support remains unverified; do not treat emitted templates as proof of live
 acceptance. The obsolete `RegisterE5Content` and `E5Flavor` controls are not
 declared. Exact-scope approval must explicitly include registration when
 selecting CDs. Existing instances are not disabled or removed by these switches.
+
+For the one authorized CiscoASA exception, use the toolkit's
+`package-acceptance approve`, `package-acceptance validate`, and, only after
+separate final write approval, `package-acceptance deploy` commands. These
+commands enforce the exact template hash and non-production target, run the
+Sentinel-content and CD-only parameter configurations, and keep the original
+failed packaging/local-validation results intact. This is not a general gate
+override and does not mark packaging, registration support, or alert parity
+passed. Do not substitute `what-if` if ARM validation is unavailable.
 
 ### Alert-parity preparation
 

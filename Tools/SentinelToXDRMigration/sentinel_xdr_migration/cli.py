@@ -18,6 +18,11 @@ from .artifacts import migrate_reports, select_run, reset_run_selection, list_ru
 from .evidence import export_evidence
 from .onboarding import configure_workspace, doctor, setup
 from .packaging import package_solution_v3_1
+from .package_acceptance import (
+    approve_package_acceptance,
+    deploy_package_acceptance,
+    validate_package_acceptance,
+)
 from .deployment import deploy_solution, setup_deployment_authentication
 from .analytic_deployment import deploy_analytic_rules
 from .alert_parity import (
@@ -245,6 +250,35 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         choices=["none", "patch", "minor", "major"],
     )
+    package_acceptance = subparsers.add_parser(
+        "package-acceptance",
+        help="Run the exact approved CiscoASA 3.1.0 ARM package-acceptance exception.",
+    )
+    package_acceptance_subparsers = package_acceptance.add_subparsers(
+        dest="package_acceptance_action",
+        required=True,
+    )
+    package_acceptance_approve = package_acceptance_subparsers.add_parser(
+        "approve",
+        help="Record the explicit, read-only ARM validation exception approval.",
+    )
+    package_acceptance_approve.add_argument("--solution", required=True)
+    package_acceptance_approve.add_argument("--run-id", required=True)
+    package_acceptance_approve.add_argument("--approver", required=True)
+    package_acceptance_approve.add_argument("--approval-text", required=True)
+    package_acceptance_validate = package_acceptance_subparsers.add_parser(
+        "validate",
+        help="Preflight the exact lab and validate the two fixed ARM configurations.",
+    )
+    package_acceptance_validate.add_argument("--solution", required=True)
+    package_acceptance_validate.add_argument("--run-id", required=True)
+    package_acceptance_deploy = package_acceptance_subparsers.add_parser(
+        "deploy",
+        help="Deploy both configurations only after matching validation and final approval.",
+    )
+    package_acceptance_deploy.add_argument("--solution", required=True)
+    package_acceptance_deploy.add_argument("--run-id", required=True)
+    package_acceptance_deploy.add_argument("--final-approval", required=True)
     workflow_init = subparsers.add_parser(
         "workflow-init",
         help="Create or resume the gated end-to-end migration workflow state.",
@@ -408,6 +442,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.solution,
                 version_bump=args.version_bump,
             )
+        elif args.command == "package-acceptance":
+            if args.package_acceptance_action == "approve":
+                result = approve_package_acceptance(
+                    args.solution,
+                    approver=args.approver,
+                    approval_text=args.approval_text,
+                )
+            elif args.package_acceptance_action == "validate":
+                result = validate_package_acceptance(args.solution)
+            else:
+                result = deploy_package_acceptance(
+                    args.solution,
+                    final_approval=args.final_approval,
+                )
         elif args.command == "inspect":
             result = inspect_solution(args.solution)
         elif args.command == "convert":
@@ -529,6 +577,12 @@ def main(argv: list[str] | None = None) -> int:
     ):
         return 1
     if args.command in ("deploy", "deploy-analytic-rules") and result["failed"]:
+        return 1
+    if (
+        args.command == "package-acceptance"
+        and args.package_acceptance_action in {"validate", "deploy"}
+        and result["status"] not in {"passed", "accepted"}
+    ):
         return 1
     if args.command == "complete-alert-parity" and result["status"] != "passed":
         return 1

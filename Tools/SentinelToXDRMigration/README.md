@@ -1035,13 +1035,66 @@ Every packaging stage runs through:
 ```powershell
 sentinel-xdr-migration package-v3-1 `
   --solution "Solutions\<solution>" `
-  --version-bump none
+  --version-bump patch
 ```
 
 The command invokes `V3/createSolutionV3_1.ps1` (V3.1) and writes
 `Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\packaging.v3_1.json`. A packaging
 stage cannot pass without that current-run V3.1 evidence and all generated
-package artifacts.
+package artifacts. The package argument must match the version action chosen
+at workflow initialization; it applies that planned bump once, not an additional
+second bump.
+
+### Scoped CiscoASA ARM package acceptance
+
+There is one narrow maintainer-authorized exception for the exact CiscoASA
+3.1.0 ARM template hash and the ContentCreation / ContentTestCreation lab
+target. It does not alter workflow state or waive any local check. The workflow
+must still show discovery, conversion, and validation passed and packaging
+failed; the approval artifact snapshots that failure and its validation-log
+hash. The package hash and target are hard-coded allowlist checks, not general
+CLI options.
+
+Record the already obtained package-test approval against the current run:
+
+```powershell
+sentinel-xdr-migration package-acceptance approve `
+  --solution "Solutions\CiscoASA" `
+  --run-id "<existing-run-id>" `
+  --approver "<approver or approval reference>" `
+  --approval-text "I approve the scoped CiscoASA 3.1.0 ARM package-acceptance tests; failed and skipped local checks remain failed and skipped."
+```
+
+Then run the read-only exact-workspace preflight and the two fixed ARM
+validations:
+
+```powershell
+sentinel-xdr-migration package-acceptance validate `
+  --solution "Solutions\CiscoASA" `
+  --run-id "<existing-run-id>"
+```
+
+One configuration validates the package's Sentinel content defaults with CDs
+off; the other validates only the three disabled Custom Detections and their
+three Content Hub registrations. Validation is not deployment, live
+registration proof, packaging success, or parity. It uses ARM `validate`, not
+`what-if`, and never writes to Azure.
+
+Resource writes are a separate optional command. Do not run it until a second,
+immediate approval explicitly covers this exact target, both configurations,
+and CD installation plus registration:
+
+```powershell
+sentinel-xdr-migration package-acceptance deploy `
+  --solution "Solutions\CiscoASA" `
+  --run-id "<existing-run-id>" `
+  --final-approval "I approve resource writes for CiscoASA 3.1.0 ARM package acceptance to the exact recorded ContentCreation / ContentTestCreation lab target, including Custom Detection installation and Content Hub registration."
+```
+
+That command requires successful matching ARM validations and records provider
+results separately from the failed packaging/local checks. It does not change
+workflow stages, enable detections, ingest mocks, delete resources, or claim
+registration support or alert parity.
 
 Old V4 reports remain historical evidence; do not relabel them as V3.1.
 Rebuild using `package-v3-1`. Package-version selection is unchanged, but V3.1

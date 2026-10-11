@@ -505,6 +505,38 @@ into the ARM payload, without changing the complete YAML/provenance. Disclose
 this intentional classification loss; packaging is not classification/alert
 parity validation and must not mark parity passed.
 
+#### Narrow CiscoASA ARM acceptance exception
+
+The independent `package-acceptance` command has one reviewed maintainer
+exception for the exact CiscoASA 3.1.0 template SHA-256 and the approved
+ContentCreation / ContentTestCreation non-production target. It is not a
+workflow-stage waiver. The existing workflow must remain unchanged, including
+its failed packaging stage and every failed or skipped local check. The
+exception records the approval, package hash, exact target, and original
+packaging evidence in that existing run's Logs.
+
+Use `package-acceptance approve` only with the exact approved scope and explicit
+acknowledgement that failed/skipped checks remain failed/skipped. It requires
+the current run's discovery, conversion, and validation stages to be passed,
+the packaging stage to be failed, and the canonical V3.1 package report and
+local-validation transcript to exist. Then `package-acceptance validate` may
+perform read-only preflight against only the recorded tenant, subscription,
+resource group, and workspace, followed by two ARM validations:
+
+1. Sentinel rules, playbooks, workbook, and data connector selected; CDs off.
+2. CDs and their three Content Hub registrations selected; all other content
+   switches off.
+
+The package hash, target, disabled CD payloads, and exact parameter sets are
+rechecked. ARM validation is not deployment, registration proof, parity, or a
+packaging-stage pass. No what-if fallback, global gate bypass, workflow-state
+mutation, mock ingestion, rule enablement, or deletion is supported. The
+optional `package-acceptance deploy` command requires both matching ARM
+validations and a separate final approval that names the exact target and
+explicitly includes CD installation and registration; it deploys only the two
+fixed configurations and records each provider result. Registration support
+remains unverified.
+
 ### Deployment — qualification only
 
 Deploy every reviewed AR and CD disabled. Verify Azure RBAC and Microsoft Graph
