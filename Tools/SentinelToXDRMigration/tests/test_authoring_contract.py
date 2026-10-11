@@ -5,7 +5,9 @@ import unittest
 
 from sentinel_xdr_migration.authoring_contract import (
     AuthoringContractError,
+    AUTHORING_SCHEMA_VERSION,
     calculate_coverage,
+    calculate_inventory_sha256,
     calculate_operation_eligibility,
     seal_authoring_contract,
     validate_authoring_contract,
@@ -257,6 +259,78 @@ class AuthoringContractTests(unittest.TestCase):
         record["operationEligibility"]["deploymentAuthorized"] = True
         with self.assertRaises(AuthoringContractError):
             validate_authoring_contract(record)
+
+    def test_version_1_1_binds_complete_paths_queries_and_immutable_snapshot_revision(self):
+        record = make_contract(["migrated", "unprocessed"])
+        record["schemaVersion"] = AUTHORING_SCHEMA_VERSION
+        record["snapshot"] = {"revision": 1, "previousSha256": None}
+        for index, rule in enumerate(record["inventory"]["rules"]):
+            rule["path"] = f"Analytic Rules/Nested/Rule{index}.yaml"
+            rule["querySha256"] = f"{index + 3:064x}"
+            result = record["results"][index]
+            result["conversionStatus"] = "converted" if index == 0 else "unprocessed"
+            result["validationStatus"] = "passed" if index == 0 else "notRun"
+            if result["target"]:
+                result["target"]["querySha256"] = f"{index + 5:064x}"
+        record["inventory"]["sha256"] = calculate_inventory_sha256(
+            record["inventory"]["rules"]
+        )
+        record["source"]["sha256"] = record["inventory"]["sha256"]
+        record.pop("coverage")
+        record.pop("operationEligibility")
+        record = seal_authoring_contract(record)
+
+        parsed = validate_authoring_contract(record)
+        self.assertEqual(AUTHORING_SCHEMA_VERSION, parsed.schema_version)
+        self.assertEqual(1, parsed.revision)
+        self.assertEqual(
+            "Analytic Rules/Nested/Rule0.yaml",
+            parsed.inventory[0].path,
+        )
+        self.assertEqual(f"{5:064x}", parsed.results[0].target.query_sha256)
+        self.assertEqual((2, 1, 0), (
+            calculate_coverage(parsed).N,
+            calculate_coverage(parsed).M,
+            calculate_coverage(parsed).E,
+        ))
+
+        stale = copy.deepcopy(record)
+        stale["inventory"]["rules"][0]["querySha256"] = "f" * 64
+        stale.pop("coverage")
+        stale.pop("operationEligibility")
+        with self.assertRaisesRegex(AuthoringContractError, "inventory SHA-256"):
+            seal_authoring_contract(stale)
+
+    def test_version_1_1_requires_safe_paths_query_hashes_and_snapshot_chain_shape(self):
+        record = make_contract(["unprocessed"])
+        record["schemaVersion"] = AUTHORING_SCHEMA_VERSION
+        record["snapshot"] = {"revision": 1, "previousSha256": None}
+        record["inventory"]["rules"][0]["path"] = "../outside.yaml"
+        record["inventory"]["rules"][0]["querySha256"] = HASH
+        record["inventory"]["sha256"] = calculate_inventory_sha256(
+            record["inventory"]["rules"]
+        )
+        record["results"][0]["conversionStatus"] = "unprocessed"
+        record["results"][0]["validationStatus"] = "notRun"
+        record.pop("coverage")
+        record.pop("operationEligibility")
+        with self.assertRaisesRegex(AuthoringContractError, "safe repository-relative path"):
+            seal_authoring_contract(record)
+
+        record = make_contract(["unprocessed"])
+        record["schemaVersion"] = AUTHORING_SCHEMA_VERSION
+        record["snapshot"] = {"revision": 2, "previousSha256": None}
+        record["inventory"]["rules"][0]["path"] = "Analytic Rules/Rule.yaml"
+        record["inventory"]["rules"][0]["querySha256"] = HASH
+        record["inventory"]["sha256"] = calculate_inventory_sha256(
+            record["inventory"]["rules"]
+        )
+        record["results"][0]["conversionStatus"] = "unprocessed"
+        record["results"][0]["validationStatus"] = "notRun"
+        record.pop("coverage")
+        record.pop("operationEligibility")
+        with self.assertRaisesRegex(AuthoringContractError, "revision 1"):
+            seal_authoring_contract(record)
 
 
 if __name__ == "__main__":

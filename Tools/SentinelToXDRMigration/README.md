@@ -872,6 +872,55 @@ interactive accept/reject decision experience are not implemented by this
 package itself; follow the agent capabilities actually available and never
 claim these pending orchestration features ran when they did not.
 
+### Opt-in full-inventory YOLO authoring
+
+For resumable local authoring with a frozen recursive source-rule denominator,
+initialize a **new** run with the already-selected profile and `--yolo`.
+Qualification still requires its existing locked target; YOLO does not select a
+profile, discover a workspace, or authorize environment writes:
+
+```powershell
+sentinel-xdr-migration workflow-init `
+  --solution "Solutions\<solution>" `
+  --workflow-profile authoring `
+  --version-bump none `
+  --yolo
+
+sentinel-xdr-migration workflow-yolo `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id-returned-by-workflow-init>"
+sentinel-xdr-migration workflow-status `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>"
+```
+
+The contract freezes every recursive `Analytic Rules` source path, identity,
+source hash, and query hash for that run. It reuses existing discovery,
+full-solution conversion, and structural validation; it does not invoke runtime
+providers. `workflow-yolo-refresh --solution ... --run-id ...` imports only
+existing provider reports bound to current query hashes; it does not run
+queries or overwrite changed source or generated content. A stale inventory,
+source/query hash, or generated target is a conflict to resolve explicitly,
+not an invitation to shrink the denominator or discard user edits.
+
+Coverage reports `N` (all frozen unique source rules), `M` (structurally valid
+converted targets with no unresolved rule errors), and `E` (rules with an
+unresolved error or suppressed disposition, counted once per rule).
+Unprocessed, blocked, and suppressed rules remain in the denominator. Shared
+provider/environment failures are recorded separately from per-rule errors.
+The run stops when
+`100 * E > 50 * N`; once stopped, better later evidence does not resume it.
+`100 * M >= 80 * N` is advisory only and does not authorize packaging, PR
+creation, qualification, deployment, ingestion, or any other write. The normal
+review, validation, explicit approval, and packaging gates remain in force.
+
+YOLO cannot be enabled by resuming a legacy run. Use `--new-run` with an
+explicit profile and `--yolo` to start a separate run. Always select the exact
+run ID when reading or writing if there is more than one. The optional
+`export-evidence --include-authoring-contract --run-id "<run-id>"` flag includes
+the selected run's validated contract projection in the explicit local evidence
+export; the default export remains unchanged.
+
 ### Single-rule conversion
 
 For an explicitly reviewed pilot or isolated refresh, select exactly one source

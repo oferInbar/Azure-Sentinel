@@ -15,9 +15,61 @@
     "coverage",
     "operationEligibility"
   ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "const": "1.1.0"
+          }
+        }
+      },
+      "then": {
+        "required": ["snapshot"],
+        "properties": {
+          "inventory": {
+            "required": ["sha256"],
+            "properties": {
+              "rules": {
+                "items": {
+                  "required": ["path", "querySha256"]
+                }
+              }
+            }
+          },
+          "results": {
+            "items": {
+              "required": ["conversionStatus", "validationStatus"]
+            }
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "schemaVersion": {
-      "const": "1.0.0"
+      "enum": ["1.0.0", "1.1.0"]
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "previousSha256"],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "previousSha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
     },
     "runId": {
       "type": "string",
@@ -42,6 +94,9 @@
       "additionalProperties": false,
       "required": ["complete", "rules"],
       "properties": {
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
         "complete": {
           "const": true
         },
@@ -119,7 +174,14 @@
           "type": "string",
           "minLength": 1
         },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
         "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "querySha256": {
           "$ref": "#/$defs/sha256"
         },
         "evidenceReferences": {
@@ -169,6 +231,9 @@
         "sha256": {
           "$ref": "#/$defs/sha256"
         },
+        "querySha256": {
+          "$ref": "#/$defs/sha256"
+        },
         "structurallyValid": {
           "type": "boolean"
         }
@@ -201,8 +266,14 @@
         "status": {
           "enum": ["migrated", "blocked", "suppressed", "unprocessed"]
         },
+        "conversionStatus": {
+          "enum": ["converted", "needsReview", "conflict", "excluded", "unprocessed"]
+        },
+        "validationStatus": {
+          "enum": ["passed", "failed", "notRun"]
+        },
         "deploymentDisposition": {
-          "enum": ["normal", "deploymentBlocked", "suppressed"]
+          "enum": ["normal", "deploymentBlocked", "suppressed", "authoringBlocked"]
         },
         "target": {
           "oneOf": [
@@ -287,7 +358,7 @@
       ],
       "properties": {
         "schemaVersion": {
-          "const": "1.0.0"
+          "enum": ["1.0.0", "1.1.0"]
         },
         "runId": {
           "type": "string",
@@ -353,7 +424,7 @@
       ],
       "properties": {
         "schemaVersion": {
-          "const": "1.0.0"
+          "enum": ["1.0.0", "1.1.0"]
         },
         "runId": {
           "type": "string",

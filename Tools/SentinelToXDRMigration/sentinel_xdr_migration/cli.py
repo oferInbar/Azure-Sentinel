@@ -36,6 +36,9 @@ from .workflow import (
     complete_workflow_stage,
     initialize_workflow,
     next_workflow_stage,
+    read_authoring_contract,
+    refresh_yolo_authoring,
+    run_yolo_authoring,
     start_workflow_stage,
     workflow_status,
 )
@@ -83,6 +86,11 @@ def main(argv: list[str] | None = None) -> int:
     migration.add_argument("--apply", action="store_true", help="Copy after reviewing the dry-run; originals are preserved.")
     evidence = subparsers.add_parser("export-evidence", help="Explicitly export immutable, curated local PR evidence; no cloud writes.")
     evidence.add_argument("--solution", required=True)
+    evidence.add_argument(
+        "--include-authoring-contract",
+        action="store_true",
+        help="Include the selected run's validated, immutable YOLO contract projection.",
+    )
     for command in (
         "inspect",
         "convert",
@@ -269,6 +277,21 @@ def main(argv: list[str] | None = None) -> int:
         choices=WORKFLOW_PROFILES,
         help="Explicitly select authoring or qualification before initialization.",
     )
+    workflow_init.add_argument(
+        "--yolo",
+        action="store_true",
+        help="Opt into full-inventory, resumable local authoring orchestration for a new run.",
+    )
+    workflow_yolo = subparsers.add_parser(
+        "workflow-yolo",
+        help="Run the existing local discovery, full-solution converter, and structural validator under an initialized YOLO contract.",
+    )
+    workflow_yolo.add_argument("--solution", required=True)
+    workflow_yolo_refresh = subparsers.add_parser(
+        "workflow-yolo-refresh",
+        help="Import current hash-bound provider reports without rerunning conversion or validation.",
+    )
+    workflow_yolo_refresh.add_argument("--solution", required=True)
     workflow_status_parser = subparsers.add_parser(
         "workflow-status",
         help="Show the persisted end-to-end migration workflow state.",
@@ -331,7 +354,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "workflow-runs":
             result = {"runs": list_runs(args.solution)}
         elif args.command == "export-evidence":
-            result = export_evidence(args.solution)
+            if args.include_authoring_contract and not args.run_id:
+                raise ValueError(
+                    "--include-authoring-contract requires an explicit --run-id"
+                )
+            authoring_contract = (
+                read_authoring_contract(args.solution)
+                if args.include_authoring_contract else None
+            )
+            result = export_evidence(
+                args.solution,
+                authoring_contract=authoring_contract,
+            )
         elif args.command == "migrate-reports":
             result = migrate_reports(args.solution, apply=args.apply)
         elif args.command == "setup":
@@ -491,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 version_bump=args.version_bump,
                 workflow_profile=args.workflow_profile,
+                yolo=True if args.yolo else None,
                 new_run=args.new_run,
             )
         elif args.command == "workflow-status":
@@ -508,6 +543,14 @@ def main(argv: list[str] | None = None) -> int:
                 artifacts=_key_values(args.artifact),
                 evidence=args.evidence,
             )
+        elif args.command == "workflow-yolo":
+            if not args.run_id:
+                raise ValueError("workflow-yolo requires an explicit --run-id")
+            result = run_yolo_authoring(args.solution)
+        elif args.command == "workflow-yolo-refresh":
+            if not args.run_id:
+                raise ValueError("workflow-yolo-refresh requires an explicit --run-id")
+            result = refresh_yolo_authoring(args.solution)
         else:
             result = runtime_validation_plan(args.solution)
     except (OSError, RuntimeError, ValueError, yaml.YAMLError) as exc:
@@ -539,6 +582,11 @@ def main(argv: list[str] | None = None) -> int:
     if (
         args.command == "workflow-complete-stage"
         and result["status"] != "passed"
+    ):
+        return 1
+    if args.command == "workflow-yolo" and (
+        result["status"] != "active"
+        or result.get("validationStatus") == "blocked"
     ):
         return 1
     return 0

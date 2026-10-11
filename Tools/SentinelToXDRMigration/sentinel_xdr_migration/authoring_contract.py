@@ -16,6 +16,8 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
 SCHEMA_VERSION = "1.0.0"
+AUTHORING_SCHEMA_VERSION = "1.1.0"
+SUPPORTED_SCHEMA_VERSIONS = {SCHEMA_VERSION, AUTHORING_SCHEMA_VERSION}
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schema" / "authoring-contract.schema.json"
 _SHA256 = re.compile(r"[a-f0-9]{64}\Z")
 _MIGRATION_PERCENT = 80
@@ -47,6 +49,8 @@ class SourceRule:
     rule_id: str
     sha256: str
     evidence_references: tuple[EvidenceReference, ...]
+    path: str | None = None
+    query_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,7 @@ class TargetArtifact:
     path: str
     sha256: str
     structurally_valid: bool
+    query_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,8 @@ class RuleResult:
     rule_id: str
     source_sha256: str
     status: str
+    conversion_status: str | None
+    validation_status: str | None
     deployment_disposition: str
     target: TargetArtifact | None
     review_required: bool
@@ -94,6 +101,10 @@ class AuthoringContract:
     inventory: tuple[SourceRule, ...]
     results: tuple[RuleResult, ...]
     environment_errors: tuple[EnvironmentError, ...]
+    schema_version: str = SCHEMA_VERSION
+    inventory_sha256: str | None = None
+    revision: int | None = None
+    previous_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +114,7 @@ class Coverage:
     run_id: str
     source_identity: str
     source_sha256: str
+    schema_version: str
     N: int
     M: int
     E: int
@@ -114,7 +126,7 @@ class Coverage:
 
     def as_dict(self) -> dict[str, str | int | bool]:
         return {
-            "schemaVersion": SCHEMA_VERSION,
+            "schemaVersion": self.schema_version,
             "runId": self.run_id,
             "sourceIdentity": self.source_identity,
             "sourceSha256": self.source_sha256,
@@ -136,12 +148,13 @@ class OperationEligibility:
     run_id: str
     source_identity: str
     source_sha256: str
+    schema_version: str
     migration_threshold_met: bool
     stop_threshold_reached: bool
 
     def as_dict(self) -> dict[str, str | bool]:
         return {
-            "schemaVersion": SCHEMA_VERSION,
+            "schemaVersion": self.schema_version,
             "runId": self.run_id,
             "sourceIdentity": self.source_identity,
             "sourceSha256": self.source_sha256,
@@ -176,6 +189,25 @@ def _path_is_safe(value: str) -> bool:
     return not path.is_absolute()
 
 
+def calculate_inventory_sha256(rules: list[Mapping[str, Any]]) -> str:
+    """Hash a complete inventory's stable identity, path, source, and query hashes."""
+    canonical = [
+        {
+            "path": rule["path"],
+            "querySha256": rule["querySha256"],
+            "ruleId": rule["ruleId"],
+            "sha256": rule["sha256"],
+        }
+        for rule in sorted(rules, key=lambda item: item["path"])
+    ]
+    encoded = json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    import hashlib
+
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _validate_references(refs: list[dict[str, Any]], where: str) -> None:
     identities: set[str] = set()
     for index, reference in enumerate(refs):
@@ -203,7 +235,7 @@ def _evidence_references(references: list[dict[str, Any]]) -> tuple[EvidenceRefe
 
 
 def _semantic_validate(document: Mapping[str, Any]) -> AuthoringContract:
-    if document["schemaVersion"] != SCHEMA_VERSION:
+    if document["schemaVersion"] not in SUPPORTED_SCHEMA_VERSIONS:
         raise AuthoringContractError(f"unsupported authoring contract version: {document['schemaVersion']}")
     if not document["inventory"]["complete"]:
         raise AuthoringContractError("inventory must be complete")
@@ -215,7 +247,30 @@ def _semantic_validate(document: Mapping[str, Any]) -> AuthoringContract:
     if len(source_ids) != len(set(source_ids)):
         raise AuthoringContractError("inventory contains duplicate rule identities")
     for index, rule in enumerate(inventory):
+        if "path" in rule and not _path_is_safe(rule["path"]):
+            raise AuthoringContractError(
+                f"inventory.rules[{index}].path must be a safe repository-relative path"
+            )
         _validate_references(rule["evidenceReferences"], f"inventory.rules[{index}].evidenceReferences")
+    inventory_sha256 = document["inventory"].get("sha256")
+    if document["schemaVersion"] == AUTHORING_SCHEMA_VERSION:
+        if not all("path" in rule and "querySha256" in rule for rule in inventory):
+            raise AuthoringContractError(
+                "authoring contract 1.1.0 requires every inventory path and query hash"
+            )
+        calculated_inventory_sha256 = calculate_inventory_sha256(inventory)
+        if inventory_sha256 != calculated_inventory_sha256:
+            raise AuthoringContractError("inventory SHA-256 does not match the complete inventory")
+        snapshot = document["snapshot"]
+        revision = snapshot["revision"]
+        previous_sha256 = snapshot["previousSha256"]
+        if (revision == 1) != (previous_sha256 is None):
+            raise AuthoringContractError(
+                "snapshot revision 1 must have no previous hash; later revisions must be chained"
+            )
+    else:
+        revision = None
+        previous_sha256 = None
 
     results = document["results"]
     result_ids = [result["ruleId"] for result in results]
@@ -263,7 +318,9 @@ def _semantic_validate(document: Mapping[str, Any]) -> AuthoringContract:
                 f"migrated rule {rule_id!r} needs a structurally valid target, no unresolved errors, "
                 "and normal deployment disposition"
             )
-        if status == "blocked" and (disposition != "deploymentBlocked" or not has_error):
+        if status == "blocked" and (
+            disposition not in {"deploymentBlocked", "authoringBlocked"} or not has_error
+        ):
             raise AuthoringContractError(
                 f"blocked rule {rule_id!r} needs deploymentBlocked disposition and an unresolved error"
             )
@@ -273,6 +330,18 @@ def _semantic_validate(document: Mapping[str, Any]) -> AuthoringContract:
             )
         if status == "unprocessed" and disposition != "normal":
             raise AuthoringContractError(f"unprocessed rule {rule_id!r} must have normal disposition")
+        if document["schemaVersion"] == AUTHORING_SCHEMA_VERSION:
+            if status == "migrated" and (
+                result["conversionStatus"] != "converted"
+                or result["validationStatus"] != "passed"
+            ):
+                raise AuthoringContractError(
+                    f"migrated rule {rule_id!r} needs successful conversion and structural validation"
+                )
+            if result["validationStatus"] == "passed" and not target_valid:
+                raise AuthoringContractError(
+                    f"passed structural validation for {rule_id!r} needs a valid target"
+                )
         qualification = result["qualificationStatus"]
         qualification_references = _evidence_references(
             result["qualificationEvidenceReferences"]
@@ -297,10 +366,13 @@ def _semantic_validate(document: Mapping[str, Any]) -> AuthoringContract:
                 rule_id=rule_id,
                 source_sha256=result["sourceSha256"],
                 status=status,
+                conversion_status=result.get("conversionStatus"),
+                validation_status=result.get("validationStatus"),
                 deployment_disposition=disposition,
                 target=(
                     TargetArtifact(
-                        target["path"], target["sha256"], target["structurallyValid"]
+                        target["path"], target["sha256"], target["structurallyValid"],
+                        target.get("querySha256"),
                     )
                     if target is not None else None
                 ),
@@ -326,6 +398,8 @@ def _semantic_validate(document: Mapping[str, Any]) -> AuthoringContract:
             rule["ruleId"],
             rule["sha256"],
             _evidence_references(rule["evidenceReferences"]),
+            rule.get("path"),
+            rule.get("querySha256"),
         )
         for rule in inventory
     )
@@ -347,6 +421,10 @@ def _semantic_validate(document: Mapping[str, Any]) -> AuthoringContract:
         inventory=parsed_inventory,
         results=tuple(parsed_results),
         environment_errors=parsed_environment_errors,
+        schema_version=document["schemaVersion"],
+        inventory_sha256=inventory_sha256,
+        revision=revision,
+        previous_sha256=previous_sha256,
     )
 
 
@@ -355,7 +433,7 @@ def validate_authoring_contract(document: Mapping[str, Any]) -> AuthoringContrac
     if not isinstance(document, Mapping):
         raise AuthoringContractError("authoring contract must be an object")
     version = document.get("schemaVersion")
-    if version != SCHEMA_VERSION:
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
         raise AuthoringContractError(f"unsupported authoring contract version: {version!r}")
     errors = sorted(
         Draft202012Validator(_schema()).iter_errors(document),
@@ -396,7 +474,7 @@ def seal_authoring_contract(document: Mapping[str, Any]) -> dict[str, Any]:
         raise AuthoringContractError(
             "seal_authoring_contract accepts core records only; validate precomputed summaries instead"
         )
-    if document.get("schemaVersion") != SCHEMA_VERSION:
+    if document.get("schemaVersion") not in SUPPORTED_SCHEMA_VERSIONS:
         raise AuthoringContractError(
             f"unsupported authoring contract version: {document.get('schemaVersion')!r}"
         )
@@ -457,6 +535,7 @@ def calculate_coverage(contract: AuthoringContract) -> Coverage:
         run_id=contract.run_id,
         source_identity=contract.source_identity,
         source_sha256=contract.source_sha256,
+        schema_version=contract.schema_version,
         N=total,
         M=migrated,
         E=errored,
@@ -476,6 +555,7 @@ def calculate_operation_eligibility(coverage: Coverage) -> OperationEligibility:
         run_id=coverage.run_id,
         source_identity=coverage.source_identity,
         source_sha256=coverage.source_sha256,
+        schema_version=coverage.schema_version,
         migration_threshold_met=coverage.migration_threshold_met,
         stop_threshold_reached=coverage.stop_threshold_reached,
     )

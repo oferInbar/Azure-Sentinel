@@ -51,6 +51,47 @@ migration workflow.
 This is the ISV publishing workflow. It does not require a tenant, workspace,
 deployment, mock ingestion, or alert-parity test.
 
+#### Optional resumable full-inventory authoring
+
+The CLI also provides a separate, explicit `--yolo` mode for durable local
+full-inventory authoring. It requires a newly initialized run and an explicit
+`authoring` or `qualification` profile; it never upgrades a legacy run. The
+run-scoped contract freezes the complete recursive source-rule inventory,
+including source and query hashes, and records per-rule conversion and
+validation results. It reuses existing discovery, full-solution conversion,
+and structural validation. It does not call runtime providers, package, deploy,
+ingest, create a PR, or change the review/qualification gates.
+
+Select and record the exact run ID returned by initialization for all later
+commands; do not infer a run from timestamps:
+
+```powershell
+sentinel-xdr-migration workflow-init `
+  --solution "Solutions\<solution>" `
+  --workflow-profile authoring `
+  --version-bump none `
+  --yolo
+
+sentinel-xdr-migration workflow-yolo `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>"
+sentinel-xdr-migration workflow-yolo-refresh `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>"
+```
+
+Refresh imports only existing provider reports with matching persisted query
+hashes; it does not execute queries. The complete frozen inventory remains the
+coverage denominator, including unprocessed, blocked, and suppressed rules.
+`E` counts each rule with an unresolved error or suppressed disposition once;
+shared provider failures are accounted separately. A stop is persisted when
+more than 50% of the inventory is in `E` and cannot be cleared by improved
+later results. The 80% migrated threshold is advisory only; it is not
+packaging, PR, or Qualification authorization. Stale source/target hashes or
+changed inventory stop processing rather than overwriting user content. See the toolkit README's
+[YOLO authoring guide](../README.md#opt-in-full-inventory-yolo-authoring) for
+the contract, exact coverage definitions, and evidence-export option.
+
 ### Qualification — explicit opt-in
 
 `Discovery -> Conversion -> Validation -> Packaging -> Deployment -> Mock ingestion -> Alert parity -> Report`
