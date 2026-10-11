@@ -138,6 +138,35 @@
         }
       }
     },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "campaignId",
+        "inventorySha256",
+        "status",
+        "stopReason"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "1.0.0"
+        },
+        "campaignId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        },
+        "inventorySha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "status": {
+          "enum": ["active", "stopped"]
+        },
+        "stopReason": {
+          "type": ["string", "null"]
+        }
+      }
+    },
     "authoring": {
       "type": "object",
       "additionalProperties": false,
@@ -247,7 +276,7 @@
                   "minimum": 1
                 },
                 "status": {
-                  "enum": ["running", "passed", "failed"]
+                  "enum": ["running", "passed", "failed", "blocked"]
                 },
                 "requestedVersionBump": {
                   "enum": ["none", "patch", "minor", "major"]

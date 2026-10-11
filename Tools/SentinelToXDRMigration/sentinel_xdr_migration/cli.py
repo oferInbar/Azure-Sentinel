@@ -16,8 +16,15 @@ from .converter import (
 )
 from .artifacts import migrate_reports, select_run, reset_run_selection, list_runs
 from .evidence import export_evidence
+from .budget import (
+    DEFAULT_POLICY,
+    budget_summary,
+    extend_budget,
+    reconcile_legacy_usage,
+    reconcile_pending_operation,
+    set_observation_deadline,
+)
 from .onboarding import configure_workspace, doctor, setup
-from .packaging import package_solution_v3_1
 from .deployment import deploy_solution, setup_deployment_authentication
 from .analytic_deployment import deploy_analytic_rules
 from .alert_parity import (
@@ -283,6 +290,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Opt into full-inventory, resumable local authoring orchestration for a new run.",
     )
+    workflow_init.add_argument(
+        "--campaign-id",
+        help="Explicit durable budget campaign identity; required for every new YOLO campaign.",
+    )
     workflow_yolo = subparsers.add_parser(
         "workflow-yolo",
         help="Run the existing local discovery, full-solution converter, and structural validator under an initialized YOLO contract.",
@@ -331,6 +342,58 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         help="Evidence path or reference; repeat for multiple values.",
     )
+    budget_status = subparsers.add_parser(
+        "workflow-budget",
+        help="Show configured ceilings, measured receipts, unknown usage, and remaining campaign allowance.",
+    )
+    budget_status.add_argument("--solution", required=True)
+    budget_status.add_argument("--campaign-id", required=True)
+    budget_extend = subparsers.add_parser(
+        "workflow-budget-extend",
+        help="Raise one campaign ceiling with an append-only owner-scope audit receipt.",
+    )
+    budget_extend.add_argument("--solution", required=True)
+    budget_extend.add_argument("--campaign-id", required=True)
+    budget_extend.add_argument("--dimension", required=True, choices=sorted(DEFAULT_POLICY))
+    budget_extend.add_argument("--new-limit", required=True, type=float)
+    budget_extend.add_argument("--actor", required=True)
+    budget_extend.add_argument("--reason", required=True)
+    budget_extend.add_argument("--reference", required=True)
+    budget_reconcile = subparsers.add_parser(
+        "workflow-budget-reconcile",
+        help="Reconcile one interrupted operation using its authoritative measured outcome.",
+    )
+    budget_reconcile.add_argument("--solution", required=True)
+    budget_reconcile.add_argument("--campaign-id", required=True)
+    budget_reconcile.add_argument("--operation-id", required=True)
+    budget_reconcile.add_argument(
+        "--status", required=True, choices=["passed", "failed", "cancelled", "unknown"],
+    )
+    budget_reconcile.add_argument("--elapsed-seconds", required=True, type=float)
+    budget_reconcile.add_argument("--actor", required=True)
+    budget_reconcile.add_argument("--reason", required=True)
+    budget_reconcile.add_argument("--reference", required=True)
+    budget_legacy = subparsers.add_parser(
+        "workflow-budget-reconcile-legacy",
+        help="Record an owner-reviewed baseline for a pre-budget run; no history is reconstructed.",
+    )
+    budget_legacy.add_argument("--solution", required=True)
+    budget_legacy.add_argument("--campaign-id", required=True)
+    budget_legacy.add_argument("--baseline", required=True, help="JSON file containing every measured legacy dimension.")
+    budget_legacy.add_argument("--actor", required=True)
+    budget_legacy.add_argument("--reason", required=True)
+    budget_legacy.add_argument("--reference", required=True)
+    budget_deadline = subparsers.add_parser(
+        "workflow-budget-deadline",
+        help="Persist the approved schedule-aware alert-observation deadline for one test.",
+    )
+    budget_deadline.add_argument("--solution", required=True)
+    budget_deadline.add_argument("--campaign-id", required=True)
+    budget_deadline.add_argument("--test-id", required=True)
+    budget_deadline.add_argument("--deadline-at", required=True)
+    budget_deadline.add_argument("--approval-reference", required=True)
+    budget_deadline.add_argument("--actor", required=True)
+    budget_deadline.add_argument("--reason", required=True)
 
     runs_parser = subparsers.add_parser("workflow-runs", help="List run IDs without selecting or modifying state.")
     runs_parser.add_argument("--solution", required=True)
@@ -445,15 +508,15 @@ def main(argv: list[str] | None = None) -> int:
                 if "workflow state does not exist" not in str(exc):
                     raise
                 current_workflow = None
-            if current_workflow and (current_workflow.get("authoring") or {}).get("mode") == "yolo":
+            if current_workflow:
                 result = package_workflow_v3_1(
                     args.solution,
                     requested_version_bump=args.version_bump,
                 )
             else:
-                result = package_solution_v3_1(
-                    args.solution,
-                    version_bump=args.version_bump,
+                raise ValueError(
+                    "V3.1 package builds require a persisted workflow and campaign budget; "
+                    "run workflow-init before packaging"
                 )
         elif args.command == "inspect":
             result = inspect_solution(args.solution)
@@ -539,7 +602,52 @@ def main(argv: list[str] | None = None) -> int:
                 version_bump=args.version_bump,
                 workflow_profile=args.workflow_profile,
                 yolo=True if args.yolo else None,
+                campaign_id=args.campaign_id,
                 new_run=args.new_run,
+            )
+        elif args.command == "workflow-budget":
+            result = budget_summary(args.solution, args.campaign_id)
+        elif args.command == "workflow-budget-extend":
+            result = extend_budget(
+                args.solution,
+                args.campaign_id,
+                dimension=args.dimension,
+                new_limit=args.new_limit,
+                actor=args.actor,
+                reason=args.reason,
+                evidence_reference=args.reference,
+            )
+        elif args.command == "workflow-budget-reconcile":
+            result = reconcile_pending_operation(
+                args.solution,
+                args.campaign_id,
+                args.operation_id,
+                status=args.status,
+                elapsed_seconds=args.elapsed_seconds,
+                actor=args.actor,
+                reason=args.reason,
+                evidence_reference=args.reference,
+            )
+        elif args.command == "workflow-budget-reconcile-legacy":
+            baseline_path = Path(args.baseline).expanduser().resolve()
+            baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+            result = reconcile_legacy_usage(
+                args.solution,
+                args.campaign_id,
+                consumed=baseline,
+                actor=args.actor,
+                reason=args.reason,
+                evidence_reference=args.reference,
+            )
+        elif args.command == "workflow-budget-deadline":
+            result = set_observation_deadline(
+                args.solution,
+                args.campaign_id,
+                test_id=args.test_id,
+                deadline_at=args.deadline_at,
+                approval_reference=args.approval_reference,
+                actor=args.actor,
+                reason=args.reason,
             )
         elif args.command == "workflow-status":
             result = workflow_status(args.solution)

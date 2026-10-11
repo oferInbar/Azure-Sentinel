@@ -833,14 +833,24 @@ detection IDs use `xdr-<full source Sentinel template GUID>` and remain
 disabled by default; see [source-derived detection identity](#source-derived-detection-identity).
 
 ```powershell
+sentinel-xdr-migration workflow-init `
+  --solution "Solutions\<solution>" `
+  --workflow-profile authoring `
+  --version-bump none `
+  --campaign-id "<owner-selected-campaign-id>"
+
 sentinel-xdr-migration inspect --solution "Solutions\<solution>"
 sentinel-xdr-migration convert --solution "Solutions\<solution>"
 sentinel-xdr-migration validate --solution "Solutions\<solution>"
+sentinel-xdr-migration workflow-status --solution "Solutions\<solution>"
 sentinel-xdr-migration package-v3-1 `
   --solution "Solutions\<solution>" `
   --version-bump none
 ```
 
+Initialize a persisted Authoring workflow before packaging so the V3.1 build is
+charged to its durable campaign. The `--campaign-id` must remain the same when
+linking a replacement run; changing the run ID does not reset campaign usage.
 Use the one version-bump action explicitly selected at workflow initialization
 for the first packaging command; do not apply a second, additional version
 bump. V3.1 packaging is the current repository entry point for hybrid/XDR
@@ -884,7 +894,8 @@ sentinel-xdr-migration workflow-init `
   --solution "Solutions\<solution>" `
   --workflow-profile authoring `
   --version-bump none `
-  --yolo
+  --yolo `
+  --campaign-id "<owner-selected-campaign-id>"
 
 sentinel-xdr-migration workflow-yolo `
   --solution "Solutions\<solution>" `
@@ -934,6 +945,85 @@ run ID when reading or writing if there is more than one. The optional
 `export-evidence --include-authoring-contract --run-id "<run-id>"` flag includes
 the selected run's validated contract projection in the explicit local evidence
 export; the default export remains unchanged.
+
+#### Durable campaign budget
+
+Every new YOLO run requires an explicit `--campaign-id`. A standard workflow
+uses a stable per-solution campaign identity when one is omitted; it never
+derives a fresh identity from the run ID. Its frozen inventory,
+policy, linked run IDs, and hash-chained append-only receipts are stored under
+the solution's ignored
+`Logs/sentinel-xdr-migration/<campaign-storage-run>/campaigns/<campaign-id>/`
+directory. Resumes retain that binding. An explicitly linked replacement run
+must use the same campaign ID and exact solution/inventory; changing the run ID
+does not reset usage. A different campaign ID is a separate explicitly
+initialized campaign, never an automatic retry identity.
+Changing source inventory under an existing campaign is rejected; starting
+another campaign requires an explicit campaign ID and reviewed scope.
+
+The initial ceilings are 120 active minutes per campaign, 3 evidence-backed
+rule revisions and 10 active minutes per rule, 3 full-solution conversion
+passes, 3 V3.1 builds, 500 actual provider HTTP attempts including retries, and
+one ingestion submission per exact approved pair/fixture attempt. Observation
+deadlines are recorded per approved test in its schedule-aware UTC timestamp.
+Rule-level revisions, HTTP attempts, ingestion submissions, and observation
+polls have receipt APIs for provider/adaptation code; they are **not currently
+dispatched by this Python workflow** and are not represented as enforced
+provider limits. Each retry must call the provider-attempt receipt separately.
+The current workflow measures and charges dispatched YOLO conversion passes
+and V3.1 builds, including failed/cancelled calls. Active elapsed time is
+measured around YOLO discovery, conversion, structural validation, and V3.1
+packager calls (plus explicit observation API calls); manual workflow/report
+bookkeeping and provider/deployment/ingestion/cleanup calls are not integrated.
+Already-running work is not forcibly terminated if it overruns a ceiling, so
+the active-time ceiling blocks subsequent work but cannot preempt an in-flight
+call. The status report labels this coverage; no AI-credit or monetary usage is
+inferred.
+
+Inspect current usage and extend a ceiling only with an explicit actor, reason,
+and owner-scope audit reference:
+
+```powershell
+sentinel-xdr-migration workflow-budget `
+  --solution "Solutions\<solution>" `
+  --campaign-id "<campaign-id>"
+
+sentinel-xdr-migration workflow-budget-extend `
+  --solution "Solutions\<solution>" `
+  --campaign-id "<campaign-id>" `
+  --dimension conversionPasses `
+  --new-limit 4 `
+  --actor "<owner>" `
+  --reason "<reason>" `
+  --reference "<approval-or-audit-reference>"
+```
+
+Exhaustion blocks new work and stops that workflow run without altering the
+frozen coverage denominator or converting unprocessed rules into errors. An
+extension never clears a stopped run, technical conflict, or approval gate;
+after review, an explicitly linked replacement run can continue from the same
+campaign's remaining allowance. Pre-budget runs are marked usage-unknown and
+cannot dispatch budgeted work until an owner-reviewed measured baseline is
+provided with evidence via `workflow-budget-reconcile-legacy`; historical use
+is never reconstructed from timestamps or artifacts. Interrupted operations
+remain pending and block dispatch until reconciled with an authoritative outcome
+and measured elapsed time using `workflow-budget-reconcile`. Reconciliation
+does not replay an attempt; an unknown ingestion result remains consumed and
+requires a fresh marker and exact-scope approval before a new submission.
+For legacy reconciliation, `--baseline` must reference reviewed JSON with all
+seven fields: `activeExecutionSeconds`, `conversionPasses`, `packageBuilds`,
+`providerHttpAttempts`, `ingestionSubmissions`, `ruleRevisions`, and
+`ruleActiveSeconds`. The last two are objects keyed by every source GUID in
+the frozen inventory. Attempt counters must be whole numbers. The CLI records
+the submitted baseline and audit reference as owner-provided evidence; it does
+not infer the values.
+
+The existing CLI owns the run state under its workflow lock, while the shared
+campaign ledger uses its own atomic writer lock and fsynced replacement. The
+operation-start receipt is durable before dispatch; failed and cancelled
+attempts remain charged. Receipt/hash or lock failures fail closed. Direct
+Python calls to packaging internals and provider adapters that do not use the
+receipt API remain outside enforcement; no such integration is claimed.
 
 ### Single-rule conversion
 

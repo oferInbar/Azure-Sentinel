@@ -20,6 +20,15 @@ from .artifacts import (
     create_run, requested_run_id, solution_for_artifact, using_run, RUN_MARKER,
     conversion_scope, require_solution_conversion_scope, portable_artifact,
 )
+from .budget import (
+    BudgetError,
+    budget_summary,
+    create_or_link_campaign,
+    default_campaign_id,
+    ensure_work_available,
+    measured_operation,
+    package_history,
+)
 from .authoring_contract import (
     AUTHORING_SCHEMA_VERSION,
     AuthoringContractError,
@@ -261,6 +270,47 @@ def _source_inventory(solution: str | Path) -> list[dict[str, Any]]:
         })
     inventory.sort(key=lambda item: item["path"])
     return inventory
+
+
+def _budget_source_inventory(
+    solution: str | Path,
+    *,
+    yolo: bool,
+) -> tuple[str, list[str]]:
+    root = Path(solution).expanduser().resolve()
+    if yolo:
+        inventory = _source_inventory(root)
+        return (
+            calculate_inventory_sha256(inventory),
+            [rule["ruleId"] for rule in inventory],
+        )
+    has_rule_folder = any(
+        (root / name).exists() or (root / name).is_symlink()
+        for name in ("Analytic Rules", "Analytics Rules")
+    )
+    files = analytic_rule_files(root) if has_rule_folder else []
+    rows = []
+    rule_ids: set[str] = set()
+    for path in files:
+        content = path.read_bytes()
+        rows.append({
+            "path": path.relative_to(root).as_posix(),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        })
+        try:
+            document = yaml.safe_load(content.decode("utf-8-sig")) or {}
+        except (UnicodeError, yaml.YAMLError):
+            document = {}
+        if (
+            isinstance(document, dict)
+            and isinstance(document.get("id"), str)
+            and re.fullmatch(SOURCE_ID_PATTERN, document["id"])
+        ):
+            rule_ids.add(document["id"])
+    digest = hashlib.sha256(
+        json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return digest, sorted(rule_ids)
 
 
 def _initial_rule_result(rule: dict[str, Any]) -> dict[str, Any]:
@@ -1067,6 +1117,39 @@ def run_yolo_authoring(solution: str | Path) -> dict[str, Any]:
                 raise ValueError("workflow was not explicitly initialized with --yolo")
             record, _ = _current_yolo_record(root, state_path, state)
             authoring = state["authoring"]
+            budget = state.get("budget")
+            if not isinstance(budget, dict):
+                raise ValueError(
+                    "YOLO workflow has no durable campaign budget; initialize or explicitly "
+                    "link it with workflow-init --yolo --campaign-id"
+                )
+            if (
+                authoring["status"] in {"stopped", "conflicted"}
+                and not str(authoring.get("stopReason") or "").startswith("Campaign budget:")
+            ):
+                return {
+                    "runId": run_id,
+                    "status": authoring["status"],
+                    "reason": authoring.get("stopReason"),
+                    "coverage": record["coverage"],
+                    "authoringContract": authoring["currentContract"],
+                    "workflowStatus": state["workflowStatus"],
+                    "next": _next_stage_name(state),
+                    "resumed": True,
+                    "workPerformed": False,
+                }
+            if budget.get("status") == "stopped":
+                return {
+                    "runId": run_id,
+                    "status": "budget-exhausted",
+                    "reason": budget.get("stopReason"),
+                    "coverage": record["coverage"],
+                    "authoringContract": authoring["currentContract"],
+                    "workflowStatus": state["workflowStatus"],
+                    "next": _next_stage_name(state),
+                    "resumed": True,
+                    "workPerformed": False,
+                }
             if authoring["status"] in {"stopped", "conflicted"}:
                 return {
                     "runId": run_id,
@@ -1087,11 +1170,65 @@ def run_yolo_authoring(solution: str | Path) -> dict[str, Any]:
             if state["context"]["workflowProfile"] == "qualification" and not state["context"].get("targetContextLocked"):
                 raise ValueError("Qualification YOLO requires its existing locked target")
 
+            if any(
+                state["stages"][stage_name]["status"] != "passed"
+                for stage_name in ("discovery", "conversion", "validation")
+            ):
+                try:
+                    ensure_work_available(
+                        root,
+                        budget["campaignId"],
+                        inventory_sha256=inventory_hash,
+                    )
+                except BudgetError as exc:
+                    next_stage = next(
+                        name for name in ("discovery", "conversion", "validation")
+                        if state["stages"][name]["status"] != "passed"
+                    )
+                    _stop_budget_run(state_path, state, next_stage, str(exc))
+                    return {
+                        "runId": run_id,
+                        "status": "budget-exhausted",
+                        "reason": str(exc),
+                        "coverage": record["coverage"],
+                        "authoringContract": state["authoring"]["currentContract"],
+                        "workflowStatus": state["workflowStatus"],
+                        "next": None,
+                        "resumed": True,
+                        "workPerformed": False,
+                    }
+
             discovery = state["stages"]["discovery"]
             if discovery["status"] != "passed":
                 if discovery["status"] != "running":
                     _start_workflow_stage_unlocked(root, "discovery", state_path)
-                inspection = inspect_solution(root)
+                discovery_dispatched = False
+                try:
+                    with measured_operation(
+                        root,
+                        budget["campaignId"],
+                        inventory_sha256=inventory_hash,
+                        run_id=run_id,
+                        dimension="workflowDiscovery",
+                    ):
+                        discovery_dispatched = True
+                        inspection = inspect_solution(root)
+                except BudgetError as exc:
+                    if discovery_dispatched:
+                        raise
+                    current_state = _load(root)[1]
+                    _stop_budget_run(state_path, current_state, "discovery", str(exc))
+                    return {
+                        "runId": run_id,
+                        "status": "budget-exhausted",
+                        "reason": str(exc),
+                        "coverage": record["coverage"],
+                        "authoringContract": current_state["authoring"]["currentContract"],
+                        "workflowStatus": current_state["workflowStatus"],
+                        "next": None,
+                        "resumed": discovery["status"] == "running",
+                        "workPerformed": False,
+                    }
                 if inspection["analyticRuleCount"] != len(inventory):
                     _mark_yolo_conflicted(
                         state_path, state,
@@ -1117,12 +1254,56 @@ def run_yolo_authoring(solution: str | Path) -> dict[str, Any]:
             else:
                 if conversion_stage["status"] != "running":
                     _start_workflow_stage_unlocked(root, "conversion", state_path)
+                conversion_dispatched = False
                 try:
-                    conversion = convert_solution(root)
+                    with measured_operation(
+                        root,
+                        budget["campaignId"],
+                        inventory_sha256=inventory_hash,
+                        run_id=run_id,
+                        dimension="conversionPass",
+                    ):
+                        conversion_dispatched = True
+                        conversion = convert_solution(root)
                     _verify_source_inventory(root, record)
                     manifest = _read_full_conversion_manifest(
                         root, state_path.parent, inventory
                     )
+                except BudgetError as exc:
+                    if conversion_dispatched:
+                        current_path, current_state = _load(root)
+                        stage = current_state["stages"]["conversion"]
+                        if stage["status"] == "running":
+                            _complete_workflow_stage_unlocked(
+                                root, "conversion", state_path, status="failed",
+                                message=f"Conversion ran but its budget receipt failed: {exc}",
+                            )
+                        return {
+                            "runId": run_id,
+                            "status": "failed",
+                            "reason": str(exc),
+                            "coverage": record["coverage"],
+                            "authoringContract": current_state["authoring"]["currentContract"],
+                            "workflowStatus": current_state["workflowStatus"],
+                            "next": _next_stage_name(current_state),
+                            "resumed": conversion_stage["status"] == "running",
+                            "workPerformed": True,
+                        }
+                    current_path, current_state = _load(root)
+                    if current_path != state_path:
+                        raise ValueError("workflow state selection changed during budget check") from exc
+                    _stop_budget_run(state_path, current_state, "conversion", str(exc))
+                    return {
+                        "runId": run_id,
+                        "status": "budget-exhausted",
+                        "reason": str(exc),
+                        "coverage": record["coverage"],
+                        "authoringContract": current_state["authoring"]["currentContract"],
+                        "workflowStatus": current_state["workflowStatus"],
+                        "next": None,
+                        "resumed": conversion_stage["status"] == "running",
+                        "workPerformed": False,
+                    }
                 except (OSError, RuntimeError, ValueError, yaml.YAMLError) as exc:
                     current_path, current_state = _load(root)
                     if current_path != state_path:
@@ -1214,7 +1395,51 @@ def run_yolo_authoring(solution: str | Path) -> dict[str, Any]:
 
             _start_workflow_stage_unlocked(root, "validation", state_path)
             state = _load(root)[1]
-            validation = validate_solution(root)
+            validation_dispatched = False
+            try:
+                with measured_operation(
+                    root,
+                    budget["campaignId"],
+                    inventory_sha256=inventory_hash,
+                    run_id=run_id,
+                    dimension="workflowValidation",
+                ):
+                    validation_dispatched = True
+                    validation = validate_solution(root)
+            except BudgetError as exc:
+                if validation_dispatched:
+                    current_state = _load(root)[1]
+                    _complete_workflow_stage_unlocked(
+                        root,
+                        "validation",
+                        state_path,
+                        status="failed",
+                        message=f"Validation ran but its budget receipt failed: {exc}",
+                    )
+                    return {
+                        "runId": run_id,
+                        "status": "failed",
+                        "reason": str(exc),
+                        "coverage": record["coverage"],
+                        "authoringContract": current_state["authoring"]["currentContract"],
+                        "workflowStatus": current_state["workflowStatus"],
+                        "next": _next_stage_name(current_state),
+                        "resumed": False,
+                        "workPerformed": True,
+                    }
+                current_state = _load(root)[1]
+                _stop_budget_run(state_path, current_state, "validation", str(exc))
+                return {
+                    "runId": run_id,
+                    "status": "budget-exhausted",
+                    "reason": str(exc),
+                    "coverage": record["coverage"],
+                    "authoringContract": current_state["authoring"]["currentContract"],
+                    "workflowStatus": current_state["workflowStatus"],
+                    "next": None,
+                    "resumed": False,
+                    "workPerformed": False,
+                }
             _verify_source_inventory(root, record)
             results, environment_errors = _conversion_contract_results(
                 root,
@@ -1312,6 +1537,7 @@ def initialize_workflow(
     version_bump: str | None = None,
     workflow_profile: str | None = None,
     yolo: bool | None = None,
+    campaign_id: str | None = None,
     new_run: bool = False,
 ) -> dict[str, Any]:
     root = Path(solution).expanduser().resolve()
@@ -1325,6 +1551,14 @@ def initialize_workflow(
         )
     if workflow_profile not in WORKFLOW_PROFILES:
         raise ValueError("workflow profile must be authoring or qualification")
+    explicit_campaign_id = campaign_id
+    if campaign_id is not None:
+        from .budget import _safe_campaign_id
+        campaign_id = _safe_campaign_id(campaign_id)
+    elif yolo is not True:
+        campaign_id = default_campaign_id(root)
+    if yolo is True and campaign_id is None and new_run:
+        raise ValueError("new YOLO workflows require an explicit --campaign-id")
     target = None
     if workflow_profile == "qualification":
         missing = [
@@ -1369,7 +1603,7 @@ def initialize_workflow(
                 root, tenant_id=tenant_id, subscription_id=subscription_id,
                 workspace_resource_id=workspace_resource_id,
                 workspace_customer_id=workspace_customer_id, version_bump=version_bump,
-                workflow_profile=workflow_profile, yolo=yolo,
+                workflow_profile=workflow_profile, yolo=yolo, campaign_id=campaign_id,
             )
     existing_path = existing_artifact_path(root, STATE_FILE_NAME)
     if existing_path.exists():
@@ -1378,6 +1612,11 @@ def initialize_workflow(
             if yolo is True and "authoring" not in state:
                 raise ValueError(
                     "YOLO cannot be enabled on an existing legacy run; initialize a new run explicitly"
+                )
+            if yolo is True and not state.get("budget") and not campaign_id:
+                raise ValueError(
+                    "pre-existing YOLO run has unmeasured usage; provide "
+                    "--campaign-id to link it conservatively"
                 )
             context = state["context"]
             for key, value in requested_context.items():
@@ -1397,7 +1636,57 @@ def initialize_workflow(
             if target:
                 write_target(root, target)
             if "authoring" in state:
-                _recover_yolo_state(root, path, state)
+                state = _recover_yolo_state(root, path, state)
+                record, _ = _current_yolo_record(root, path, state)
+                inventory_hash = record["inventory"]["sha256"]
+                rule_ids = [rule["ruleId"] for rule in record["inventory"]["rules"]]
+                budget_campaign_id = (
+                    state.get("budget", {}).get("campaignId")
+                    or campaign_id
+                )
+            else:
+                inventory_hash, rule_ids = _budget_source_inventory(root, yolo=False)
+                budget_campaign_id = (
+                    state.get("budget", {}).get("campaignId")
+                    or campaign_id
+                )
+            existing_budget = state.get("budget")
+            if existing_budget:
+                if explicit_campaign_id and explicit_campaign_id != existing_budget["campaignId"]:
+                    raise ValueError(
+                        "workflow is already linked to a different campaign; "
+                        "campaign binding is immutable"
+                    )
+                if existing_budget["inventorySha256"] != inventory_hash:
+                    raise ValueError(
+                        "campaign frozen source inventory changed; preserve the existing run "
+                        "and explicitly initialize a separately reviewed campaign"
+                    )
+                budget_summary(
+                    root, existing_budget["campaignId"], expected_inventory=inventory_hash,
+                )
+            else:
+                if not budget_campaign_id:
+                    raise ValueError(
+                        "pre-existing YOLO run has unmeasured usage; provide "
+                        "--campaign-id to link it conservatively"
+                    )
+                create_or_link_campaign(
+                    root,
+                    budget_campaign_id,
+                    inventory_sha256=inventory_hash,
+                    run_id=state["runId"],
+                    rule_ids=rule_ids,
+                    legacy_usage_unknown=True,
+                )
+                state["budget"] = {
+                    "schemaVersion": "1.0.0",
+                    "campaignId": budget_campaign_id,
+                    "inventorySha256": inventory_hash,
+                    "status": "active",
+                    "stopReason": None,
+                }
+                _write_unlocked(path, state)
             return {
                 **state,
                 "statePath": str(path),
@@ -1406,6 +1695,8 @@ def initialize_workflow(
             }
 
     frozen_inventory = _source_inventory(root) if yolo is True else None
+    if frozen_inventory is not None and not campaign_id:
+        raise ValueError("new YOLO workflows require an explicit --campaign-id")
     if yolo is True and requested_run_id(root) is None:
         run = create_run(root)
         with using_run(root, run.name):
@@ -1418,6 +1709,7 @@ def initialize_workflow(
                 version_bump=version_bump,
                 workflow_profile=workflow_profile,
                 yolo=True,
+                campaign_id=campaign_id,
             )
 
     now = _utc_now()
@@ -1443,7 +1735,7 @@ def initialize_workflow(
     state["context"]["workflowProfile"] = workflow_profile
     state["context"]["profileSelectionConfirmed"] = True
     if frozen_inventory is not None:
-        _persist_contract_snapshot(
+        record, _ = _persist_contract_snapshot(
             path.parent,
             state,
             _contract_core(
@@ -1454,6 +1746,29 @@ def initialize_workflow(
                 previous_sha256=None,
             ),
         )
+        campaign_inventory_hash = record["inventory"]["sha256"]
+        campaign_rule_ids = [rule["ruleId"] for rule in record["inventory"]["rules"]]
+    else:
+        campaign_inventory_hash, campaign_rule_ids = _budget_source_inventory(
+            root, yolo=False,
+        )
+        campaign_id = campaign_id or default_campaign_id(root)
+    if not campaign_id:
+        raise ValueError("workflow initialization requires a durable campaign identity")
+    create_or_link_campaign(
+        root,
+        campaign_id,
+        inventory_sha256=campaign_inventory_hash,
+        run_id=path.parent.name,
+        rule_ids=campaign_rule_ids,
+    )
+    state["budget"] = {
+        "schemaVersion": "1.0.0",
+        "campaignId": campaign_id,
+        "inventorySha256": campaign_inventory_hash,
+        "status": "active",
+        "stopReason": None,
+    }
     _write(path, state)
     if target:
         write_target(root, target)
@@ -1642,6 +1957,31 @@ def package_workflow_v3_1(
         _yolo_package_readiness(root, path, state)
         if state.get("authoring") and state["authoring"]["status"] != "active":
             raise ValueError("stopped or conflicted YOLO runs cannot be packaged")
+        campaign_budget = state.get("budget")
+        if not campaign_budget:
+            raise ValueError(
+                "V3.1 package builds require a persisted campaign budget; resume workflow-init "
+                "to link this run conservatively before packaging"
+            )
+        if campaign_budget.get("status") == "stopped":
+            raise ValueError(
+                "budget-stopped workflow runs cannot be resumed by an extension; "
+                "initialize an explicitly linked replacement run"
+            )
+        current_inventory_hash, _ = _budget_source_inventory(
+            root,
+            yolo=bool(state.get("authoring")),
+        )
+        if current_inventory_hash != campaign_budget["inventorySha256"]:
+            raise ValueError(
+                "campaign frozen source inventory changed; package inputs are no longer "
+                "bound to this campaign"
+            )
+        budget_summary(
+            root,
+            campaign_budget["campaignId"],
+            expected_inventory=current_inventory_hash,
+        )
         if any(
             state["stages"][dependency]["status"] != "passed"
             for dependency in _dependencies(state, "packaging")
@@ -1649,6 +1989,29 @@ def package_workflow_v3_1(
             raise ValueError("workflow packaging is blocked by unfinished prerequisites")
 
         inputs = package_input_identity(root)
+        if campaign_budget:
+            prior_package_attempts = package_history(
+                root, campaign_budget["campaignId"],
+            )
+            last_consumed = next((
+                item for item in reversed(prior_package_attempts)
+                if item["finish"]
+                and (item["finish"].get("completionMetadata") or {}).get("bumpConsumed") is True
+            ), None)
+            if last_consumed:
+                prior_after = (
+                    last_consumed["finish"].get("completionMetadata") or {}
+                ).get("packageInputSha256After")
+                if prior_after == inputs["sha256"] and requested_version_bump != "none":
+                    raise ValueError(
+                        "a campaign version action was already consumed for unchanged "
+                        "package inputs; use --version-bump none"
+                    )
+                if prior_after != inputs["sha256"] and requested_version_bump == "none":
+                    raise ValueError(
+                        "campaign package inputs changed after the consumed version action; "
+                        "select an explicit new version bump"
+                    )
         package_state = state.get("packaging") or {
             "schemaVersion": "1.0.0",
             "lastSuccessful": None,
@@ -1718,13 +2081,63 @@ def package_workflow_v3_1(
 
         version_before = solution_data_version(root)
         try:
-            result = package_solution_v3_1(
-                root,
-                version_bump=effective_bump,
-                requested_version_bump=requested_version_bump,
-                package_attempt_id=attempt_id,
-                workflow_run_id=state["runId"],
-            )
+            if campaign_budget:
+                package_receipt_details: dict[str, Any] = {}
+                operation = measured_operation(
+                    root,
+                    campaign_budget["campaignId"],
+                    inventory_sha256=campaign_budget["inventorySha256"],
+                    run_id=state["runId"],
+                    dimension="packageBuild",
+                    metadata={
+                        "packageInputSha256": inputs["sha256"],
+                        "requestedVersionBump": requested_version_bump,
+                        "effectiveVersionBump": effective_bump,
+                    },
+                    completion_metadata=package_receipt_details,
+                )
+            else:
+                from contextlib import nullcontext
+                operation = nullcontext()
+                package_receipt_details = {}
+            package_dispatched = False
+            with operation:
+                package_dispatched = True
+                try:
+                    result = package_solution_v3_1(
+                        root,
+                        version_bump=effective_bump,
+                        requested_version_bump=requested_version_bump,
+                        package_attempt_id=attempt_id,
+                        workflow_run_id=state["runId"],
+                    )
+                except BaseException:
+                    version_after_failure = solution_data_version(root)
+                    consumed_on_failure = version_bump_was_consumed(
+                        version_before, version_after_failure, effective_bump,
+                    )
+                    package_receipt_details.update({
+                        "bumpConsumed": consumed_on_failure,
+                        "packageInputSha256After": (
+                            package_input_identity(root)["sha256"]
+                            if consumed_on_failure else inputs["sha256"]
+                        ),
+                    })
+                    raise
+                else:
+                    package_receipt_details.update({
+                        "bumpConsumed": version_bump_was_consumed(
+                            version_before, solution_data_version(root), effective_bump,
+                        ),
+                        "packageInputSha256After": package_input_identity(root)["sha256"],
+                    })
+                    report_for_receipt = json.loads(
+                        Path(result["packageReport"]).read_text(encoding="utf-8-sig")
+                    )
+                    receipt_inputs = report_for_receipt.get("packageInputs") or {}
+                    report_after = (receipt_inputs.get("after") or {}).get("sha256")
+                    if report_after:
+                        package_receipt_details["packageInputSha256After"] = report_after
             report_path = resolve_artifact_reference(root, result["packageReport"])
             report_hash = hashlib.sha256(report_path.read_bytes()).hexdigest()
             report = json.loads(report_path.read_text(encoding="utf-8-sig"))
@@ -1782,6 +2195,61 @@ def package_workflow_v3_1(
                 "workflowStatus": state["workflowStatus"],
                 "next": _next_stage_name(state),
             }
+        except BudgetError as exc:
+            if package_dispatched:
+                package_state["lastSuccessful"] = previous_successful
+                current_attempt = package_state["currentAttempt"]
+                version_after = solution_data_version(root)
+                consumed = version_bump_was_consumed(
+                    version_before, version_after, effective_bump
+                )
+                if consumed:
+                    try:
+                        input_after_failure = package_input_identity(root)["sha256"]
+                    except (OSError, ValueError):
+                        input_after_failure = None
+                    if input_after_failure:
+                        package_state["lastConsumedAction"] = {
+                            "requestedVersionBump": requested_version_bump,
+                            "effectiveVersionBump": effective_bump,
+                            "bumpConsumed": True,
+                            "packageInputSha256": input_after_failure,
+                            "attemptId": attempt_id,
+                            "packageSucceeded": False,
+                        }
+                        current_attempt["bumpConsumed"] = True
+                        current_attempt["packageInputSha256"] = input_after_failure
+                current_attempt.update({
+                    "status": "failed",
+                    "completedAt": _utc_now(),
+                    "failure": f"V3.1 build was dispatched but receipt persistence failed: {exc}"[:1000],
+                })
+                stage.update({
+                    "status": "failed",
+                    "completedAt": _utc_now(),
+                    "message": f"V3.1 build was dispatched but receipt persistence failed: {exc}"[:2000],
+                    "artifacts": {},
+                    "evidence": [],
+                })
+                state["workflowStatus"] = "failed"
+                _write_unlocked(path, state)
+                raise
+            package_state["lastSuccessful"] = previous_successful
+            current_attempt = package_state["currentAttempt"]
+            current_attempt.update({
+                "status": "blocked",
+                "completedAt": _utc_now(),
+                "failure": str(exc)[:1000],
+            })
+            stage.update({
+                "status": "blocked",
+                "completedAt": _utc_now(),
+                "message": f"V3.1 build was not dispatched: {exc}"[:2000],
+                "artifacts": {},
+                "evidence": [],
+            })
+            _stop_budget_run(path, state, "packaging", str(exc))
+            raise
         except Exception as exc:
             package_state["lastSuccessful"] = previous_successful
             current_attempt = package_state["currentAttempt"]
@@ -1836,10 +2304,46 @@ def workflow_status(solution: str | Path) -> dict[str, Any]:
     return {
         **state,
         "authoringSummary": authoring_summary,
+        "budgetSummary": (
+            budget_summary(solution, state["budget"]["campaignId"])
+            if state.get("budget") else (
+                {
+                    "enforcement": "unknown-unmeasured-history",
+                    "legacyUsageStatus": "unknown",
+                    "message": "This workflow has no persisted campaign budget.",
+                }
+                if state.get("authoring", {}).get("mode") == "yolo" else None
+            )
+        ),
         "conversionScope": conversion_scope(solution),
         "statePath": str(existing_artifact_path(solution, STATE_FILE_NAME)),
         "next": _next_stage_name(state),
     }
+
+
+def _stop_budget_run(
+    state_path: Path,
+    state: dict[str, Any],
+    stage_name: str,
+    reason: str,
+) -> None:
+    stage = state["stages"][stage_name]
+    if stage["status"] == "running":
+        stage.update({
+            "status": "blocked",
+            "completedAt": _utc_now(),
+            "message": f"Campaign budget stopped new work: {reason}"[:2000],
+        })
+    state["workflowStatus"] = "blocked"
+    budget = state.get("budget")
+    if isinstance(budget, dict):
+        budget["status"] = "stopped"
+        budget["stopReason"] = reason[:1000]
+    authoring = state.get("authoring")
+    if isinstance(authoring, dict):
+        authoring["status"] = "stopped"
+        authoring["stopReason"] = f"Campaign budget: {reason}"[:1000]
+    _write_unlocked(state_path, state)
 
 
 def invalidate_scoped_completion(solution: str | Path) -> None:

@@ -23,7 +23,13 @@ from sentinel_xdr_migration.workflow import (
     start_workflow_stage,
     workflow_status,
 )
-from sentinel_xdr_migration.artifacts import artifact_path, migrate_reports, using_run
+from sentinel_xdr_migration.artifacts import (
+    artifact_path,
+    create_run,
+    migrate_reports,
+    using_run,
+)
+from sentinel_xdr_migration.budget import BudgetExhausted, budget_summary, extend_budget
 from sentinel_xdr_migration.converter import convert_solution
 from sentinel_xdr_migration.packaging import package_input_identity
 from sentinel_xdr_migration import cli as cli_module
@@ -218,6 +224,7 @@ class WorkflowTests(unittest.TestCase):
             self.solution,
             workflow_profile=profile,
             yolo=True,
+            campaign_id="test-campaign",
             **(self._qualification_args() if profile == "qualification" else {}),
         )
         with using_run(self.solution, initialized["runId"]):
@@ -463,6 +470,10 @@ class WorkflowTests(unittest.TestCase):
             self.assertTrue(state["packaging"]["lastConsumedAction"]["bumpConsumed"])
             self.assertEqual("none", state["packaging"]["lastConsumedAction"]["requestedVersionBump"])
             self.assertEqual("passed", state["stages"]["packaging"]["status"])
+            self.assertEqual(
+                2,
+                state["budgetSummary"]["usage"]["packageBuilds"],
+            )
 
     def test_changed_package_inputs_reject_none_and_require_a_new_bump(self) -> None:
         run_id = self._prepare_workflow_for_package("patch")
@@ -564,6 +575,7 @@ class WorkflowTests(unittest.TestCase):
             self.solution,
             workflow_profile="authoring",
             yolo=True,
+            campaign_id="test-campaign",
         )
         with mock.patch.object(cli_module, "configure_logging"), mock.patch.object(
             cli_module,
@@ -589,6 +601,7 @@ class WorkflowTests(unittest.TestCase):
             self.solution,
             workflow_profile="authoring",
             yolo=True,
+            campaign_id="test-campaign",
         )
         state = workflow_status(self.solution)
         state["stages"]["validation"]["status"] = "passed"
@@ -711,6 +724,7 @@ class WorkflowTests(unittest.TestCase):
             self.solution,
             workflow_profile="authoring",
             yolo=True,
+            campaign_id="test-campaign",
         )
         self.assertTrue(initialized["resumed"] is False)
         self.assertEqual(1, initialized["authoring"]["currentContract"]["revision"])
@@ -725,6 +739,78 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(2, record["coverage"]["untested"])
         self.assertFalse(record["operationEligibility"]["packagingAuthorized"])
 
+    def test_yolo_budget_stop_preserves_coverage_and_cannot_be_cleared_by_extension(self) -> None:
+        self._create_source_rules()
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+            yolo=True,
+            campaign_id="test-campaign",
+        )
+        with using_run(self.solution, initialized["runId"]):
+            original_measured_operation = workflow_module.measured_operation
+
+            def fail_conversion_budget(*args, **kwargs):
+                if kwargs.get("dimension") == "conversionPass":
+                    raise BudgetExhausted("conversion pass ceiling reached")
+                return original_measured_operation(*args, **kwargs)
+
+            with mock.patch.object(
+                workflow_module,
+                "measured_operation",
+                side_effect=fail_conversion_budget,
+            ), mock.patch.object(workflow_module, "convert_solution") as converter:
+                result = run_yolo_authoring(self.solution)
+            converter.assert_not_called()
+            self.assertEqual("budget-exhausted", result["status"])
+            self.assertFalse(result["workPerformed"])
+            state = workflow_status(self.solution)
+            self.assertEqual("blocked", state["stages"]["conversion"]["status"])
+            self.assertEqual("stopped", state["authoring"]["status"])
+            self.assertEqual(0, state["authoringSummary"]["coverage"]["E"])
+            self.assertEqual(1, state["authoringSummary"]["coverage"]["N"])
+            self.assertEqual(
+                0,
+                budget_summary(self.solution, "test-campaign")["usage"]["conversionPasses"],
+            )
+            extend_budget(
+                self.solution,
+                "test-campaign",
+                dimension="conversionPasses",
+                new_limit=4,
+                actor="owner",
+                reason="approved budget extension",
+                evidence_reference="approval-4",
+            )
+            self.assertEqual("budget-exhausted", run_yolo_authoring(self.solution)["status"])
+
+    def test_yolo_replacement_run_links_the_persisted_campaign(self) -> None:
+        self._create_source_rules()
+        original = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+            yolo=True,
+            campaign_id="test-campaign",
+        )
+        replacement_directory = create_run(self.solution)
+        with using_run(self.solution, replacement_directory.name):
+            replacement = initialize_workflow(
+                self.solution,
+                workflow_profile="authoring",
+                yolo=True,
+                campaign_id="test-campaign",
+            )
+            state = workflow_status(self.solution)
+        self.assertEqual(original["budget"]["inventorySha256"], replacement["budget"]["inventorySha256"])
+        self.assertEqual(
+            [original["runId"], replacement["runId"]],
+            state["budgetSummary"]["linkedRunIds"],
+        )
+        self.assertEqual(
+            state["budgetSummary"]["campaignId"],
+            replacement["budget"]["campaignId"],
+        )
+
     def test_qualification_profile_is_explicit_and_retains_locked_target(self) -> None:
         self._create_source_rules()
         with self.assertRaisesRegex(ValueError, "locked target context"):
@@ -732,11 +818,13 @@ class WorkflowTests(unittest.TestCase):
                 self.solution,
                 workflow_profile="qualification",
                 yolo=True,
+                campaign_id="test-campaign",
             )
         created = initialize_workflow(
             self.solution,
             workflow_profile="qualification",
             yolo=True,
+            campaign_id="test-campaign",
             **self._qualification_args(),
         )
         self.assertTrue(created["context"]["profileSelectionConfirmed"])
@@ -751,6 +839,7 @@ class WorkflowTests(unittest.TestCase):
                 self.solution,
                 workflow_profile="authoring",
                 yolo=True,
+                campaign_id="test-campaign",
             )
         resumed = initialize_workflow(self.solution, workflow_profile="authoring")
         self.assertTrue(resumed["resumed"])
@@ -762,6 +851,7 @@ class WorkflowTests(unittest.TestCase):
             self.solution,
             workflow_profile="authoring",
             yolo=True,
+            campaign_id="test-campaign",
         )
         source = self.solution / "Analytic Rules" / "Nested" / "Rule0.yaml"
         edited = source.read_text(encoding="utf-8") + "\n# preserve owner edit\n"
@@ -914,6 +1004,7 @@ class WorkflowTests(unittest.TestCase):
             self.solution,
             workflow_profile="authoring",
             yolo=True,
+            campaign_id="test-campaign",
         )
         with using_run(self.solution, created["runId"]):
             state_path = Path(workflow_status(self.solution)["statePath"])
@@ -935,6 +1026,7 @@ class WorkflowTests(unittest.TestCase):
                 "--solution", str(self.solution),
                 "--workflow-profile", "authoring",
                 "--yolo",
+                "--campaign-id", "test-campaign",
             ])
         self.assertEqual(0, init_code, stderr.getvalue())
         initialized = json.loads(stdout.getvalue())
