@@ -116,6 +116,7 @@ def require_locked_target(
     subscription_id: str | None = None,
     workspace_resource_id: str | None = None,
     workspace_customer_id: str | None = None,
+    materialize_missing: bool = True,
 ) -> dict[str, Any]:
     state_path = existing_artifact_path(solution, "workflow-state.json")
     if not state_path.is_file():
@@ -162,6 +163,14 @@ def require_locked_target(
     target_path = existing_artifact_path(solution, TARGET_FILE_NAME)
     if target_path.is_file():
         recorded = json.loads(target_path.read_text(encoding="utf-8-sig"))
+        if (
+            not isinstance(recorded, dict)
+            or recorded.get("schemaVersion") != TARGET_SCHEMA_VERSION
+            or recorded.get("locked") is not True
+        ):
+            raise ValueError(
+                "qualification target artifact is missing its supported locked-target identity"
+            )
         for field in (
             "tenantId",
             "subscriptionId",
@@ -172,7 +181,7 @@ def require_locked_target(
                 raise ValueError(
                     "qualification target artifact does not match workflow state"
                 )
-    else:
+    elif materialize_missing:
         write_target(solution, target)
     target["targetPath"] = str(target_path)
     return target

@@ -49,17 +49,17 @@ def _command_status(
     if executable is None:
         return {
             "name": name,
-            "status": "missing",
+            "status": "failed",
             "detail": f"{command[0]} is not installed or not on PATH",
         }
     resolved_command = [executable, *command[1:]]
     result = _run(resolved_command, runner)
     if result.returncode == 0:
-        return {"name": name, "status": "ready", "detail": None}
+        return {"name": name, "status": "passed", "detail": None}
     detail = (result.stderr or result.stdout).strip()
     return {
         "name": name,
-        "status": "actionRequired",
+        "status": "failed",
         "detail": detail[-1000:] if detail else f"command exited {result.returncode}",
     }
 
@@ -137,8 +137,14 @@ def configure_workspace(
 
 
 def _advanced_hunting_status(
-    state_root: Path, tenant_id: str | None = None
+    state_root: Path, tenant_id: str | None = None, *, probe: bool = False
 ) -> dict[str, Any]:
+    if not probe:
+        return {
+            "name": "advancedHunting",
+            "status": "notRun",
+            "detail": "Graph authentication and access require an explicitly scoped runtime read",
+        }
     try:
         from azure.core.exceptions import ClientAuthenticationError
         from azure.identity import (
@@ -149,24 +155,17 @@ def _advanced_hunting_status(
     except ImportError:
         return {
             "name": "advancedHunting",
-            "status": "missing",
+            "status": "failed",
             "detail": "azure-identity is not installed",
         }
-
-    record_path = state_root / AUTH_RECORD_NAME
-    record = _load_auth_record(record_path)
+    record = _load_auth_record(state_root / AUTH_RECORD_NAME)
     if record is None:
         return {
             "name": "advancedHunting",
-            "status": "actionRequired",
+            "status": "failed",
             "detail": "one-time Microsoft Graph device-code sign-in is required",
         }
-
-    tenant_id = (
-        os.getenv("AH_TENANT_ID")
-        or tenant_id
-        or getattr(record, "tenant_id", None)
-    )
+    tenant_id = tenant_id or getattr(record, "tenant_id", None)
     credential = DeviceCodeCredential(
         client_id=GRAPH_CLIENT_ID,
         tenant_id=tenant_id,
@@ -179,39 +178,26 @@ def _advanced_hunting_status(
     except (AuthenticationRequiredError, ClientAuthenticationError) as exc:
         return {
             "name": "advancedHunting",
-            "status": "actionRequired",
+            "status": "failed",
             "detail": f"cached sign-in needs renewal: {exc}",
         }
     return {
         "name": "advancedHunting",
-        "status": "ready",
-        "detail": f"authenticated as {getattr(record, 'username', '') or 'cached user'}",
+        "status": "passed",
+        "detail": "a Graph access token was obtained; provider authorization was not tested",
     }
 
 
-def doctor(
-    *,
-    state_dir: str | Path | None = None,
-    runner: CommandRunner = subprocess.run,
-    environment: Mapping[str, str] | None = None,
-    solution: str | Path | None = None,
+def _sentinel_authentication_status(
+    *, runner: CommandRunner, probe: bool
 ) -> dict[str, Any]:
-    state_root = _state_dir(state_dir)
-    env = environment if environment is not None else os.environ
-    setup_state = state_root / SETUP_STATE_NAME
-    config = _read_json(state_root / CONFIG_NAME)
-
-    python_status = {
-        "name": "python",
-        "status": "ready" if sys.version_info >= (3, 10) else "unsupported",
-        "detail": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-    }
-    azure_cli = _command_status(
-        "azureCli",
-        ("az", "version", "--output", "none"),
-        runner=runner,
-    )
-    sentinel_auth = _command_status(
+    if not probe:
+        return {
+            "name": "sentinelAuthentication",
+            "status": "notRun",
+            "detail": "Log Analytics authentication and access require an explicitly scoped runtime read",
+        }
+    result = _command_status(
         "sentinelAuthentication",
         (
             "az",
@@ -226,44 +212,114 @@ def doctor(
         ),
         runner=runner,
     )
+    result["name"] = "sentinelAuthentication"
+    if result["status"] == "passed":
+        result["detail"] = "an access token was obtained; provider authorization was not tested"
+    return result
+
+
+def doctor(
+    *,
+    state_dir: str | Path | None = None,
+    runner: CommandRunner = subprocess.run,
+    environment: Mapping[str, str] | None = None,
+    solution: str | Path | None = None,
+    probe_authentication: bool = False,
+) -> dict[str, Any]:
+    state_root = _state_dir(state_dir)
+    env = environment if environment is not None else os.environ
+    setup_state = state_root / SETUP_STATE_NAME
+    config = _read_json(state_root / CONFIG_NAME)
+
+    python_supported = sys.version_info[:2] in {(3, 11), (3, 12)}
+    python_status = {
+        "name": "python",
+        "status": "passed" if python_supported else "failed",
+        "detail": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+    }
+    azure_cli = _command_status(
+        "azureCli",
+        ("az", "version", "--output", "none"),
+        runner=runner,
+    )
+    sentinel_auth = _sentinel_authentication_status(
+        runner=runner, probe=probe_authentication
+    )
     workspace_id = env.get("LA_WORKSPACE_ID") or config.get("workspaceId")
     workspace_resource_id = config.get("workspaceResourceId")
-    workspace_configured = bool(workspace_id or workspace_resource_id)
+    tenant_id = env.get("AZURE_TENANT_ID") or config.get("tenantId")
+    subscription_id = env.get("AZURE_SUBSCRIPTION_ID") or config.get("subscriptionId")
+    resolved_subscription_id = subscription_id
+    missing_binding = [
+        name
+        for name, value in {
+            "tenantId": tenant_id,
+            "workspaceResourceId": workspace_resource_id,
+            "workspaceCustomerId": workspace_id,
+        }.items()
+        if not value
+    ]
+    if missing_binding:
+        workspace_status = "unknown"
+        workspace_detail = "incomplete local target binding; missing " + ", ".join(
+            missing_binding
+        )
+    else:
+        try:
+            from .target_context import build_target, workspace_identity
+
+            derived_subscription = workspace_identity(str(workspace_resource_id))[
+                "subscriptionId"
+            ]
+            resolved_subscription_id = subscription_id or derived_subscription
+            build_target(
+                tenant_id=str(tenant_id),
+                subscription_id=str(resolved_subscription_id),
+                workspace_resource_id=str(workspace_resource_id),
+                workspace_customer_id=str(workspace_id),
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            workspace_status = "failed"
+            workspace_detail = str(exc)
+        else:
+            workspace_status = "passed"
+            workspace_detail = "complete local workspace binding; access not tested"
     workspace = {
         "name": "sentinelWorkspace",
-        "status": "ready" if workspace_configured else "optional",
-        "detail": (
-            "a reusable workspace is configured"
-            if workspace_configured
-            else "set LA_WORKSPACE_ID to enable original Sentinel query execution"
-        ),
+        "status": workspace_status,
+        "detail": workspace_detail,
         "workspaceResourceId": workspace_resource_id,
         "workspaceCustomerId": workspace_id,
+        "subscriptionId": resolved_subscription_id,
     }
-    hunting = _advanced_hunting_status(state_root, config.get("tenantId"))
+    hunting = _advanced_hunting_status(
+        state_root, config.get("tenantId"), probe=probe_authentication
+    )
     checks = [python_status, azure_cli, sentinel_auth, workspace, hunting]
-    runtime_ready = sentinel_auth["status"] == "ready" and hunting["status"] == "ready"
+    runtime_ready = False
 
     actions: list[str] = []
-    if azure_cli["status"] != "ready" or sentinel_auth["status"] != "ready":
+    if azure_cli["status"] != "passed":
         actions.append("Run `sentinel-xdr-migration setup` to authenticate Azure CLI.")
-    if not workspace_id:
-        actions.append("Set `LA_WORKSPACE_ID` to enable Sentinel runtime validation.")
-    if hunting["status"] != "ready":
+    if workspace_status != "passed":
         actions.append(
-            "Run `sentinel-xdr-migration setup` for the one-time Advanced Hunting sign-in."
+            "Complete the exact tenant, subscription, workspace ARM ID, and customer-ID binding."
+        )
+    if sentinel_auth["status"] != "passed" or hunting["status"] != "passed":
+        actions.append(
+            "Authentication, authorization, table access, and query access remain unverified until an explicitly scoped runtime read."
         )
 
     result = {
         "toolVersion": __version__,
         "firstRun": not setup_state.exists(),
         "mode": "runtime" if runtime_ready else "offline",
-        "conversionAvailable": python_status["status"] == "ready",
+        "conversionAvailable": python_supported,
         "runtimeValidationAvailable": runtime_ready,
         "configuredWorkspaceResourceId": workspace_resource_id,
         "configuredWorkspaceCustomerId": workspace_id,
         "configuredTenantId": config.get("tenantId"),
-        "configuredSubscriptionId": config.get("subscriptionId"),
+        "configuredSubscriptionId": resolved_subscription_id,
         "checks": checks,
         "recommendedActions": actions,
     }
@@ -345,11 +401,13 @@ def setup(
             }
         )
 
-    current = doctor(state_dir=state_root, runner=runner)
+    current = doctor(
+        state_dir=state_root, runner=runner, probe_authentication=True
+    )
     sentinel_check = next(
         check for check in current["checks"] if check["name"] == "sentinelAuthentication"
     )
-    if not skip_sentinel_auth and sentinel_check["status"] != "ready":
+    if not skip_sentinel_auth and sentinel_check["status"] != "passed":
         if interactive:
             az_executable = shutil.which("az")
             if az_executable is None:
@@ -385,7 +443,7 @@ def setup(
     hunting_check = next(
         check for check in current["checks"] if check["name"] == "advancedHunting"
     )
-    if not skip_hunting_auth and hunting_check["status"] != "ready":
+    if not skip_hunting_auth and hunting_check["status"] != "passed":
         if interactive:
             try:
                 actions.append(
@@ -420,7 +478,9 @@ def setup(
     (state_root / SETUP_STATE_NAME).write_text(
         json.dumps(state, indent=2) + "\n", encoding="utf-8"
     )
-    final_status = doctor(state_dir=state_root, runner=runner)
+    final_status = doctor(
+        state_dir=state_root, runner=runner, probe_authentication=True
+    )
     return {
         "setupCompleted": True,
         "mode": final_status["mode"],

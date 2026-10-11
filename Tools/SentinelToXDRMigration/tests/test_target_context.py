@@ -77,6 +77,26 @@ class TargetContextTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not match workflow state"):
             require_locked_target(self.solution)
 
+    def test_locked_target_rejects_unlocked_artifact(self) -> None:
+        self._initialize()
+        target_path = artifact_path(self.solution, "qualification-target.json")
+        target = json.loads(target_path.read_text(encoding="utf-8"))
+        target["locked"] = False
+        target_path.write_text(json.dumps(target), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "locked-target identity"):
+            require_locked_target(self.solution)
+
+    def test_locked_target_can_be_read_without_materializing_missing_artifact(self) -> None:
+        self._initialize()
+        target_path = artifact_path(self.solution, "qualification-target.json")
+        target_path.unlink()
+
+        target = require_locked_target(self.solution, materialize_missing=False)
+
+        self.assertEqual(OLD_WORKSPACE, target["workspaceResourceId"])
+        self.assertFalse(target_path.exists())
+
     @mock.patch(
         "sentinel_xdr_migration.target_context.shutil.which",
         return_value="az",
