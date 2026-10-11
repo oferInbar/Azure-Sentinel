@@ -201,7 +201,7 @@ def _runtime_references(
     source_ref = report_reference(
         "sourceReport",
         source_query_sha256,
-        {"triage-mcp", "log-analytics-cli"},
+        {"triage-mcp", "log-analytics-cli", "azure-monitor-sdk"},
         {"microsoft-sentinel-triage", "log-analytics-workspace"},
     )
     target_ref = report_reference(

@@ -16,6 +16,15 @@
     The name of the solution folder under Solutions/.
     Example: "CrowdStrike Falcon Endpoint Protection"
 
+.PARAMETER ContentRoot
+    Repository checkout containing the selected Solutions/ content. Defaults to the
+    toolkit checkout that contains this script. Cross-checkout validation requires
+    -SkipPackaging; tooling and dependencies continue to load from this script's checkout.
+
+.PARAMETER EvidenceDirectory
+    Ignored evidence parent under .script/local-validation/Logs in the toolkit checkout.
+    A unique run folder stores complete TypeScript JSON results and child output logs.
+
 .PARAMETER VersionBump
     How to increment the version. Options: patch (default), minor, major.
 
@@ -58,6 +67,10 @@ param(
     [Parameter(Mandatory = $true, Position = 0, HelpMessage = "Solution folder name under Solutions/")]
     [string]$SolutionName,
 
+    [string]$ContentRoot,
+
+    [string]$EvidenceDirectory,
+
     [ValidateSet("none", "patch", "minor", "major")]
     [string]$VersionBump = "patch",
 
@@ -76,16 +89,42 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Find repository root
-$repoRoot = git rev-parse --show-toplevel 2>$null
-if (-not $repoRoot) {
-    # Fallback: walk up from script location
-    $repoRoot = (Get-Item $PSScriptRoot).Parent.Parent.FullName
+# The toolkit root is anchored to this script, never to the caller's current directory.
+$toolkitRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../.."))
+$toolkitRoot = $toolkitRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+$pathComparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+$ContentRoot = if ($ContentRoot) { [System.IO.Path]::GetFullPath($ContentRoot) } else { $toolkitRoot }
+$ContentRoot = $ContentRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+$rootsAreSame = [string]::Equals($toolkitRoot, $ContentRoot, $pathComparison)
+
+if (-not (Test-Path $toolkitRoot -PathType Container) -or
+    -not (Test-Path (Join-Path $toolkitRoot ".script/local-validation/validate.ts") -PathType Leaf)) {
+    Write-Host "❌ Toolkit root is invalid: '$toolkitRoot'." -ForegroundColor Red
+    exit 2
 }
-$repoRoot = $repoRoot.Replace('\', '/')
+if (-not (Test-Path $ContentRoot -PathType Container) -or
+    -not (Test-Path (Join-Path $ContentRoot "Solutions") -PathType Container) -or
+    ((Get-Item $ContentRoot).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or
+    ((Get-Item (Join-Path $ContentRoot "Solutions")).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+    Write-Host "❌ Content root must be an existing repository checkout containing Solutions/: '$ContentRoot'." -ForegroundColor Red
+    exit 2
+}
+$contentGitRoot = & git -C $ContentRoot rev-parse --show-toplevel 2>$null
+if ($LASTEXITCODE -ne 0 -or
+    -not [string]::Equals(
+        [System.IO.Path]::GetFullPath("$contentGitRoot").TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar),
+        $ContentRoot,
+        $pathComparison)) {
+    Write-Host "❌ Content root must be the canonical Git worktree root: '$ContentRoot'." -ForegroundColor Red
+    exit 2
+}
+if (-not $rootsAreSame -and -not $SkipPackaging) {
+    Write-Host "❌ Cross-checkout validation is validation-only; pass -SkipPackaging to avoid modifying content or package artifacts." -ForegroundColor Red
+    exit 2
+}
 
 # Resolve solution name (supports partial/fuzzy matching)
-$solutionsDir = Join-Path $repoRoot "Solutions"
+$solutionsDir = Join-Path $ContentRoot "Solutions"
 $solutionsRoot = [System.IO.Path]::GetFullPath($solutionsDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
 if ([System.IO.Path]::IsPathRooted($SolutionName) -or $SolutionName.Contains('/') -or $SolutionName.Contains('\') -or $SolutionName -in @('.', '..')) {
     Write-Host "❌ Solution must be a folder name directly under Solutions/: '$SolutionName'" -ForegroundColor Red
@@ -135,7 +174,8 @@ if (-not (Test-Path $solutionPath)) {
 
 $solutionPath = [System.IO.Path]::GetFullPath($solutionPath)
 $solutionsPrefix = $solutionsRoot + [System.IO.Path]::DirectorySeparatorChar
-if (-not $solutionPath.StartsWith($solutionsPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+if (-not $solutionPath.StartsWith($solutionsPrefix, $pathComparison) -or
+    -not [string]::Equals([System.IO.Path]::GetDirectoryName($solutionPath), $solutionsRoot, $pathComparison) -or
     -not (Test-Path $solutionPath -PathType Container) -or
     ((Get-Item $solutionPath).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
     Write-Host "❌ Invalid solution folder: '$solutionPath'. Expected an existing folder directly under '$solutionsRoot'." -ForegroundColor Red
@@ -148,13 +188,60 @@ if (-not (Test-Path $dataPath)) {
     exit 2
 }
 
+if (-not $EvidenceDirectory) {
+    $EvidenceDirectory = Join-Path $toolkitRoot ".script/local-validation/Logs"
+}
+$evidenceCandidate = if ([System.IO.Path]::IsPathRooted($EvidenceDirectory)) {
+    $EvidenceDirectory
+} else {
+    Join-Path $toolkitRoot $EvidenceDirectory
+}
+$evidenceParent = [System.IO.Path]::GetFullPath($evidenceCandidate)
+$evidenceRoot = [System.IO.Path]::GetFullPath((Join-Path $toolkitRoot ".script/local-validation/Logs"))
+$evidencePrefix = $evidenceRoot + [System.IO.Path]::DirectorySeparatorChar
+if (-not $evidenceParent.StartsWith($evidencePrefix, $pathComparison) -and
+    -not [string]::Equals($evidenceParent, $evidenceRoot, $pathComparison)) {
+    Write-Host "❌ EvidenceDirectory must be inside '$evidenceRoot'." -ForegroundColor Red
+    exit 2
+}
+$evidenceCursor = $toolkitRoot
+foreach ($component in ([System.IO.Path]::GetRelativePath($toolkitRoot, $evidenceParent) -split '[\\/]')) {
+    if (-not $component -or $component -eq '.') { continue }
+    $evidenceCursor = Join-Path $evidenceCursor $component
+    if (Test-Path $evidenceCursor) {
+        $evidenceItem = Get-Item -Force $evidenceCursor
+        if (($evidenceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or
+            -not $evidenceItem.PSIsContainer) {
+            Write-Host "❌ EvidenceDirectory cannot traverse a link or file: '$evidenceCursor'." -ForegroundColor Red
+            exit 2
+        }
+    }
+}
+$evidenceRelative = [System.IO.Path]::GetRelativePath($toolkitRoot, $evidenceParent).Replace('\', '/')
+$null = & git -C $toolkitRoot check-ignore --no-index --quiet -- $evidenceRelative 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "❌ EvidenceDirectory is not ignored by the toolkit checkout: '$evidenceRelative'." -ForegroundColor Red
+    exit 2
+}
+$runStamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssfffZ")
+$evidenceRunPath = Join-Path $evidenceParent $runStamp
+if (Test-Path $evidenceRunPath) {
+    Write-Host "❌ Evidence run directory already exists: '$evidenceRunPath'." -ForegroundColor Red
+    exit 2
+}
+$null = New-Item -ItemType Directory -Path $evidenceParent -Force
+$null = New-Item -ItemType Directory -Path $evidenceRunPath -Force:$false
+
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║  Microsoft Sentinel Solution Builder                       ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Solution:     $SolutionName" -ForegroundColor White
+Write-Host "  Toolkit Root: $toolkitRoot" -ForegroundColor White
+Write-Host "  Content Root: $ContentRoot" -ForegroundColor White
 Write-Host "  Version Bump: $VersionBump" -ForegroundColor White
+Write-Host "  Evidence:     $evidenceRunPath" -ForegroundColor White
 Write-Host "  Packaging:    $(if ($SkipPackaging) { '⏭ Skipped' } else { '✅ Enabled' })" -ForegroundColor White
 Write-Host "  Validation:   $(if ($SkipValidation) { '⏭ Skipped' } else { '✅ Enabled' })" -ForegroundColor White
 Write-Host "  Release Notes:$(if ($ReleaseNotes) { " ✅ Provided" } else { ' ⚠️  Not provided' })" -ForegroundColor White
@@ -164,6 +251,16 @@ $overallSuccess = $true
 
 # Report tracking
 $reportEntries = [System.Collections.ArrayList]::new()
+$saveProcessOutput = {
+    param([string]$Name, [object[]]$Output)
+    $outputPath = Join-Path $evidenceRunPath $Name
+    [System.IO.File]::WriteAllLines(
+        $outputPath,
+        @($Output | ForEach-Object { "$_" }),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    return $outputPath
+}
 $reportMeta = @{
     SolutionName        = $SolutionName
     VersionBump         = $VersionBump
@@ -174,6 +271,7 @@ $reportMeta = @{
     VersionSynced       = $false
     ReleaseNotesUpdated = $false
     ReleaseNotesText    = $ReleaseNotes
+    EvidenceRunPath     = $evidenceRunPath
 }
 
 # =============================================================================
@@ -186,7 +284,7 @@ if (-not $SkipPackaging) {
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
     Write-Host ""
 
-    $v3ScriptPath = Join-Path $repoRoot "Tools/Create-Azure-Sentinel-Solution/V3/createSolutionV3.ps1"
+    $v3ScriptPath = Join-Path $toolkitRoot "Tools/Create-Azure-Sentinel-Solution/V3/createSolutionV3.ps1"
 
     if (-not (Test-Path $v3ScriptPath)) {
         Write-Host "❌ V3 packaging script not found: $v3ScriptPath" -ForegroundColor Red
@@ -195,7 +293,7 @@ if (-not $SkipPackaging) {
 
     try {
         # Run packaging from repo root so relative paths work
-        Push-Location $repoRoot
+        Push-Location $toolkitRoot
 
         & $v3ScriptPath `
             -SolutionDataFolderPath $dataPath `
@@ -300,12 +398,17 @@ if (-not $SkipValidation) {
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
     Write-Host ""
 
-    $validateScript = Join-Path $repoRoot ".script/local-validation/validate.js"
+    $validateScript = Join-Path $toolkitRoot ".script/local-validation/validate.js"
 
-    $validateSource = Join-Path $repoRoot ".script/local-validation/validate.ts"
+    $validateSource = Join-Path $toolkitRoot ".script/local-validation/validate.ts"
     if (-not (Test-Path $validateSource)) {
         Write-Host "❌ TypeScript validation source not found: $validateSource" -ForegroundColor Red
         $overallSuccess = $false
+        $null = $reportEntries.Add(@{
+            Step = 2; Name = "TypeScript Compilation"; Status = "failed"
+            Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
+            Errors = @("TypeScript validation source not found: $validateSource")
+        })
     }
     else {
         # validate.js and its imported checker modules are generated from TypeScript and
@@ -313,11 +416,16 @@ if (-not $SkipValidation) {
         $typescriptCompileSucceeded = $false
         $tscSw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            Push-Location $repoRoot
+            Push-Location $toolkitRoot
             $tscOutput = & npm run tsc 2>&1
             $tscExitCode = $LASTEXITCODE
             Pop-Location
             $tscSw.Stop()
+            [System.IO.File]::WriteAllLines(
+                (Join-Path $evidenceRunPath "typescript-compile.log"),
+                @($tscOutput | ForEach-Object { "$_" }),
+                [System.Text.UTF8Encoding]::new($false)
+            )
 
             $tscOutput | ForEach-Object {
                 $line = "$_"
@@ -361,37 +469,60 @@ if (-not $SkipValidation) {
         elseif (-not (Test-Path $validateScript)) {
             Write-Host "❌ Validation script not found after TypeScript compilation: $validateScript" -ForegroundColor Red
             $overallSuccess = $false
+            $null = $reportEntries.Add(@{
+                Step = 2; Name = "TypeScript Runner"; Status = "failed"
+                Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
+                Errors = @("Validation script not found after successful compilation: $validateScript")
+            })
         }
         else {
         # Build the validation command — use --json for structured output
         $solutionRelativePath = "Solutions/$SolutionName"
-        $validateArgs = @("$validateScript", "--path", "$solutionRelativePath", "--json")
+        $typescriptJsonPath = Join-Path $evidenceRunPath "typescript-results.json"
+        $typescriptStdoutPath = Join-Path $evidenceRunPath "typescript.stdout.log"
+        $typescriptStderrPath = Join-Path $evidenceRunPath "typescript.stderr.log"
+        $validateArgs = @(
+            $validateScript,
+            "--path", $solutionRelativePath,
+            "--repository-root", $ContentRoot,
+            "--json-file", $typescriptJsonPath
+        )
 
         if ($ValidationSkip) {
             $validateArgs += @("--skip", $ValidationSkip)
         }
 
         try {
-            Push-Location $repoRoot
-            $rawOutput = & node @validateArgs 2>&1
-            $validationExitCode = $LASTEXITCODE
-            Pop-Location
-
-            # Separate JSON stdout from stderr lines
-            $jsonString = ($rawOutput | Where-Object { $_ -is [string] }) -join "`n"
-            $stderrLines = $rawOutput | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-
-            # Show stderr lines (warnings, progress) as-is
-            $stderrLines | ForEach-Object { Write-Host $_.ToString() -ForegroundColor Yellow }
-
-            # Try to parse JSON output and generate human-readable display
-            $jsonParsed = $null
-            try {
-                $jsonParsed = $jsonString | ConvertFrom-Json
+            $nodeProcess = [System.Diagnostics.Process]::new()
+            $nodeProcess.StartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $nodeProcess.StartInfo.FileName = "node"
+            $nodeProcess.StartInfo.WorkingDirectory = $toolkitRoot
+            $nodeProcess.StartInfo.UseShellExecute = $false
+            $nodeProcess.StartInfo.RedirectStandardOutput = $true
+            $nodeProcess.StartInfo.RedirectStandardError = $true
+            foreach ($argument in $validateArgs) {
+                $null = $nodeProcess.StartInfo.ArgumentList.Add($argument)
             }
-            catch {
-                # Fallback: show raw output if JSON parsing fails
-                Write-Host $jsonString
+            if (-not $nodeProcess.Start()) {
+                throw "Could not start Node.js local validation process."
+            }
+            $stdoutTask = $nodeProcess.StandardOutput.ReadToEndAsync()
+            $stderrTask = $nodeProcess.StandardError.ReadToEndAsync()
+            $nodeProcess.WaitForExit()
+            $validationExitCode = $nodeProcess.ExitCode
+            $nodeStdout = $stdoutTask.GetAwaiter().GetResult()
+            $nodeStderr = $stderrTask.GetAwaiter().GetResult()
+            [System.IO.File]::WriteAllText($typescriptStdoutPath, $nodeStdout, [System.Text.UTF8Encoding]::new($false))
+            [System.IO.File]::WriteAllText($typescriptStderrPath, $nodeStderr, [System.Text.UTF8Encoding]::new($false))
+            if ($nodeStdout.Trim()) { Write-Host "     $($nodeStdout.Trim())" -ForegroundColor Gray }
+            if ($nodeStderr.Trim()) { Write-Host $nodeStderr.Trim() -ForegroundColor Yellow }
+
+            if (-not (Test-Path $typescriptJsonPath -PathType Leaf)) {
+                throw "TypeScript validator exited $validationExitCode without writing its structured report. See $typescriptStdoutPath and $typescriptStderrPath."
+            }
+            $jsonParsed = Get-Content $typescriptJsonPath -Raw | ConvertFrom-Json
+            if ($null -eq $jsonParsed.results) {
+                throw "TypeScript validator report has no results array. See $typescriptJsonPath."
             }
 
             if ($jsonParsed) {
@@ -406,7 +537,7 @@ if (-not $SkipValidation) {
                 foreach ($vName in $byValidator.Keys | Sort-Object) {
                     $vResults = $byValidator[$vName]
                     $vPassed = @($vResults | Where-Object { $_.passed -and -not $_.skipped })
-                    $vFailed = @($vResults | Where-Object { -not $_.passed })
+                    $vFailed = @($vResults | Where-Object { -not $_.passed -and -not $_.skipped })
                     $vSkipped = @($vResults | Where-Object { $_.skipped })
 
                     if ($vFailed.Count -gt 0) {
@@ -437,16 +568,23 @@ if (-not $SkipValidation) {
                 }
 
                 $totalPassed = @($jsonParsed.results | Where-Object { $_.passed -and -not $_.skipped }).Count
-                $totalFailed = @($jsonParsed.results | Where-Object { -not $_.passed }).Count
+                $totalFailed = @($jsonParsed.results | Where-Object { -not $_.passed -and -not $_.skipped }).Count
                 $totalSkipped = @($jsonParsed.results | Where-Object { $_.skipped }).Count
                 Write-Host ""
                 Write-Host "  TOTAL: $($jsonParsed.results.Count) checks  |  ✅ $totalPassed passed  |  ❌ $totalFailed failed  |  ⏭ $totalSkipped skipped" -ForegroundColor Gray
             }
 
-            if ($validationExitCode -ne 0) {
+            if ($validationExitCode -ne 0 -or $totalFailed -gt 0) {
                 Write-Host ""
                 Write-Host "❌ Validation found errors (exit code $validationExitCode)" -ForegroundColor Red
                 $overallSuccess = $false
+                if ($validationExitCode -ne 0 -and $totalFailed -eq 0) {
+                    $null = $reportEntries.Add(@{
+                        Step = 2; Name = "TypeScript Runner"; Status = "failed"
+                        Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
+                        Errors = @("Node.js validation process exited with code $validationExitCode despite reporting no failed check. Full JSON and process output: $evidenceRunPath")
+                    })
+                }
             }
             else {
                 Write-Host ""
@@ -454,10 +592,14 @@ if (-not $SkipValidation) {
             }
         }
         catch {
-            Pop-Location -ErrorAction SilentlyContinue
             Write-Host ""
             Write-Host "❌ Validation failed: $($_.Exception.Message)" -ForegroundColor Red
             $overallSuccess = $false
+            $null = $reportEntries.Add(@{
+                Step = 2; Name = "TypeScript Runner"; Status = "failed"
+                Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
+                Errors = @($_.Exception.Message)
+            })
         }
     }
     }
@@ -565,8 +707,24 @@ if (-not $SkipValidation) {
             return $summary
         }
 
+        function Get-DotnetTestSkipReason {
+            param(
+                [int]$ExitCode,
+                [hashtable]$Summary,
+                [string[]]$OutputLines
+            )
+            if ($ExitCode -ne 0 -or $Summary.Total -gt 0) { return $null }
+            $diagnostics = @($OutputLines | Where-Object {
+                "$_" -match "No test is available|could not find dependent assembly|No tests were found"
+            } | ForEach-Object { "$_".Trim() } | Select-Object -First 3)
+            if ($diagnostics.Count -gt 0) {
+                return "No tests executed: $($diagnostics -join ' | ')"
+            }
+            return "No tests executed: dotnet test did not report any test results"
+        }
+
         # --- Detection Schema Validator ---
-        $detectionProject = Join-Path $repoRoot ".script/tests/detectionTemplateSchemaValidation/DetectionTemplateSchemaValidation.Tests.csproj"
+        $detectionProject = Join-Path $toolkitRoot ".script/tests/detectionTemplateSchemaValidation/DetectionTemplateSchemaValidation.Tests.csproj"
         if ($has31 -and (Test-Path $detectionProject)) {
             # Scope to solution's Analytic Rules only
             $detFiles = Get-SolutionContentFiles -SolPath $solutionPath -SubDirs @("Analytic Rules") -Extensions @("*.yaml")
@@ -575,7 +733,7 @@ if (-not $SkipValidation) {
                 # These tests expose only the basename as their filterable argument. If another
                 # solution has a same-named rule, filtering by that name would execute it too.
                 $allDetectionFiles = @(
-                    Get-ChildItem (Join-Path $repoRoot "Detections"), $solutionsDir -Recurse -Filter "*.yaml" -File |
+                    Get-ChildItem (Join-Path $ContentRoot "Detections"), $solutionsDir -Recurse -Filter "*.yaml" -File |
                         Where-Object { $_.FullName -match '[\\/]Detections[\\/]' -or $_.FullName -match '[\\/]Solutions[\\/].*[\\/]Analytic Rules[\\/]' }
                 )
                 $collidingNames = @($detFiles | Where-Object {
@@ -599,13 +757,19 @@ if (-not $SkipValidation) {
                 Write-Host "  🔍 Detection Schema Validation (scoped to $SolutionName — $($detFiles.Count) files)..." -ForegroundColor White
                 $detSw = [System.Diagnostics.Stopwatch]::StartNew()
                 try {
-                    Push-Location $repoRoot
+                    Push-Location $toolkitRoot
+                    $previousContentRoot = $env:SENTINEL_VALIDATION_CONTENT_ROOT
+                    $env:SENTINEL_VALIDATION_CONTENT_ROOT = $ContentRoot
                     $detOutput = & dotnet test $detectionProject --filter "$detFilter" -v q --nologo 2>&1
                     $detExitCode = $LASTEXITCODE
                     Pop-Location
+                    if ($previousContentRoot) { $env:SENTINEL_VALIDATION_CONTENT_ROOT = $previousContentRoot }
+                    else { Remove-Item Env:SENTINEL_VALIDATION_CONTENT_ROOT -ErrorAction SilentlyContinue }
                     $detSw.Stop()
+                    $detLogPath = & $saveProcessOutput "detection-schema.dotnet.log" $detOutput
 
                     $detSummary = Parse-DotnetTestSummary -OutputLines ($detOutput | ForEach-Object { "$_" })
+                    $detSkipReason = Get-DotnetTestSkipReason -ExitCode $detExitCode -Summary $detSummary -OutputLines ($detOutput | ForEach-Object { "$_" })
 
                     if ($detExitCode -ne 0) {
                         $failLines = $detOutput | Where-Object { $_ -match "Failed|Error|FAIL" }
@@ -614,6 +778,9 @@ if (-not $SkipValidation) {
                         if ($summaryLine) { Write-Host "     $summaryLine" -ForegroundColor Red }
                         Write-Host "  ❌ Detection Schema validation failed" -ForegroundColor Red
                         $overallSuccess = $false
+                    }
+                    elseif ($detSkipReason) {
+                        Write-Host "  ⏭  Detection Schema validation skipped — $detSkipReason" -ForegroundColor Yellow
                     }
                     else {
                         $summaryLine = $detOutput | Where-Object { $_ -match "^Passed!" } | Select-Object -Last 1
@@ -625,17 +792,21 @@ if (-not $SkipValidation) {
                     $null = $reportEntries.Add(@{
                         Step      = 3
                         Name      = "Detection Schema"
-                        Status    = if ($detExitCode -ne 0) { "failed" } else { "passed" }
+                        Status    = if ($detExitCode -ne 0) { "failed" } elseif ($detSkipReason) { "skipped" } else { "passed" }
                         Passed    = $detSummary.Passed
                         Failed    = $detSummary.Failed
                         Skipped   = $detSummary.Skipped
                         FileCount = $detFiles.Count
                         Duration  = $detSw.Elapsed
                         Errors    = $detErrors
+                        OutputLog = $detLogPath
+                        SkipReason = $detSkipReason
                     })
                 }
                 catch {
                     $detSw.Stop()
+                    if ($null -ne $previousContentRoot -and $previousContentRoot) { $env:SENTINEL_VALIDATION_CONTENT_ROOT = $previousContentRoot }
+                    else { Remove-Item Env:SENTINEL_VALIDATION_CONTENT_ROOT -ErrorAction SilentlyContinue }
                     Pop-Location -ErrorAction SilentlyContinue
                     Write-Host "  ❌ Detection Schema validation error: $($_.Exception.Message)" -ForegroundColor Red
                     $overallSuccess = $false
@@ -665,11 +836,19 @@ if (-not $SkipValidation) {
                 Duration = [TimeSpan]::Zero; SkipReason = ".NET Core 3.1 not installed"
             })
         }
+        elseif (-not (Test-Path $detectionProject)) {
+            Write-Host "  ⏭  Detection Schema validation skipped — toolkit test project not found: $detectionProject" -ForegroundColor Yellow
+            $null = $reportEntries.Add(@{
+                Step = 3; Name = "Detection Schema"; Status = "skipped"
+                Passed = 0; Failed = 0; Skipped = 0; FileCount = 0
+                Duration = [TimeSpan]::Zero; SkipReason = "Toolkit test project not found"
+            })
+        }
 
         Write-Host ""
 
         # --- Non-ASCII Validator (scoped to solution's YAML/JSON files) ---
-        $nonAsciiProject = Join-Path $repoRoot ".script/tests/NonAsciiValidationsTests/NonAsciiValidations.Tests.csproj"
+        $nonAsciiProject = Join-Path $toolkitRoot ".script/tests/NonAsciiValidationsTests/NonAsciiValidations.Tests.csproj"
         if ($has31 -and (Test-Path $nonAsciiProject)) {
             # Scope to solution content files (same approach as Detection Schema)
             $naFiles = Get-SolutionContentFiles -SolPath $solutionPath `
@@ -681,13 +860,19 @@ if (-not $SkipValidation) {
                 Write-Host "  🔍 Non-ASCII Validation (scoped to $SolutionName — $($naFiles.Count) files)..." -ForegroundColor White
                 $naSw = [System.Diagnostics.Stopwatch]::StartNew()
                 try {
-                    Push-Location $repoRoot
+                    Push-Location $toolkitRoot
+                    $previousContentRoot = $env:SENTINEL_VALIDATION_CONTENT_ROOT
+                    $env:SENTINEL_VALIDATION_CONTENT_ROOT = $ContentRoot
                     $naOutput = & dotnet test $nonAsciiProject --filter "$naFilter" -v q --nologo 2>&1
                     $naExitCode = $LASTEXITCODE
                     Pop-Location
+                    if ($previousContentRoot) { $env:SENTINEL_VALIDATION_CONTENT_ROOT = $previousContentRoot }
+                    else { Remove-Item Env:SENTINEL_VALIDATION_CONTENT_ROOT -ErrorAction SilentlyContinue }
                     $naSw.Stop()
+                    $naLogPath = & $saveProcessOutput "non-ascii.dotnet.log" $naOutput
 
                     $naSummary = Parse-DotnetTestSummary -OutputLines ($naOutput | ForEach-Object { "$_" })
+                    $naSkipReason = Get-DotnetTestSkipReason -ExitCode $naExitCode -Summary $naSummary -OutputLines ($naOutput | ForEach-Object { "$_" })
 
                     if ($naExitCode -ne 0) {
                         $failLines = $naOutput | Where-Object { $_ -match "Failed|Error|FAIL" }
@@ -696,6 +881,9 @@ if (-not $SkipValidation) {
                         if ($summaryLine) { Write-Host "     $summaryLine" -ForegroundColor Red }
                         Write-Host "  ❌ Non-ASCII validation failed" -ForegroundColor Red
                         $overallSuccess = $false
+                    }
+                    elseif ($naSkipReason) {
+                        Write-Host "  ⏭  Non-ASCII validation skipped — $naSkipReason" -ForegroundColor Yellow
                     }
                     else {
                         $summaryLine = $naOutput | Where-Object { $_ -match "^Passed!" } | Select-Object -Last 1
@@ -707,17 +895,21 @@ if (-not $SkipValidation) {
                     $null = $reportEntries.Add(@{
                         Step      = 3
                         Name      = "Non-ASCII"
-                        Status    = if ($naExitCode -ne 0) { "failed" } else { "passed" }
+                        Status    = if ($naExitCode -ne 0) { "failed" } elseif ($naSkipReason) { "skipped" } else { "passed" }
                         Passed    = $naSummary.Passed
                         Failed    = $naSummary.Failed
                         Skipped   = $naSummary.Skipped
                         FileCount = $naFiles.Count
                         Duration  = $naSw.Elapsed
                         Errors    = $naErrors
+                        OutputLog = $naLogPath
+                        SkipReason = $naSkipReason
                     })
                 }
                 catch {
                     $naSw.Stop()
+                    if ($null -ne $previousContentRoot -and $previousContentRoot) { $env:SENTINEL_VALIDATION_CONTENT_ROOT = $previousContentRoot }
+                    else { Remove-Item Env:SENTINEL_VALIDATION_CONTENT_ROOT -ErrorAction SilentlyContinue }
                     Pop-Location -ErrorAction SilentlyContinue
                     Write-Host "  ❌ Non-ASCII validation error: $($_.Exception.Message)" -ForegroundColor Red
                     $overallSuccess = $false
@@ -746,11 +938,19 @@ if (-not $SkipValidation) {
                 Duration = [TimeSpan]::Zero; Scope = "entire repo"; SkipReason = ".NET Core 3.1 not installed"
             })
         }
+        elseif (-not (Test-Path $nonAsciiProject)) {
+            Write-Host "  ⏭  Non-ASCII validation skipped — toolkit test project not found: $nonAsciiProject" -ForegroundColor Yellow
+            $null = $reportEntries.Add(@{
+                Step = 3; Name = "Non-ASCII"; Status = "skipped"
+                Passed = 0; Failed = 0; Skipped = 0; FileCount = 0
+                Duration = [TimeSpan]::Zero; SkipReason = "Toolkit test project not found"
+            })
+        }
 
         Write-Host ""
 
         # --- KQL Validator (scoped to solution) ---
-        $kqlProject = Join-Path $repoRoot ".script/tests/KqlvalidationsTests/Kqlvalidations.Tests.csproj"
+        $kqlProject = Join-Path $toolkitRoot ".script/tests/KqlvalidationsTests/Kqlvalidations.Tests.csproj"
         if ($has80 -and (Test-Path $kqlProject)) {
             # Collect all YAML/JSON content files from the solution for scoping
             $kqlFiles = Get-SolutionContentFiles -SolPath $solutionPath `
@@ -770,13 +970,19 @@ if (-not $SkipValidation) {
 
                 $kqlSw = [System.Diagnostics.Stopwatch]::StartNew()
                 try {
-                    Push-Location $repoRoot
+                    Push-Location $toolkitRoot
+                    $previousContentRoot = $env:SENTINEL_VALIDATION_CONTENT_ROOT
+                    $env:SENTINEL_VALIDATION_CONTENT_ROOT = $ContentRoot
                     $kqlOutput = & dotnet test $kqlProject --filter "$kqlFilter" -v q --nologo 2>&1
                     $kqlExitCode = $LASTEXITCODE
                     Pop-Location
+                    if ($previousContentRoot) { $env:SENTINEL_VALIDATION_CONTENT_ROOT = $previousContentRoot }
+                    else { Remove-Item Env:SENTINEL_VALIDATION_CONTENT_ROOT -ErrorAction SilentlyContinue }
                     $kqlSw.Stop()
+                    $kqlLogPath = & $saveProcessOutput "kql.dotnet.log" $kqlOutput
 
                     $kqlSummary = Parse-DotnetTestSummary -OutputLines ($kqlOutput | ForEach-Object { "$_" })
+                    $kqlSkipReason = Get-DotnetTestSkipReason -ExitCode $kqlExitCode -Summary $kqlSummary -OutputLines ($kqlOutput | ForEach-Object { "$_" })
 
                     if ($kqlExitCode -ne 0) {
                         $failLines = $kqlOutput | Where-Object { $_ -match "Failed|Error|FAIL" }
@@ -785,6 +991,9 @@ if (-not $SkipValidation) {
                         if ($summaryLine) { Write-Host "     $summaryLine" -ForegroundColor Red }
                         Write-Host "  ❌ KQL validation failed" -ForegroundColor Red
                         $overallSuccess = $false
+                    }
+                    elseif ($kqlSkipReason) {
+                        Write-Host "  ⏭  KQL validation skipped — $kqlSkipReason" -ForegroundColor Yellow
                     }
                     else {
                         $summaryLine = $kqlOutput | Where-Object { $_ -match "^Passed!" } | Select-Object -Last 1
@@ -796,13 +1005,15 @@ if (-not $SkipValidation) {
                     $null = $reportEntries.Add(@{
                         Step      = 3
                         Name      = "KQL"
-                        Status    = if ($kqlExitCode -ne 0) { "failed" } else { "passed" }
+                        Status    = if ($kqlExitCode -ne 0) { "failed" } elseif ($kqlSkipReason) { "skipped" } else { "passed" }
                         Passed    = $kqlSummary.Passed
                         Failed    = $kqlSummary.Failed
                         Skipped   = $kqlSummary.Skipped
                         FileCount = $kqlFiles.Count
                         Duration  = $kqlSw.Elapsed
                         Errors    = $kqlErrors
+                        OutputLog = $kqlLogPath
+                        SkipReason = $kqlSkipReason
                     })
                 }
                 catch {
@@ -824,6 +1035,12 @@ if (-not $SkipValidation) {
                     else {
                         Remove-Item Env:SYSTEM_PULLREQUEST_ISFORK -ErrorAction SilentlyContinue
                     }
+                    if ($null -ne $previousContentRoot -and $previousContentRoot) {
+                        $env:SENTINEL_VALIDATION_CONTENT_ROOT = $previousContentRoot
+                    }
+                    else {
+                        Remove-Item Env:SENTINEL_VALIDATION_CONTENT_ROOT -ErrorAction SilentlyContinue
+                    }
                 }
             }
             else {
@@ -844,6 +1061,14 @@ if (-not $SkipValidation) {
                 Duration = [TimeSpan]::Zero; SkipReason = ".NET 8.0 not installed"
             })
         }
+        elseif (-not (Test-Path $kqlProject)) {
+            Write-Host "  ⏭  KQL validation skipped — toolkit test project not found: $kqlProject" -ForegroundColor Yellow
+            $null = $reportEntries.Add(@{
+                Step = 3; Name = "KQL"; Status = "skipped"
+                Passed = 0; Failed = 0; Skipped = 0; FileCount = 0
+                Duration = [TimeSpan]::Zero; SkipReason = "Toolkit test project not found"
+            })
+        }
 
         Write-Host ""
     }
@@ -853,7 +1078,7 @@ if (-not $SkipValidation) {
     # -----------------------------------------------------------------
     $packageDir = Join-Path $solutionPath "Package"
     if (Test-Path $packageDir) {
-        $armTtkScript = Join-Path $repoRoot ".script/local-validation/run-arm-ttk.ps1"
+        $armTtkScript = Join-Path $toolkitRoot ".script/local-validation/run-arm-ttk.ps1"
         if (-not (Test-Path $armTtkScript)) {
             Write-Host "  ⏭  ARM-TTK validation skipped — run-arm-ttk.ps1 not found." -ForegroundColor Yellow
             $null = $reportEntries.Add(@{
@@ -866,9 +1091,10 @@ if (-not $SkipValidation) {
             Write-Host "  🔍 ARM-TTK Validation (same checks as GitHub CI)..." -ForegroundColor White
             $armSw = [System.Diagnostics.Stopwatch]::StartNew()
             try {
-                $armOutput = & pwsh -NoProfile -File $armTtkScript -SolutionPath $solutionPath 2>&1
+                $armOutput = & pwsh -NoProfile -File $armTtkScript -SolutionPath $solutionPath -ToolkitRoot $toolkitRoot 2>&1
                 $armExitCode = $LASTEXITCODE
                 $armSw.Stop()
+                $armLogPath = & $saveProcessOutput "arm-ttk.log" $armOutput
 
                 # Show output
                 $armOutput | ForEach-Object { Write-Host "     $_" -ForegroundColor Gray }
@@ -889,7 +1115,7 @@ if (-not $SkipValidation) {
                     $null = $reportEntries.Add(@{
                         Step = 3; Name = "ARM-TTK"; Status = "skipped"
                         Passed = 0; Failed = 0; Skipped = 0; FileCount = 0
-                        Duration = $armSw.Elapsed; SkipReason = "No templates in Package/"
+                        Duration = $armSw.Elapsed; SkipReason = "No templates in Package/"; OutputLog = $armLogPath
                     })
                 }
                 elseif ($armExitCode -ne 0) {
@@ -900,6 +1126,7 @@ if (-not $SkipValidation) {
                         Step = 3; Name = "ARM-TTK"; Status = "failed"
                         Passed = $armPass; Failed = $armFail; Skipped = 0; FileCount = 0
                         Duration = $armSw.Elapsed; Errors = $armErrors
+                        OutputLog = $armLogPath
                     })
                 }
                 else {
@@ -907,7 +1134,7 @@ if (-not $SkipValidation) {
                     $null = $reportEntries.Add(@{
                         Step = 3; Name = "ARM-TTK"; Status = "passed"
                         Passed = $armPass; Failed = 0; Skipped = 0; FileCount = 0
-                        Duration = $armSw.Elapsed
+                        Duration = $armSw.Elapsed; OutputLog = $armLogPath
                     })
                 }
             }
@@ -960,21 +1187,22 @@ if (-not $SkipValidation) {
     }
 
     # --- Validate Field Types ---
-    $fieldTypesScript = Join-Path $repoRoot ".script/package-automation/validateFieldTypes.ps1"
+    $fieldTypesScript = Join-Path $toolkitRoot ".script/package-automation/validateFieldTypes.ps1"
     if (Test-Path $fieldTypesScript) {
         Write-Host "  🔍 Field Types Validation..." -ForegroundColor White
         $ftSw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            Push-Location $repoRoot
+            Push-Location $toolkitRoot
             $ftOutput = & pwsh -NoProfile -File $fieldTypesScript `
                 -runId "local-validation" `
                 -pullRequestNumber 0 `
                 -instrumentationKey "" `
-                -baseFolderPath $repoRoot `
+                -baseFolderPath $ContentRoot `
                 -SolutionPath $solutionPath 2>&1
             $ftExitCode = $LASTEXITCODE
             Pop-Location
             $ftSw.Stop()
+            $ftLogPath = & $saveProcessOutput "field-types.log" $ftOutput
 
             # Show relevant output (filter noise)
             $ftOutput | ForEach-Object {
@@ -990,6 +1218,7 @@ if (-not $SkipValidation) {
                     Step = 4; Name = "Field Types"; Status = "failed"
                     Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
                     Duration = $ftSw.Elapsed; Errors = $ftErrors
+                    OutputLog = $ftLogPath
                 })
             }
             elseif (($ftOutput | ForEach-Object { "$_" }) -match "no current Package/mainTemplate\.json") {
@@ -998,6 +1227,7 @@ if (-not $SkipValidation) {
                     Step = 4; Name = "Field Types"; Status = "skipped"
                     Passed = 0; Failed = 0; Skipped = 1; FileCount = 0
                     Duration = $ftSw.Elapsed; SkipReason = "No current Package/mainTemplate.json in the selected solution"
+                    OutputLog = $ftLogPath
                 })
             }
             else {
@@ -1005,7 +1235,7 @@ if (-not $SkipValidation) {
                 $null = $reportEntries.Add(@{
                     Step = 4; Name = "Field Types"; Status = "passed"
                     Passed = 1; Failed = 0; Skipped = 0; FileCount = 0
-                    Duration = $ftSw.Elapsed
+                    Duration = $ftSw.Elapsed; OutputLog = $ftLogPath
                 })
             }
         }
@@ -1033,21 +1263,22 @@ if (-not $SkipValidation) {
     Write-Host ""
 
     # --- Validate Classic App Insights ---
-    $classicAIScript = Join-Path $repoRoot ".script/package-automation/validateClassicAppInsights.ps1"
+    $classicAIScript = Join-Path $toolkitRoot ".script/package-automation/validateClassicAppInsights.ps1"
     if (Test-Path $classicAIScript) {
         Write-Host "  🔍 Classic App Insights Validation..." -ForegroundColor White
         $caiSw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            Push-Location $repoRoot
+            Push-Location $toolkitRoot
             $caiOutput = & pwsh -NoProfile -File $classicAIScript `
                 -runId "local-validation" `
                 -pullRequestNumber 0 `
                 -instrumentationKey "" `
-                -baseFolderPath $repoRoot `
+                -baseFolderPath $ContentRoot `
                 -SolutionPath $solutionPath 2>&1
             $caiExitCode = $LASTEXITCODE
             Pop-Location
             $caiSw.Stop()
+            $caiLogPath = & $saveProcessOutput "classic-app-insights.log" $caiOutput
 
             $caiOutput | ForEach-Object {
                 $line = "$_"
@@ -1062,6 +1293,7 @@ if (-not $SkipValidation) {
                     Step = 4; Name = "Classic App Insights (Solution)"; Status = "failed"
                     Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
                     Duration = $caiSw.Elapsed; Errors = $caiErrors
+                    OutputLog = $caiLogPath
                 })
             }
             elseif (($caiOutput | ForEach-Object { "$_" }) -match "no current azuredeploy files found in the selected folder") {
@@ -1070,6 +1302,7 @@ if (-not $SkipValidation) {
                     Step = 4; Name = "Classic App Insights (Solution)"; Status = "skipped"
                     Passed = 0; Failed = 0; Skipped = 1; FileCount = 0
                     Duration = $caiSw.Elapsed; SkipReason = "No current azuredeploy files in the selected solution"
+                    OutputLog = $caiLogPath
                 })
             }
             else {
@@ -1077,7 +1310,7 @@ if (-not $SkipValidation) {
                 $null = $reportEntries.Add(@{
                     Step = 4; Name = "Classic App Insights (Solution)"; Status = "passed"
                     Passed = 1; Failed = 0; Skipped = 0; FileCount = 0
-                    Duration = $caiSw.Elapsed
+                    Duration = $caiSw.Elapsed; OutputLog = $caiLogPath
                 })
             }
             $null = $reportEntries.Add(@{
@@ -1111,7 +1344,7 @@ if (-not $SkipValidation) {
     Write-Host ""
 
     # --- Hyperlink Validation ---
-    $hyperlinkScript = Join-Path $repoRoot ".script/package-automation/hyperlink-validation.ps1"
+    $hyperlinkScript = Join-Path $toolkitRoot ".script/package-automation/hyperlink-validation.ps1"
     if (Test-Path $hyperlinkScript) {
         # Check network connectivity first (hyperlink validation makes HTTP requests)
         $networkAvailable = $false
@@ -1133,16 +1366,17 @@ if (-not $SkipValidation) {
             Write-Host "  🔍 Hyperlink Validation (slow — makes HTTP requests with 20s timeout per URL)..." -ForegroundColor White
             $hlSw = [System.Diagnostics.Stopwatch]::StartNew()
             try {
-                Push-Location $repoRoot
+                Push-Location $toolkitRoot
                 $hlOutput = & pwsh -NoProfile -File $hyperlinkScript `
                     -runId "local-validation" `
                     -pullRequestNumber 0 `
                     -instrumentationKey "" `
-                    -baseFolderPath $repoRoot `
+                    -baseFolderPath $ContentRoot `
                     -SolutionPath $solutionPath 2>&1
                 $hlExitCode = $LASTEXITCODE
                 Pop-Location
                 $hlSw.Stop()
+                $hlLogPath = & $saveProcessOutput "hyperlink-validation.log" $hlOutput
 
                 $hlOutput | ForEach-Object {
                     $line = "$_"
@@ -1157,6 +1391,7 @@ if (-not $SkipValidation) {
                         Step = 4; Name = "Hyperlink Validation"; Status = "failed"
                         Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
                         Duration = $hlSw.Elapsed; Errors = $hlErrors
+                        OutputLog = $hlLogPath
                     })
                 }
                 else {
@@ -1164,7 +1399,7 @@ if (-not $SkipValidation) {
                     $null = $reportEntries.Add(@{
                         Step = 4; Name = "Hyperlink Validation"; Status = "passed"
                         Passed = 1; Failed = 0; Skipped = 0; FileCount = 0
-                        Duration = $hlSw.Elapsed
+                        Duration = $hlSw.Elapsed; OutputLog = $hlLogPath
                     })
                 }
             }
@@ -1206,13 +1441,13 @@ if (-not $SkipValidation) {
         Write-Host "  🔍 TruffleHog Secret Scanning..." -ForegroundColor White
         $thSw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            $excludePathsFile = Join-Path $repoRoot ".script/SecretScanning/Excludepathlist"
-            $thArgs = @("git", "file://$repoRoot", "--only-verified", "--fail")
+            $excludePathsFile = Join-Path $toolkitRoot ".script/SecretScanning/Excludepathlist"
+            $thArgs = @("git", "file://$toolkitRoot", "--only-verified", "--fail")
             if (Test-Path $excludePathsFile) {
                 $thArgs += @("--exclude-paths=$excludePathsFile")
             }
 
-            Push-Location $repoRoot
+            Push-Location $toolkitRoot
             $thOutput = & trufflehog @thArgs 2>&1
             $thExitCode = $LASTEXITCODE
             Pop-Location
@@ -1375,6 +1610,24 @@ function Write-BuildReport {
     Add-Line "# BUILD & VALIDATION REPORT"
     Add-Line ""
     Add-Line "Solution: $($Meta.SolutionName)"
+    Add-Line "Toolkit root: $toolkitRoot"
+    Add-Line "Content root: $ContentRoot"
+    Add-Line "Evidence: $($Meta.EvidenceRunPath)"
+    $typescriptReportPath = Join-Path $Meta.EvidenceRunPath "typescript-results.json"
+    if (Test-Path $typescriptReportPath -PathType Leaf) {
+        Add-Line "TypeScript JSON: $typescriptReportPath"
+    }
+    else {
+        Add-Line "TypeScript JSON: not produced (validation skipped, compile failed, or runner failed before report creation)"
+    }
+    $typescriptOutputPaths = @(
+        (Join-Path $Meta.EvidenceRunPath "typescript.stdout.log"),
+        (Join-Path $Meta.EvidenceRunPath "typescript.stderr.log"),
+        (Join-Path $Meta.EvidenceRunPath "typescript-compile.log")
+    ) | Where-Object { Test-Path $_ -PathType Leaf }
+    if ($typescriptOutputPaths.Count -gt 0) {
+        Add-Line "TypeScript process output: $($typescriptOutputPaths -join ', ')"
+    }
     Add-Line "Version: $versionStr"
     Add-Line "Date: $dateStr"
     Add-Line "Duration: $durationStr"
@@ -1421,13 +1674,13 @@ function Write-BuildReport {
             if ($e.Duration -and $e.Duration.TotalSeconds -gt 0) { $detailParts += (Format-Duration $e.Duration) }
             if ($e.FileCount -and $e.FileCount -gt 0) { $detailParts += "$($e.FileCount) files" }
             if ($e.SkipReason) { $detailParts += $e.SkipReason }
+            if ($e.OutputLog) { $detailParts += "full output: $($e.OutputLog)" }
             $detail = if ($detailParts.Count -gt 0) { $detailParts -join ", " } else { "-" }
             Add-Line "| $stepLabel | $($e.Name) | $status | $detail |"
 
             if ($e.Status -eq "failed" -and $e.Errors) {
-                foreach ($err in $e.Errors | Select-Object -First 3) {
-                    $cleanErr = ($err -replace '\|', '/' -replace '\r?\n', ' ').Trim()
-                    if ($cleanErr.Length -gt 80) { $cleanErr = $cleanErr.Substring(0, 77) + "..." }
+                foreach ($err in $e.Errors) {
+                    $cleanErr = $err -replace '\|', '\|' -replace '\r?\n', '<br>'
                     Add-Line "| | | | $cleanErr |"
                 }
             }
@@ -1455,6 +1708,9 @@ function Write-BuildReport {
     Add-Line ""
 
     # --- Write report to stdout ---
+    $reportPath = Join-Path $Meta.EvidenceRunPath "build-and-validate-report.md"
+    $reportContent = "[REPORT_START]`n" + ($lines -join "`n") + "`n[REPORT_END]`n"
+    [System.IO.File]::WriteAllText($reportPath, $reportContent, [System.Text.UTF8Encoding]::new($false))
     Write-Host "[REPORT_START]"
     foreach ($l in $lines) { Write-Host $l }
     Write-Host "[REPORT_END]"

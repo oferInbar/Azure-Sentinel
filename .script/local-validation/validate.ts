@@ -22,6 +22,8 @@
  *   --only <validators>   Run only specified validators (e.g. --only json,yaml,data-connector)
  *   --verbose             Show detailed output for all files (not just failures)
  *   --json                Output results as JSON (for programmatic consumption)
+ *   --json-file <path>    Write complete JSON results to a file (used by the build runner)
+ *   --repository-root <path> Use this repository root for discovery and validation
  *   --help                Show this help message
  * 
  * Exit codes:
@@ -30,16 +32,17 @@
  *   2 = Configuration/usage error
  * 
  * Requirements:
- *   - Run from the repository root directory
+ *   - Run from the repository root directory, or pass --repository-root <path>
  *   - Node.js 16+ with npm dependencies installed (npm install)
  *   - TypeScript compiled (npm run tsc)
- *   - For .NET validators: .NET SDK 6.0+ installed
+ *   - For .NET validators: the SDK and each test project's target runtime installed
  *   - For ARM-TTK: PowerShell with ARM-TTK module
  */
 
 import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
 // --- Safe imports: pure checker utilities with ZERO GitHub/Octokit dependencies ---
 import { isValidSchema } from "../utils/jsonSchemaChecker.js";
@@ -64,6 +67,9 @@ import { IsValidSupportObject } from "../SolutionValidations/validSupportObject.
 import { IsValidBrandingContent } from "../SolutionValidations/validMSBranding.js";
 import { IsValidSolutionID } from "../SolutionValidations/validSolutionID.js";
 
+const toolkitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const invocationDirectory = process.cwd();
+let contentRoot = toolkitRoot;
 
 // ============================================================================
 // TYPES
@@ -96,6 +102,8 @@ interface CLIOptions {
   mode: "diff" | "path" | "files" | "auto";
   targetBranch?: string;
   targetPath?: string;
+  repositoryRoot?: string;
+  jsonFilePath?: string;
   files?: string[];
   skip: string[];
   only: string[];
@@ -120,6 +128,12 @@ function printHelp(): void {
     }
   }
   console.log(helpLines.join("\n"));
+}
+
+function isPathWithin(rootPath: string, candidatePath: string): boolean {
+  const relativePath = path.relative(rootPath, candidatePath);
+  return relativePath === ""
+    || (relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath));
 }
 
 function parseArgs(argv: string[]): CLIOptions {
@@ -188,6 +202,27 @@ function parseArgs(argv: string[]): CLIOptions {
       case "--json":
         options.jsonOutput = true;
         i++;
+        break;
+      case "--json-file":
+        i++;
+        if (i < args.length && !args[i].startsWith("--")) {
+          options.jsonFilePath = args[i];
+          options.jsonOutput = true;
+          i++;
+        } else {
+          console.error("Error: --json-file requires a file path");
+          process.exit(2);
+        }
+        break;
+      case "--repository-root":
+        i++;
+        if (i < args.length && !args[i].startsWith("--")) {
+          options.repositoryRoot = args[i];
+          i++;
+        } else {
+          console.error("Error: --repository-root requires a directory path");
+          process.exit(2);
+        }
         break;
       case "--help":
       case "-h":
@@ -272,10 +307,15 @@ function getChangedFiles(targetBranch: string): ChangedFile[] {
 function getFilesInPath(dirPath: string): ChangedFile[] {
   const results: ChangedFile[] = [];
   const resolvedPath = path.resolve(process.cwd(), dirPath);
-  if (!fs.existsSync(resolvedPath) || !fs.lstatSync(resolvedPath).isDirectory()) {
+  if (!isPathWithin(process.cwd(), resolvedPath)
+      || !fs.existsSync(resolvedPath)
+      || !fs.lstatSync(resolvedPath).isDirectory()
+      || fs.lstatSync(resolvedPath).isSymbolicLink()) {
     console.error(`Error: --path must name an existing directory: ${dirPath}`);
     process.exit(2);
   }
+  const selectedPathParts = path.relative(process.cwd(), resolvedPath).split(path.sep);
+  const isSelectedSolution = selectedPathParts.length === 2 && selectedPathParts[0].toLowerCase() === "solutions";
 
   function walk(dir: string): void {
     if (!fs.existsSync(dir)) {
@@ -288,8 +328,18 @@ function getFilesInPath(dirPath: string): ChangedFile[] {
         if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".script") {
           continue; // Skip these directories
         }
+        if (isSelectedSolution && ["logs", "reports", "evidence"].includes(entry.name.toLowerCase())) {
+          continue;
+        }
         walk(fullPath);
       } else {
+        if (entry.isSymbolicLink()) {
+          const realPath = fs.realpathSync(fullPath);
+          if (!isPathWithin(process.cwd(), realPath)) {
+            console.error(`Error: content path escapes the selected repository root: ${fullPath}`);
+            process.exit(2);
+          }
+        }
         // Normalize to forward slashes (repo-relative paths)
         const relativePath = path.relative(process.cwd(), fullPath).replace(/\\/g, "/");
         results.push({ status: "M", filePath: relativePath }); // Validate current files using modified-file rules
@@ -428,7 +478,7 @@ async function validateDataConnector(filePath: string, _fileKind: string): Promi
     }
 
     const connectorCategory = getConnectorCategory(jsonFile.dataTypes, jsonFile.instructionSteps || []);
-    const schemaPath = `.script/utils/schemas/${connectorCategory}_ConnectorSchema.json`;
+    const schemaPath = path.join(toolkitRoot, `.script/utils/schemas/${connectorCategory}_ConnectorSchema.json`);
 
     if (fs.existsSync(schemaPath)) {
       const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8"));
@@ -471,7 +521,7 @@ async function validateContent(filePath: string, _fileKind: string): Promise<Val
     const hasDataFolder = dataFolder.some(item => filePath.includes(item));
     const hasDataConnectorFolder = dataConnectorsFolder.some(item => filePath.includes(item));
 
-    const jsonTagObj = JSON.parse(fs.readFileSync("./.script/validate-tag.json", "utf8"));
+    const jsonTagObj = JSON.parse(fs.readFileSync(path.join(toolkitRoot, ".script/validate-tag.json"), "utf8"));
     let tagName = "";
 
     if (jsonTagObj.hasOwnProperty("createUiDefinition") && filePath.includes("createUiDefinition")) {
@@ -557,7 +607,7 @@ async function validatePlaybook(filePath: string, _fileKind: string): Promise<Va
     }
 
     // Validate ARM template schema
-    const schemaPath = ".script/utils/schemas/ARM_DeploymentTemplateSchema.json";
+    const schemaPath = path.join(toolkitRoot, ".script/utils/schemas/ARM_DeploymentTemplateSchema.json");
     if (fs.existsSync(schemaPath)) {
       const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8"));
       isValidSchema(playbookARMTemplate, schema);
@@ -611,7 +661,7 @@ async function validateWorkbookTemplate(filePath: string, _fileKind: string): Pr
 async function validateWorkbookMetadata(filePath: string, _fileKind: string): Promise<ValidationResult> {
   try {
     const workbooksMetadata = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    const schemaPath = ".script/utils/schemas/workbooksMetadataSchema.json";
+    const schemaPath = path.join(toolkitRoot, ".script/utils/schemas/workbooksMetadataSchema.json");
     if (fs.existsSync(schemaPath)) {
       const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8"));
       isValidSchema(workbooksMetadata, schema);
@@ -758,7 +808,7 @@ async function validateIdChange(filePath: string, fileKind: string): Promise<Val
   }
 
   try {
-    const skipFilePath = ".script/tests/idChangeValidatorTest/SkipIdValidationsTemplates.json";
+    const skipFilePath = path.join(toolkitRoot, ".script/tests/idChangeValidatorTest/SkipIdValidationsTemplates.json");
     const skipIds: string[] = fs.existsSync(skipFilePath) ? JSON.parse(fs.readFileSync(skipFilePath, "utf8")) : [];
 
     const guidRegex = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
@@ -808,7 +858,7 @@ async function validateIdChange(filePath: string, fileKind: string): Promise<Val
 
 
 // ----- 13–15. .NET Validators (subprocess invocation) -----
-async function runDotNetValidator(projectPath: string, validatorName: string): Promise<ValidationResult[]> {
+async function runDotNetValidator(projectPath: string, validatorName: string, selectedContentRoot: string): Promise<ValidationResult[]> {
   const results: ValidationResult[] = [];
   try {
     if (!fs.existsSync(projectPath)) {
@@ -826,6 +876,10 @@ async function runDotNetValidator(projectPath: string, validatorName: string): P
       encoding: "utf8",
       stdio: "pipe",
       timeout: 300000, // 5 minute timeout
+      env: {
+        ...process.env,
+        SENTINEL_VALIDATION_CONTENT_ROOT: selectedContentRoot,
+      },
     });
 
     results.push({ validator: validatorName, filePath: projectPath, passed: true });
@@ -849,7 +903,7 @@ async function runArmTtkValidator(files: ChangedFile[]): Promise<ValidationResul
     return results;
   }
 
-  const scriptPath = ".script/package-automation/arm-ttk-tests.ps1";
+  const scriptPath = path.join(toolkitRoot, ".script/package-automation/arm-ttk-tests.ps1");
   if (!fs.existsSync(scriptPath)) {
     results.push({
       validator: "ARM-TTK",
@@ -1029,22 +1083,28 @@ async function validateFile(
 // REPORTING
 // ============================================================================
 
-function printReport(results: ValidationResult[], verbose: boolean, jsonOutput: boolean): void {
+function printReport(results: ValidationResult[], verbose: boolean, jsonOutput: boolean, jsonFilePath?: string): void {
   if (jsonOutput) {
-    console.log(JSON.stringify({
+    const report = JSON.stringify({
       summary: {
         total: results.length,
         passed: results.filter(r => r.passed && !r.skipped).length,
-        failed: results.filter(r => !r.passed).length,
+        failed: results.filter(r => !r.passed && !r.skipped).length,
         skipped: results.filter(r => r.skipped).length,
       },
       results,
-    }, null, 2));
+    }, null, 2);
+    if (jsonFilePath) {
+      fs.writeFileSync(jsonFilePath, report, "utf8");
+      console.log(`Complete TypeScript validation results written to ${jsonFilePath}`);
+    } else {
+      console.log(report);
+    }
     return;
   }
 
   const passed = results.filter(r => r.passed && !r.skipped);
-  const failed = results.filter(r => !r.passed);
+  const failed = results.filter(r => !r.passed && !r.skipped);
   const skipped = results.filter(r => r.skipped);
 
   console.log("\n" + "=".repeat(70));
@@ -1060,7 +1120,7 @@ function printReport(results: ValidationResult[], verbose: boolean, jsonOutput: 
   }
 
   for (const [validatorName, validatorResults] of byValidator) {
-    const failures = validatorResults.filter(r => !r.passed);
+    const failures = validatorResults.filter(r => !r.passed && !r.skipped);
     const passes = validatorResults.filter(r => r.passed && !r.skipped);
     const skips = validatorResults.filter(r => r.skipped);
 
@@ -1072,6 +1132,8 @@ function printReport(results: ValidationResult[], verbose: boolean, jsonOutput: 
           console.log(`         ${f.error}`);
         }
       }
+    } else if (passes.length === 0 && skips.length > 0) {
+      console.log(`\n⏭ ${validatorName}  (${skips.length} skipped)`);
     } else {
       console.log(`\n✅ ${validatorName}  (${passes.length} passed, ${skips.length} skipped)`);
     }
@@ -1098,12 +1160,30 @@ function printReport(results: ValidationResult[], verbose: boolean, jsonOutput: 
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv);
+  if (options.repositoryRoot) {
+    const repositoryRoot = path.resolve(options.repositoryRoot);
+    const realRepositoryRoot = fs.existsSync(repositoryRoot) ? fs.realpathSync(repositoryRoot) : repositoryRoot;
+    const solutionsPath = path.join(repositoryRoot, "Solutions");
+    if (!fs.existsSync(repositoryRoot) || !fs.statSync(repositoryRoot).isDirectory()
+        || path.relative(repositoryRoot, realRepositoryRoot) !== ""
+        || !fs.existsSync(solutionsPath)
+        || !fs.lstatSync(solutionsPath).isDirectory()
+        || fs.lstatSync(solutionsPath).isSymbolicLink()) {
+      console.error(`Error: --repository-root must name a repository directory containing Solutions/: ${options.repositoryRoot}`);
+      process.exit(2);
+    }
+    contentRoot = repositoryRoot;
+  }
+  if (options.jsonFilePath) {
+    options.jsonFilePath = path.resolve(invocationDirectory, options.jsonFilePath);
+  }
 
-  // Ensure we're in the repo root
-  if (!fs.existsSync(".script") || !fs.existsSync("package.json")) {
+  // Keep tooling requirements rooted in the checkout that contains this runner.
+  if (!fs.existsSync(path.join(toolkitRoot, ".script")) || !fs.existsSync(path.join(toolkitRoot, "package.json"))) {
     console.error("Error: Please run this script from the Azure Sentinel repository root directory.");
     process.exit(2);
   }
+  process.chdir(contentRoot);
 
   // --- File Discovery ---
   let files: ChangedFile[];
@@ -1142,6 +1222,8 @@ async function main(): Promise<void> {
   if (files.length === 0) {
     if (!options.jsonOutput) {
       console.log("No files to validate. Exiting.");
+    } else {
+      printReport([], options.verbose, options.jsonOutput, options.jsonFilePath);
     }
     process.exit(0);
   }
@@ -1176,9 +1258,9 @@ async function main(): Promise<void> {
 
   // --- Run .NET Validators (if not skipped) ---
   const dotnetValidators = [
-    { id: "kql", name: "KQL Validation", project: ".script/tests/KqlvalidationsTests/Kqlvalidations.Tests.csproj" },
-    { id: "detection-schema", name: "Detection Template Schema", project: ".script/tests/detectionTemplateSchemaValidation/DetectionTemplateSchemaValidation.Tests.csproj" },
-    { id: "non-ascii", name: "Non-ASCII", project: ".script/tests/NonAsciiValidationsTests/NonAsciiValidations.Tests.csproj" },
+    { id: "kql", name: "KQL Validation", project: path.join(toolkitRoot, ".script/tests/KqlvalidationsTests/Kqlvalidations.Tests.csproj") },
+    { id: "detection-schema", name: "Detection Template Schema", project: path.join(toolkitRoot, ".script/tests/detectionTemplateSchemaValidation/DetectionTemplateSchemaValidation.Tests.csproj") },
+    { id: "non-ascii", name: "Non-ASCII", project: path.join(toolkitRoot, ".script/tests/NonAsciiValidationsTests/NonAsciiValidations.Tests.csproj") },
   ];
 
   for (const dotnetValidator of dotnetValidators) {
@@ -1195,31 +1277,32 @@ async function main(): Promise<void> {
         });
         continue;
       }
-      // Only run .NET validators if dotnet is available
+      let dotnetAvailable = false;
       try {
         execSync("dotnet --version", { encoding: "utf8", stdio: "pipe" });
-        const dotnetResults = await runDotNetValidator(dotnetValidator.project, dotnetValidator.name);
-
-        // Detect GitHub App credential failures and convert to skips with clear guidance
-        for (const result of dotnetResults) {
-          if (!result.passed && result.error && result.error.includes("GitHub App ID")) {
-            result.passed = true;
-            result.skipped = true;
-            result.skipReason = "Requires GitHub App credentials (only available in CI) — skip locally with --skip " + dotnetValidator.id;
-            result.error = undefined;
-          }
-        }
-
-        allResults.push(...dotnetResults);
-      } catch {
+        dotnetAvailable = true;
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
         allResults.push({
           validator: dotnetValidator.name,
           filePath: dotnetValidator.project,
           passed: true,
           skipped: true,
-          skipReason: ".NET SDK not found — install .NET SDK to run this validator",
+          skipReason: `.NET SDK command is unavailable: ${message}`,
         });
       }
+      if (!dotnetAvailable) continue;
+
+      const dotnetResults = await runDotNetValidator(dotnetValidator.project, dotnetValidator.name, contentRoot);
+      for (const result of dotnetResults) {
+        if (!result.passed && result.error && result.error.includes("GitHub App ID")) {
+          result.passed = true;
+          result.skipped = true;
+          result.skipReason = "Requires GitHub App credentials (only available in CI) — skip locally with --skip " + dotnetValidator.id;
+          result.error = undefined;
+        }
+      }
+      allResults.push(...dotnetResults);
     }
   }
 
@@ -1227,20 +1310,31 @@ async function main(): Promise<void> {
   const shouldRunArmTtk = (options.only.length === 0 || options.only.includes("arm-ttk"))
                        && !options.skip.includes("arm-ttk");
   if (shouldRunArmTtk) {
+    let powershellAvailable = false;
     try {
       execSync("pwsh --version", { encoding: "utf8", stdio: "pipe" });
+      powershellAvailable = true;
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      allResults.push({
+        validator: "ARM-TTK",
+        filePath: "pwsh",
+        passed: true,
+        skipped: true,
+        skipReason: `PowerShell command is unavailable: ${message}`,
+      });
+    }
+    if (powershellAvailable) {
       const armTtkResults = await runArmTtkValidator(files);
       allResults.push(...armTtkResults);
-    } catch {
-      // PowerShell not available — skip silently
     }
   }
 
   // --- Report ---
-  printReport(allResults, options.verbose, options.jsonOutput);
+  printReport(allResults, options.verbose, options.jsonOutput, options.jsonFilePath);
 
   // --- Exit Code ---
-  const hasFailures = allResults.some(r => !r.passed);
+  const hasFailures = allResults.some(r => !r.passed && !r.skipped);
   process.exit(hasFailures ? 1 : 0);
 }
 

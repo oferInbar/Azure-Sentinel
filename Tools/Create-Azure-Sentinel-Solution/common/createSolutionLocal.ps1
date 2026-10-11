@@ -7,6 +7,7 @@ param(
     [string]$VersionBump = "patch",
     [string]$EntryPointName = "Local",
     [string]$DefaultInputPath = $null,
+    [string]$ToolkitRootPath = $null,
     [bool]$IncludeXdrDetections = $false,
     [bool]$EnforceV31Versions = $false,
     [switch]$SkipAttributionLookup
@@ -96,10 +97,53 @@ $solutionBasePath = $path.Substring(0, $indexOfSolutions + 10)
 $repositoryBasePath = $path.Substring(0, $indexOfSolutions)
 Write-Host "SolutionBasePath is $solutionBasePath, Solution Name $solutionName" 
 
+$toolkitRoot = $repositoryBasePath
+if (-not [string]::IsNullOrWhiteSpace($ToolkitRootPath)) {
+    $resolvedToolkitRoot = Resolve-Path -LiteralPath $ToolkitRootPath -ErrorAction SilentlyContinue
+    if ($null -eq $resolvedToolkitRoot) {
+        Write-Error "V3.1 toolkit root does not exist: $ToolkitRootPath"
+        exit 1
+    }
+    $toolkitRoot = $resolvedToolkitRoot.Path
+}
+if ($EntryPointName -eq "V3.1" -or $EnforceV31Versions) {
+    $toolkitPaths = @(
+        "Tools/Create-Azure-Sentinel-Solution/V3/createSolutionV3_1.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/createSolutionLocal.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/commonFunctions.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/get-ccp-details.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/summaryRules.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/contentDeploymentParameters.json",
+        "Tools/Create-Azure-Sentinel-Solution/common/contentDeploymentParameters.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/templating/baseMainTemplate.json",
+        "Tools/Create-Azure-Sentinel-Solution/common/templating/baseCreateUiDefinition.json",
+        "Tools/Create-Azure-Sentinel-Solution/common/customDetections.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/customerUsageAttribution.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/AttributionMetadata.cs",
+        "Tools/Create-Azure-Sentinel-Solution/common/versionPolicy.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/standardLogStreams.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/createCCPConnector.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/storageAccountDeploymentTemplate.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/common/eventGridManagedIdentityDeploymentTemplate.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/arm-ttk/download-arm-ttk.ps1",
+        "Tools/Create-Azure-Sentinel-Solution/arm-ttk/run-arm-ttk-in-automation.ps1",
+        "Tools/SentinelToXDRMigration/kql/rename-parser-bindings.cjs"
+    )
+    $missingToolkitPaths = @(
+        $toolkitPaths | Where-Object {
+            -not (Test-Path -LiteralPath (Join-Path $toolkitRoot $_) -PathType Leaf)
+        }
+    )
+    if ($missingToolkitPaths.Count -gt 0) {
+        Write-Error "V3.1 toolkit root is incomplete: $toolkitRoot; missing $($missingToolkitPaths -join ', ')"
+        exit 1
+    }
+}
+
 $isPipelineRun = $false
 
-$commonFunctionsFilePath = $repositoryBasePath + "Tools/Create-Azure-Sentinel-Solution/common/commonFunctions.ps1"
-$getccpDetailsFilePath = $repositoryBasePath + "Tools/Create-Azure-Sentinel-Solution/common/get-ccp-details.ps1"
+$commonFunctionsFilePath = Join-Path $toolkitRoot "Tools/Create-Azure-Sentinel-Solution/common/commonFunctions.ps1"
+$getccpDetailsFilePath = Join-Path $toolkitRoot "Tools/Create-Azure-Sentinel-Solution/common/get-ccp-details.ps1"
 
 . $commonFunctionsFilePath # load common functions
 . $getccpDetailsFilePath # load ccp functions
@@ -109,7 +153,7 @@ if ($EnforceV31Versions) {
 
 # Load catalog API functions only if using catalog mode
 if ($VersionMode -eq "catalog") {
-    $catalogAPIFilePath = $repositoryBasePath + ".script/package-automation/catalogAPI.ps1"
+    $catalogAPIFilePath = Join-Path $toolkitRoot ".script/package-automation/catalogAPI.ps1"
     . $catalogAPIFilePath # load catalog api functions
 }
 
@@ -456,7 +500,7 @@ try {
                                 GetHuntingDataMetadata -file $file -rawData $rawData -contentResourceDetails $contentResourceDetails
                             }
                             elseif ($objectKeyLowercase -eq "summary rules" -or $objectKeyLowercase -eq "summaryrules") {
-                                $summaryRuleFilePath = $repositoryBasePath + "Tools/Create-Azure-Sentinel-Solution/common/summaryRules.ps1"
+                                $summaryRuleFilePath = Join-Path $toolkitRoot "Tools/Create-Azure-Sentinel-Solution/common/summaryRules.ps1"
                                 . $summaryRuleFilePath
                                 GenerateSummaryRules -solutionName $solutionName -file $file -rawData $rawData -contentResourceDetails $contentResourceDetails
                             }

@@ -18,6 +18,7 @@ from sentinel_xdr_migration.converter import (
     validate_document,
 )
 from sentinel_xdr_migration.deployment import graph_detection_payload
+from sentinel_xdr_migration.graph_readiness import graph_detection_payload_with_projection
 from sentinel_xdr_migration.report_review import review_candidates, render_bulk_review
 from sentinel_xdr_migration.solution_report import build_solution_report
 from test_converter import RULE
@@ -150,12 +151,24 @@ class TacticPreservationTests(unittest.TestCase):
         self.assertEqual(solution_report["summary"]["deploymentReady"], 0)
         self.assertEqual(solution_report["rules"][0]["customDetection"]["structuralStatus"], "passed")
 
-    def test_graph_rejects_multiple_tactics_without_truncating_but_accepts_single(self):
+    def test_graph_projects_multiple_tactics_without_mutating_authored_document(self):
         document = self.build()
         before = deepcopy(document)
-        with self.assertRaisesRegex(ValueError, "Direct Graph deployment supports at most one tactic"):
-            graph_detection_payload(document)
+        payload, projection = graph_detection_payload_with_projection(document)
         self.assertEqual(document, before)
+        self.assertEqual(
+            payload["detectionAction"]["alertTemplate"]["tactics"],
+            before["properties"]["detectionAction"]["alertTemplate"]["tactics"][:1],
+        )
+        self.assertEqual(
+            projection["projectedTactics"],
+            ["Persistence"],
+        )
+        self.assertEqual(
+            projection["omittedTactics"],
+            ["CommandAndControl", "Discovery"],
+        )
+        self.assertEqual(projection["classificationParity"], "not-established")
         single = self.build(["Discovery"], ["T1087"])
         self.assertEqual(graph_detection_payload(single)["detectionAction"], single["properties"]["detectionAction"])
 

@@ -39,9 +39,18 @@ node .script/local-validation/validate.js --diff feature/base-branch
 # Validate everything under a solution folder
 node .script/local-validation/validate.js --path Solutions/MySolution
 
+# Same checks against a different content checkout; helper code still loads from this checkout
+node .script/local-validation/validate.js \
+  --repository-root /path/to/content-checkout \
+  --path Solutions/MySolution \
+  --only json,yaml \
+  --json-file .script/local-validation/Logs/results.json
+
 # Validate a specific connector
 node .script/local-validation/validate.js --path DataConnectors/MyConnector
 ```
+
+The validator and .NET test projects still load from the toolkit checkout. When standalone `--files`, `--diff`, or auto-discovery runs a .NET validator, `--repository-root` is passed to its content loaders through `SENTINEL_VALIDATION_CONTENT_ROOT`; standalone `--path` continues to skip repo-wide .NET tests.
 
 ### Validate Specific Files
 
@@ -224,6 +233,42 @@ node .script/local-validation/validate.js --skip kql,detection-schema,non-ascii
 The standalone `validate.js --path` command skips .NET validators because it cannot safely scope the repo-wide test projects. Use `build-and-validate.ps1 -SolutionName ... -SkipPackaging` for solution-scoped .NET checks.
 
 With an explicit solution folder, validation examines current files in that folder, including uncommitted and untracked files; deleted files are excluded. The folder must be an existing direct child of `Solutions/`. The repo-history TruffleHog check is reported as skipped because it cannot be limited to one solution.
+Solution-scoped hyperlink validation also excludes descendant path components named
+`Logs`, `Reports`, or `Evidence` (case-insensitive, whole path segments), consistent
+with the local TypeScript solution scan. Other names and path substrings remain in scope.
+
+### Cross-Checkout Build Runner
+
+`build-and-validate.ps1` derives its toolkit root from the script location. By default,
+the content root is that same checkout, preserving the normal same-worktree behavior.
+For selected content from another checkout, use `-ContentRoot <canonical-git-root>`
+with `-SkipPackaging` and the official runner; packaging is rejected when roots differ.
+The selected solution must be a non-symlink direct child of that content root's
+`Solutions/`. TypeScript and .NET helper projects, PowerShell validation scripts,
+configuration, and ARM-TTK dependencies remain in the toolkit root, while current
+solution files and scoped .NET/PowerShell validation use the selected content root.
+
+The runner accepts `-EvidenceDirectory` only under the toolkit's ignored
+`.script/local-validation/Logs/` folder. It creates a unique run subdirectory with the
+complete TypeScript results JSON, separate TypeScript stdout/stderr logs, compile
+output, complete captured output for invoked .NET/PowerShell/ARM-TTK helpers, and the
+full report. The JSON file avoids console/native-process output truncation; a missing
+or malformed report is a runner failure. A .NET invocation that exits without a test
+summary or executed tests is reported as skipped, not passed. Skipped checks are counted
+as skipped, not passed. Validation-only runs do not update solution data, release notes,
+or packages.
+
+For example:
+
+```powershell
+pwsh /path/to/toolkit/.script/local-validation/build-and-validate.ps1 `
+  -SolutionName "MySolution" `
+  -ContentRoot /path/to/content-checkout `
+  -SkipPackaging `
+  -VersionBump none `
+  -ValidationSkip "" `
+  -EvidenceDirectory ".script/local-validation/Logs/my-run"
+```
 
 ### Import errors
 Make sure TypeScript is compiled:

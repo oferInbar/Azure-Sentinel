@@ -29,6 +29,7 @@ REPORTS = {
     "runtimeGraph": "runtime-validation.graph.json",
     "runtimeTriage": "runtime-validation.triage-mcp.json",
     "runtimeLogAnalytics": "runtime-validation.log-analytics-cli.json",
+    "runtimeAzureMonitorSdk": "runtime-validation.azure-monitor-sdk.json",
     "packaging": "packaging.v3_1.json",
     "queryParity": "mock-query-parity.json",
     "alertParity": "alert-parity-report.json",
@@ -296,7 +297,14 @@ def _provenance(snapshot: _Snapshot, source: dict, output: dict) -> dict:
     return result
 
 
-def _item(snapshot: _Snapshot, kind: str, value: Any, index: int) -> dict:
+def _item(
+    snapshot: _Snapshot,
+    kind: str,
+    value: Any,
+    index: int,
+    *,
+    provider: Any = None,
+) -> dict:
     item = _object(value)
     status = item.get("status")
     if status is None:
@@ -314,7 +322,11 @@ def _item(snapshot: _Snapshot, kind: str, value: Any, index: int) -> dict:
         output = snapshot.reference(item.get("outputRelativePath") or item.get("output"))
         result.update(source=source, output=output, provenance=_provenance(snapshot, source, output))
         result["reviewRequired"] = item.get("reviewRequired") if type(item.get("reviewRequired")) is bool else None
-    elif kind in {"runtimeGraph", "runtimeTriage", "runtimeLogAnalytics"}:
+    elif kind in {"runtimeGraph", "runtimeTriage", "runtimeLogAnalytics", "runtimeAzureMonitorSdk"}:
+        result["provider"] = _enum(
+            provider,
+            {"graph", "triage-mcp", "log-analytics-cli", "azure-monitor-sdk"},
+        )
         detection = item.get("detection")
         output_reference = (
             f"XDR Detections/{detection}" if isinstance(detection, str) else None
@@ -369,7 +381,7 @@ def _item(snapshot: _Snapshot, kind: str, value: Any, index: int) -> dict:
                 "deploymentStatus": _enum(details.get("deploymentStatus"), STATUSES | {"created", "updated", "validated-by-alert-parity"}),
                 "runtime": [
                     {"recordedStatus": _enum(_object(entry).get("status")),
-                     "provider": _enum(_object(entry).get("provider"), {"graph", "triage-mcp", "log-analytics-cli"})}
+                     "provider": _enum(_object(entry).get("provider"), {"graph", "triage-mcp", "log-analytics-cli", "azure-monitor-sdk"})}
                     for entry in runtime
                 ] if isinstance(runtime, list) else [],
                 "runtimeAvailability": "available" if isinstance(runtime, list) and runtime else "not-recorded",
@@ -399,7 +411,10 @@ def _report(snapshot: _Snapshot, kind: str, name: str) -> dict:
     collection = "rules" if kind == "solutionReport" else "comparisons" if kind in {"queryParity", "alertParity"} else "results"
     values = document.get(collection)
     result["itemsAvailability"] = "available" if isinstance(values, list) else "missing-or-unsupported"
-    result["items"] = [_item(snapshot, kind, item, index) for index, item in enumerate(values or [])] if isinstance(values, list) else []
+    result["items"] = [
+        _item(snapshot, kind, item, index, provider=document.get("provider"))
+        for index, item in enumerate(values or [])
+    ] if isinstance(values, list) else []
     if kind == "packaging":
         result.update(
             packager=_enum(document.get("packager"), {"V3.1", "V4", "V3"}),

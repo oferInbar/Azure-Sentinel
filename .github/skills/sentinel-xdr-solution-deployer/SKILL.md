@@ -12,6 +12,48 @@ deployment mode.
 
 ## Modes
 
+### One early scope-consent request
+
+After the Qualification target is locked and before Discovery, review the
+current local scope plan and ask once for consent to the bounded potential
+action groups. Show the exact target, solution/version, inventory counts,
+eligible IDs and caps, current package identity, resource types, and which
+conditional prerequisites are proven, absent, or unknown. Include:
+
+1. disabled Sentinel alert-rule and Graph Custom Detection creation or
+   reviewed updates;
+2. conditional fallback DCR/DCE creation;
+3. conditional creation of a proven-absent custom-log table;
+4. reviewed mock telemetry ingestion, including payload, records/batches,
+   stream, estimated bytes/cost, and retention impact;
+5. controlled alert parity, with exact pairs, proposed time window, bounded
+   enable/restore operations, and abort restoration;
+6. full-package installation and selected XDR Content Hub registration; and
+7. explicitly owned cleanup/deletion, listing exact resources and ownership
+   evidence while excluding pre-existing or unowned resources.
+
+Use unselected structured choices: **Approve all currently bounded and
+available components**, **Select components**, **Revise the plan**, or
+**Decline advance consent**. “Approve all” is an explicit choice, never a
+default. Ask again only if the target, plan identity, action/resource families,
+payload, caps, package flags, or cleanup ownership changes. Missing or unknown
+scope is provisional, not unlimited; denial does not block independent
+read-only validation.
+
+The current CLI can persist consent for the direct disabled AR/CD pair,
+`fullPackageAcceptance`, `mockTelemetryIngestion`, `fallbackDcr`,
+`fallbackDce`, and `customTableCreate`. `controlledAlertParity` is planning
+metadata only until a finite test window and complete batch fixture plan are
+bound; `ownedResourceCleanup` is unsupported because there is no exact
+run-owned deletion inventory or deletion executor. Do not invent CLI
+component names or represent either as consented. Previous narrow DCR/DCE
+consent does not imply ingestion, parity enablement, package acceptance, or
+cleanup consent.
+
+Authentication, Entra admin consent, role assignments, and permission
+readiness are separate from both advance planning consent and final resource
+write approval. None implies another.
+
 ### Package acceptance
 
 Validate and optionally deploy `Package\mainTemplate.json` as a complete
@@ -22,11 +64,28 @@ solution:
   installation and Content Hub registration, independently of Sentinel content.
   Both selections may be true. Use only parameters declared by the package.
 
-Run an Azure Resource Manager validation or what-if before create. Registration
-support remains unverified; do not treat emitted templates as proof of live
-acceptance. The obsolete `RegisterE5Content` and `E5Flavor` controls are not
-declared. Exact-scope approval must explicitly include registration when
-selecting CDs. Existing instances are not disabled or removed by these switches.
+Use ARM validation or preview only when supported for the selected resource
+types and deployment features. Bicep extensibility imports do not support
+`what-if` ([Microsoft Learn: unsupported deployment
+features](https://learn.microsoft.com/en-us/graph/templates/limitations#unsupported-deployment-features));
+do not pass or wait for a `what-if` result for that route. An ordinary ARM
+preview cannot prove extension acceptance, and ARM validation does not validate
+extension behavior. Registration support remains unverified; emitted templates
+are not proof of live acceptance. The obsolete `RegisterE5Content` and
+`E5Flavor` controls are not declared. Exact-scope approval must explicitly
+include registration when selecting CDs. Existing instances are not disabled or
+removed by these switches.
+
+Before the write step, review the latest local Qualification
+`deploymentPlanning` scope and explicitly persisted component-specific
+planning consent. If the bound plan is unchanged, do not repeat the broad
+planning question. Planning consent is not write authority. Immediately before
+each bounded write operation or batch, show its exact scope and obtain fresh
+explicit approval. A single approval may cover the enumerated resource/API
+operations in that batch; it need not be repeated for every HTTP request.
+Require a new approval if any operation expands beyond the batch. Missing or
+stale planning consent, permissions, or successful preflight does not
+substitute for the immediate gate.
 
 ### Alert-parity preparation
 
@@ -51,8 +110,9 @@ Before any write:
 
 1. Confirm the target is a non-production lab.
 2. Show the subscription, resource group, workspace, tenant, solution, package
-   version, mode, and expected rule count.
-3. Require explicit approval for those exact values.
+   version, mode, exact resource IDs, operation types, and count.
+3. Immediately before the bounded operation/batch, require explicit approval
+   for those exact values and the listed writes.
 4. Confirm every Custom Detection YAML has `properties.status: disabled`.
 5. Stop on unresolved conversion review, invalid KQL, missing entity mappings,
    duplicate IDs, or count mismatches.

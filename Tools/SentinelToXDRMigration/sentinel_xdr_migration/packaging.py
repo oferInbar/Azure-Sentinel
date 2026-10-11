@@ -38,6 +38,29 @@ PACKAGE_OUTPUT_DIRECTORIES = {
     ".venv",
     "__pycache__",
 }
+V31_TOOLKIT_PATHS = (
+    "Tools/Create-Azure-Sentinel-Solution/V3/createSolutionV3_1.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/createSolutionLocal.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/commonFunctions.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/get-ccp-details.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/LogAppInsights.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/summaryRules.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/contentDeploymentParameters.json",
+    "Tools/Create-Azure-Sentinel-Solution/common/contentDeploymentParameters.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/templating/baseMainTemplate.json",
+    "Tools/Create-Azure-Sentinel-Solution/common/templating/baseCreateUiDefinition.json",
+    "Tools/Create-Azure-Sentinel-Solution/common/customDetections.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/customerUsageAttribution.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/AttributionMetadata.cs",
+    "Tools/Create-Azure-Sentinel-Solution/common/versionPolicy.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/standardLogStreams.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/createCCPConnector.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/storageAccountDeploymentTemplate.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/eventGridManagedIdentityDeploymentTemplate.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/arm-ttk/download-arm-ttk.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/arm-ttk/run-arm-ttk-in-automation.ps1",
+    "Tools/SentinelToXDRMigration/kql/rename-parser-bindings.cjs",
+)
 
 
 def package_input_identity(solution: str | Path) -> dict[str, Any]:
@@ -167,6 +190,24 @@ def _solution_data_file(data_directory: Path) -> Path:
     return candidates[0]
 
 
+def _validate_v31_toolkit_root(toolkit_root: str | Path) -> Path:
+    if isinstance(toolkit_root, str) and not toolkit_root.strip():
+        raise ValueError("V3.1 toolkit root must not be empty")
+    try:
+        root = Path(toolkit_root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"V3.1 toolkit root does not exist: {toolkit_root}") from exc
+    if not root.is_dir():
+        raise ValueError(f"V3.1 toolkit root is not a directory: {root}")
+    missing = [relative for relative in V31_TOOLKIT_PATHS if not (root / relative).is_file()]
+    if missing:
+        raise ValueError(
+            f"V3.1 toolkit root is incomplete: {root}; missing "
+            + ", ".join(missing)
+        )
+    return root
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -211,6 +252,7 @@ def package_solution_v3_1(
     solution: str | Path,
     *,
     version_bump: str,
+    toolkit_root: str | Path | None = None,
     requested_version_bump: str | None = None,
     package_attempt_id: str | None = None,
     workflow_run_id: str | None = None,
@@ -222,6 +264,10 @@ def package_solution_v3_1(
     if not root.is_dir():
         raise ValueError(f"solution folder does not exist: {root}")
     require_solution_conversion_scope(root)
+    repository = repository_root(root)
+    selected_toolkit_root = _validate_v31_toolkit_root(
+        toolkit_root if toolkit_root is not None else repository
+    )
     reports = report_directory(root, create=True)
     data_directory = root / "Data"
     if not data_directory.is_dir():
@@ -250,9 +296,8 @@ def package_solution_v3_1(
                         "solution Data content arrays must never include local .env configuration"
                     )
     xdr_files = _xdr_references(root, before)
-    repository = repository_root(root)
     script = (
-        repository
+        selected_toolkit_root
         / "Tools"
         / "Create-Azure-Sentinel-Solution"
         / "V3"
@@ -276,6 +321,8 @@ def package_solution_v3_1(
         "-VersionBump",
         version_bump,
     ]
+    if toolkit_root is not None:
+        command.extend(["-ToolkitRootPath", str(selected_toolkit_root)])
     input_before = package_input_identity(root)
     package_attempt_id = package_attempt_id or str(uuid.uuid4())
     completed = subprocess.run(
@@ -372,7 +419,11 @@ def package_solution_v3_1(
     deployment_parameters = _deployment_parameters(
         _read_json(main_template), _read_json(create_ui), _read_json(test_parameters),
         has_xdr=bool(xdr_files),
-        contract_path=script.parent.parent / "common" / "contentDeploymentParameters.json",
+        contract_path=(
+            selected_toolkit_root
+            / "Tools" / "Create-Azure-Sentinel-Solution" / "common"
+            / "contentDeploymentParameters.json"
+        ),
     )
     try:
         with zipfile.ZipFile(zip_path) as archive:
@@ -409,6 +460,9 @@ def package_solution_v3_1(
     input_after = package_input_identity(root)
     reports = report_directory(root, create=True)
     report_path = reports / "packaging.v3_1.json"
+    if report_path.exists():
+        suffix = package_attempt_id or uuid.uuid4().hex
+        report_path = reports / f"packaging.v3_1.{suffix}.json"
     result = {
         "status": "passed",
         "packager": PACKAGER_NAME,
@@ -418,6 +472,8 @@ def package_solution_v3_1(
         "identityProjection": identity_projection,
         "attributionSources": attribution_sources,
         "solution": str(root),
+        "toolkitRoot": str(selected_toolkit_root),
+        "packagerScript": str(script),
         "version": version,
         "versionBump": version_bump,
         "requestedVersionBump": requested_version_bump or version_bump,

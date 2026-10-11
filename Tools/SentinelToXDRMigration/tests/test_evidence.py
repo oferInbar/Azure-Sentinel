@@ -235,6 +235,15 @@ class EvidenceTests(unittest.TestCase):
                 "querySha256": hashlib.sha256(source_query.encode()).hexdigest(),
             }],
         })
+        self.write("runtime-validation.azure-monitor-sdk.json", {
+            "provider": "azure-monitor-sdk",
+            "results": [{
+                "detection": "Rule.yaml",
+                "status": "passed",
+                "querySha256": hashlib.sha256(source_query.encode()).hexdigest(),
+                "tables": [{"columns": [{"name": "DeviceEvents"}], "rows": [["private row"]]}],
+            }],
+        })
 
         evidence = self.export()
         self.assertEqual(
@@ -245,6 +254,10 @@ class EvidenceTests(unittest.TestCase):
             "matches",
             evidence["reports"]["runtimeTriage"]["items"][0]["queryHashBinding"]["status"],
         )
+        sdk_item = evidence["reports"]["runtimeAzureMonitorSdk"]["items"][0]
+        self.assertEqual("azure-monitor-sdk", sdk_item["provider"])
+        self.assertEqual("matches", sdk_item["queryHashBinding"]["status"])
+        self.assertNotIn("private row", json.dumps(evidence))
 
     def test_completed_workflow_does_not_turn_missing_evidence_into_pass(self):
         state = json.loads((self.run / "workflow-state.json").read_text())

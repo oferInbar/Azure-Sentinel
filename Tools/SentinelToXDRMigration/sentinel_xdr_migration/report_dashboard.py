@@ -8,7 +8,10 @@ from html import escape
 import json
 import math
 import re
+from datetime import datetime
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from .report_review import BULK_SCRIPT, render_bulk_review, review_candidates
 
@@ -144,11 +147,90 @@ tbody.rule > tr:first-child > th { font-weight: normal; width: 30%; }
 .detail-cell { background: var(--cp-bg-elevated); }
 summary { padding: 8px 0; font-weight: 600; }
 pre, code { font-family: Consolas, "Courier New", Courier, monospace; }
+code { overflow-wrap: anywhere; word-break: normal; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto;
   background: var(--cp-surface-soft); border: 1px solid var(--cp-border); padding: 12px; border-radius: .625rem; }
 .query-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .issue-list { padding-left: 24px; } .issue-list li { padding: 8px 0; }
+.flow-scroll { overflow-x: auto; padding: 8px 0 12px; }
+.subway { display: block; width: 100%; min-width: 1160px; height: auto; }
+.subway.qualification { min-width: 2110px; }
+.subway .route { fill: none; stroke: var(--cp-border-strong); stroke-width: 4; }
+.subway .route-prefix.active { stroke: var(--cp-accent); }
+.subway .route-authoring.active { stroke: var(--cp-accent); }
+.subway .route-qualification { stroke-dasharray: 8 7; }
+.subway .route-qualification.active { stroke: var(--cp-accent); stroke-dasharray: none; }
+.subway .route-external { stroke-dasharray: 3 8; }
+.subway .route-label { fill: var(--cp-text-muted); font-size: 14px; }
+.subway .station-marker { fill: var(--cp-surface); stroke: var(--cp-border-strong); stroke-width: 4; }
+.subway .station-glyph { fill: var(--cp-text); font-size: 13px; font-weight: 700; text-anchor: middle; }
+.subway .station-name { fill: var(--cp-text); font-size: 15px; font-weight: 600; text-anchor: middle; }
+.subway .station-status { fill: var(--cp-text-muted); font-size: 12px; text-anchor: middle; }
+.subway .branch-heading { fill: var(--cp-text); font-size: 14px; font-weight: 600; }
+.subway .flow-link { cursor: pointer; }
+.subway .flow-link .station-name { text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+.subway .flow-link:hover .station-name,
+.subway .flow-link:focus-visible .station-name { text-decoration-style: solid; fill: var(--cp-accent); }
+.subway .flow-link:hover .station-marker,
+.subway .flow-link:focus-visible .station-marker { stroke: var(--cp-accent); stroke-width: 6; }
+.subway .flow-link:focus { outline: none; }
+.flow-evidence-entry { border-top: 1px solid var(--cp-border); padding: 12px 0; scroll-margin-top: 16px; }
+.flow-evidence-entry h3 { margin: 4px 0 8px; }
+.flow-evidence-entry:target { border-left: 4px solid var(--cp-accent); padding-left: 12px; }
+.flow-evidence-entry ul { overflow-wrap: anywhere; }
+.flow-artifact-links { display: flex; flex-wrap: wrap; gap: 8px 16px; padding-left: 20px; }
+.flow-artifact-links a { overflow-wrap: anywhere; }
+.subway.compact { min-width: 1160px; }
+.subway .flow-station.state-completed .station-marker { stroke: var(--cp-success); }
+.subway .flow-station.state-running .station-marker { stroke: var(--cp-accent); }
+.subway .flow-station.state-blocked .station-marker,
+.subway .flow-station.state-failed .station-marker { stroke: var(--cp-danger); }
+.subway .flow-station.state-stale .station-marker { stroke: var(--cp-warning); stroke-dasharray: 5 3; }
+.subway .flow-station.state-unknown .station-marker,
+.subway .flow-station.state-pending .station-marker,
+.subway .flow-station.state-not-required .station-marker { stroke: var(--cp-border-strong); stroke-dasharray: 5 3; }
+.subway .state-completed .station-glyph { fill: var(--cp-success); }
+.subway .state-running .station-glyph { fill: var(--cp-accent); }
+.subway .state-blocked .station-glyph, .subway .state-failed .station-glyph { fill: var(--cp-danger); }
+.subway .state-stale .station-glyph { fill: var(--cp-warning); }
+.subway .flow-link:hover .station-marker,
+.subway .flow-link:focus-visible .station-marker { stroke: var(--cp-accent); stroke-width: 6; }
+.flow-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 0; list-style: none; }
+.flow-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.flow-key { width: 12px; height: 12px; border: 2px solid var(--cp-border-strong); border-radius: 50%; }
+.flow-key.completed { border-color: var(--cp-success); }
+.flow-key.running { border-color: var(--cp-accent); }
+.flow-key.blocked, .flow-key.failed { border-color: var(--cp-danger); }
+.flow-key.stale { border-color: var(--cp-warning); border-style: dashed; }
+.flow-key.pending, .flow-key.not-required, .flow-key.unknown { border-style: dashed; }
+.flow-mode { display: inline-block; border: 1px solid var(--cp-border-strong); border-radius: .625rem; padding: 4px 8px; }
+.planning-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.planning-card { min-width: 0; align-self: start; background: var(--cp-bg-elevated); border: 1px solid var(--cp-border); border-radius: .625rem; padding: 12px; }
+.planning-card h3 { margin-top: 0; }
+.planning-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); align-items: start; gap: 10px; margin: 16px 0; }
+.planning-summary-card { min-width: 0; align-self: start; display: grid; gap: 6px; padding: 12px; background: var(--cp-bg-elevated); border: 1px solid var(--cp-border); border-radius: .625rem; }
+.planning-summary-card span { overflow-wrap: anywhere; word-break: normal; }
+.planning-layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); align-items: start; gap: 12px; }
+.target-data { display: grid; gap: 8px; margin: 8px 0; }
+.target-data > div { min-width: 0; }
+.target-data dt { font-weight: 600; }
+.target-data dd { margin: 2px 0 0; overflow-wrap: anywhere; word-break: normal; }
+.planning-inventory { width: 100%; margin-top: 12px; }
+.component-plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); align-items: start; gap: 10px; }
+.component-coverage-summary { margin: 8px 0; padding-left: 20px; overflow-wrap: anywhere; }
+.planning-table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
+.resource-inventory { width: 100%; min-width: 940px; table-layout: fixed; border-collapse: collapse; }
+.resource-inventory th, .resource-inventory td { border-bottom: 1px solid var(--cp-border); padding: 8px; text-align: left; vertical-align: top; }
+.resource-inventory th { white-space: nowrap; }
+.resource-inventory th:nth-child(1) { width: 34%; }
+.resource-inventory th:nth-child(2) { width: 20%; }
+.resource-inventory th:nth-child(3) { width: 9%; }
+.resource-inventory th:nth-child(4) { width: 24%; }
+.resource-inventory th:nth-child(5) { width: 13%; }
+.resource-inventory td:first-child code { overflow-wrap: break-word; word-break: normal; }
+.resource-inventory td:nth-child(2), .resource-inventory td:nth-child(3), .resource-inventory td:nth-child(5) { white-space: nowrap; }
 [hidden] { display: none !important; }
+@media(max-width: 760px) { .planning-layout, .planning-summary-grid { grid-template-columns: 1fr; } }
 @media(max-width: 760px) { main { padding: 12px; } .panel { padding: 12px; }
   .query-pair { grid-template-columns: 1fr; } }
 """
@@ -268,8 +350,9 @@ STATUS_LABELS = {
 }
 
 STAGE_LABELS = {
+    "setup": "Necessary setup / initial preflight",
     "discovery": "Discovery", "conversion": "Conversion", "validation": "Validation",
-    "packaging": "Packaging", "deployment": "Deployment", "mockIngestion": "Mock ingestion",
+    "packaging": "Packaging", "preflight": "Preflight", "deployment": "Deployment", "mockIngestion": "Mock ingestion",
     "alertParity": "Alert parity", "report": "Report",
 }
 
@@ -289,6 +372,16 @@ def _finding_badge(severity: str) -> str:
 
 def _text(value: Any) -> str:
     return escape(str(value)) if value is not None else "Evidence unavailable"
+
+
+def _safe_flow_message(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(
+        r"(?<![\w:<])(?:[A-Za-z]:[\\/]|\\\\|/(?!/))[^\s<>\"']+",
+        "[local path omitted]",
+        text,
+    )
+    return _text(text)
 
 
 def _status_label(value: Any) -> str:
@@ -730,10 +823,11 @@ def _run_html(report: dict[str, Any]) -> str:
         )
         stage_html.append(f'<li class="stage {_text(status)}">{_text(label)}: {_text(display_status)}</li>')
         if stage.get("message") or stage.get("evidence"):
+            evidence_links = _flow_links(report, name)
             evidence.append(
                 f"<details><summary>{_text(label)} — recorded context</summary>"
-                f"<p>{_text(stage['message']) if stage.get('message') else ''}</p>"
-                + "<ul>" + "".join(f"<li>{_text(item)}</li>" for item in stage.get("evidence") or []) + "</ul></details>"
+                f"<p>{_safe_flow_message(stage['message']) if stage.get('message') else ''}</p>"
+                + evidence_links + "</details>"
             )
     if not stages:
         stage_html.append("<li>Workflow stage evidence unavailable.</li>")
@@ -756,6 +850,1271 @@ def _run_html(report: dict[str, Any]) -> str:
     )
 
 
+FLOW_STATIONS = (
+    ("setup", "Necessary setup / initial preflight"),
+    ("discovery", "Discovery"),
+    ("conversion", "Conversion"),
+    ("validation", "Validation"),
+    ("packaging", "Packaging"),
+    ("preflight", "Preflight"),
+    ("validationSuite", "Official validation rerun"),
+    ("deployment", "Deployment"),
+    ("mockIngestion", "Mock ingestion"),
+    ("queryValidation", "Semantic/query validation"),
+    ("alertParity", "Alert parity"),
+    ("packageAcceptance", "Full package deployment"),
+)
+FLOW_DESCRIPTIONS = {
+    "setup": "Display-only startup summary of persisted local tool/runtime, selected profile, explicit run ID, and locked target metadata. It never runs doctor or authentication. A separate fresh read-only preflight remains immediately before Qualification deployment.",
+    "discovery": "Identify the source solution and inventory its content. Source/target details appear only when recorded.",
+    "conversion": "Convert source rules into XDR detection drafts. Mapping choices remain reviewable; untracked subtasks are not marked complete.",
+    "validation": "Mandatory structural validation and recorded runtime checks. Query execution alone is not alert parity.",
+    "packaging": "Record the release action and build the V3.1 package. A passed historical build is not current unless package freshness is verified.",
+    "preflight": "Qualification only: inspect persisted cached-auth, scope, exact GET, DCR and query-permission evidence. Readiness is diagnostic, not write approval.",
+    "validationSuite": "Qualification prerequisite: current full official local validation is distinct from the canonical source-query/schema validation stage. No current suite result is inferred when absent.",
+    "deployment": "Qualification only: after validation and fresh exact-scope approval, deploy the approved AR/CD testing pairs disabled in the locked target environment.",
+    "mockIngestion": "Qualification only: ingest reviewed shared fixtures after a separate exact-scope write approval; prepared hypotheses are not runtime proof.",
+    "queryValidation": "Qualification only: validate semantic/query behavior against observed telemetry. Query-permission checks and zero-row query success are not semantic matches.",
+    "alertParity": "Qualification only: compare observed alerts and preserve separate approval and cleanup evidence.",
+    "packageAcceptance": "Separate later full-package deployment/read-back. Pair deployment does not prove package acceptance; this full-package action is not a canonical tracked stage here.",
+    "report": "Generate an offline snapshot from recorded workflow and rule evidence.",
+    "publication": "External to this workflow. A package artifact does not prove publication.",
+}
+
+
+def _flow_stage(stage: Any, *, freshness: Any = None) -> dict[str, Any]:
+    if not isinstance(stage, dict):
+        stage = {}
+    raw = stage.get("status") if isinstance(stage.get("status"), str) else None
+    normalized = {
+        "passed": ("completed", "Passed"),
+        "completed": ("completed", "Completed"),
+        "running": ("running", "In progress"),
+        "inProgress": ("running", "In progress"),
+        "blocked": ("blocked", "Blocked"),
+        "failed": ("failed", "Failed"),
+        "pending": ("pending", "Pending"),
+        "notRequired": ("not-required", "Not required"),
+        "stale": ("stale", "Stale"),
+    }.get(raw, ("unknown", "Evidence unavailable" if raw is None else "Unknown status"))
+    display = normalized[1]
+    freshness_status = None
+    if isinstance(freshness, dict):
+        freshness_status = freshness.get("status") if isinstance(freshness.get("status"), str) else None
+    if raw in {"passed", "completed"}:
+        if freshness_status == "stale":
+            normalized = ("stale", "Stale package")
+        elif freshness_status != "current":
+            normalized = ("unknown", "Freshness unverified")
+    message = stage.get("message") if isinstance(stage.get("message"), str) else ""
+    evidence = stage.get("evidence") if isinstance(stage.get("evidence"), list) else []
+    return {
+        "state": normalized[0],
+        "display": normalized[1],
+        "raw": raw or "",
+        "freshness": freshness_status or "",
+        "freshnessReason": (
+            freshness.get("reason")
+            if isinstance(freshness, dict) and isinstance(freshness.get("reason"), str)
+            else ""
+        ),
+        "message": message,
+        "evidence": [item for item in evidence if isinstance(item, str)],
+        "updated": stage.get("updatedAt") if isinstance(stage.get("updatedAt"), str) else "",
+        "timing": " · ".join(
+            value for value in (
+                f"Started: {stage.get('startedAt')}" if isinstance(stage.get("startedAt"), str) else "",
+                f"Completed: {stage.get('completedAt')}" if isinstance(stage.get("completedAt"), str) else "",
+                _flow_duration(stage.get("startedAt"), stage.get("completedAt")),
+            ) if value
+        ),
+        "attempts": (
+            str(stage.get("attempts"))
+            if isinstance(stage.get("attempts"), int) and not isinstance(stage.get("attempts"), bool)
+            else ""
+        ),
+    }
+
+
+FLOW_GLYPHS = {
+    "completed": "OK", "running": ">>", "blocked": "!!", "failed": "X",
+    "pending": "..", "not-required": "--", "stale": "~", "unknown": "?",
+}
+
+
+def _flow_duration(started: Any, completed: Any) -> str:
+    if not isinstance(started, str) or not isinstance(completed, str):
+        return ""
+    try:
+        start = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(completed.replace("Z", "+00:00"))
+        seconds = (end - start).total_seconds()
+    except (OverflowError, TypeError, ValueError):
+        return ""
+    return f"Elapsed: {seconds:.1f} seconds" if seconds >= 0 else ""
+
+
+def _setup_station_value(report: dict[str, Any]) -> dict[str, Any]:
+    setup = report.get("startupSetup")
+    setup = setup if isinstance(setup, dict) else {}
+    return {
+        "state": "unknown",
+        "display": setup.get("display") if isinstance(setup.get("display"), str) else "Setup checks not recorded",
+        "raw": "not-checked",
+        "message": (
+            "This informational station reads persisted run/profile/target records only. "
+            "It does not run doctor, inspect authentication caches, authenticate, or probe network access."
+        ),
+        "updated": "",
+        "timing": "",
+        "attempts": "",
+    }
+
+
+def _preflight_station_value(preflight: dict[str, Any]) -> dict[str, Any]:
+    if preflight.get("graphRecorded") is not True:
+        return {
+            "state": "unknown",
+            "display": "Graph preflight not recorded",
+            "raw": "",
+            "message": "DCR/workspace permission evidence, when present, is partial and does not replace the Graph preflight.",
+        }
+    raw = preflight.get("deploymentReadiness") if isinstance(preflight.get("deploymentReadiness"), str) else "unknown"
+    states = {
+        "ready": ("unknown", "Readiness unconfirmed"),
+        "blocked": ("blocked", "Blocked"),
+        "action-required": ("blocked", "Action required"),
+        "readiness-unconfirmed": ("unknown", "Readiness unconfirmed"),
+        "unknown": ("unknown", "Unknown"),
+    }
+    state, display = states.get(raw, ("unknown", "Unknown preflight status"))
+    return {
+        "state": state,
+        "display": display,
+        "raw": raw,
+        "message": "Management permission grant, read access, GET checks, and deployment readiness are separate. A read-only GET does not prove effective write authorization; it is not deployment or write approval.",
+    }
+
+
+def _query_validation_value(report: dict[str, Any]) -> dict[str, Any]:
+    rules = report.get("rules") if isinstance(report.get("rules"), list) else []
+    results = []
+    for rule in rules:
+        if isinstance(rule, dict) and isinstance(rule.get("queryParity"), dict):
+            results.append(rule["queryParity"])
+    if not results:
+        return {"state": "unknown", "display": "Not run", "raw": "not-run"}
+    if any(item.get("status") == "failed" for item in results):
+        return {"state": "failed", "display": "Failed", "raw": "failed"}
+    if any(item.get("status") == "blocked" for item in results):
+        return {"state": "blocked", "display": "Blocked", "raw": "blocked"}
+    if all(item.get("status") == "passed" for item in results):
+        if any(
+            not isinstance(item.get("analyticRuleRows"), int)
+            or not isinstance(item.get("customDetectionRows"), int)
+            or item.get("analyticRuleRows") <= 0
+            or item.get("customDetectionRows") <= 0
+            for item in results
+        ):
+            return {
+                "state": "unknown",
+                "display": "Zero / unknown rows · no semantic pass",
+                "raw": "passed-without-positive-rows",
+            }
+        return {"state": "completed", "display": "Query parity recorded", "raw": "passed"}
+    return {"state": "unknown", "display": "Not run / incomplete", "raw": "unknown"}
+
+
+def _package_acceptance_value(report: dict[str, Any]) -> dict[str, Any]:
+    plan = report.get("deploymentPlanning")
+    plan = plan.get("packageAcceptancePlan") if isinstance(plan, dict) else {}
+    plan = plan if isinstance(plan, dict) else {}
+    return {
+        "state": "unknown",
+        "display": "Not tracked · not run",
+        "raw": "not-tracked",
+        "message": (
+            "Full-package deployment and read-back are separate from the V3.1 package build "
+            "and from direct AR/CD pair results. No full-package execution evidence is recorded."
+        ),
+        "plan": plan,
+    }
+
+
+def _validation_suite_value(report: dict[str, Any]) -> dict[str, Any]:
+    workflow = report.get("workflow") if isinstance(report.get("workflow"), dict) else {}
+    stages = workflow.get("stages") if isinstance(workflow.get("stages"), dict) else {}
+    validation = stages.get("validation") if isinstance(stages.get("validation"), dict) else {}
+    current_suite = stages.get("validationSuite")
+    if isinstance(current_suite, dict) and isinstance(current_suite.get("status"), str):
+        value = _flow_stage(current_suite)
+        return {
+            **value,
+            "canonicalStatus": validation.get("status"),
+            "message": current_suite.get("message")
+            if isinstance(current_suite.get("message"), str)
+            else "Current official local validation status comes from the selected run's validationSuite stage evidence.",
+        }
+    return {
+        "state": "unknown",
+        "display": "Current full-suite result not recorded",
+        "raw": "not-recorded",
+        "message": (
+            "The canonical Validation stage records structural/query evidence. "
+            "Its historical pass does not prove that the current full official local validation rerun passed."
+        ),
+        "canonicalStatus": validation.get("status"),
+    }
+
+
+def _flow_station(
+    key: str,
+    title: str,
+    lines: tuple[str, ...],
+    x: int,
+    y: int,
+    value: dict[str, Any],
+    *,
+    branch: bool = False,
+    compact: bool = False,
+) -> str:
+    label_y = y + (48 if branch else 42 if compact else 45)
+    line_markup = "".join(
+        f'<tspan x="{x}" dy="{18 if index else 0}">{escape(line)}</tspan>'
+        for index, line in enumerate(lines)
+    )
+    status_y = label_y + len(lines) * 18 + 6
+    return (
+        f'<a class="flow-link" href="#flow-evidence-{escape(key, quote=True)}" '
+        f'tabindex="0" focusable="true" aria-label="{escape(title + ": " + value["display"] + ". Open recorded stage evidence.", quote=True)}" '
+        f'title="Open {escape(title, quote=True)} evidence">'
+        f'<g class="flow-station state-{value["state"]}" data-flow-station="{escape(key, quote=True)}" '
+        f'data-flow-status="{escape(value["display"], quote=True)}">'
+        f'<circle class="station-marker" cx="{x}" cy="{y}" r="21"/>'
+        f'<text class="station-glyph" x="{x}" y="{y + 5}" aria-hidden="true">{FLOW_GLYPHS[value["state"]]}</text>'
+        f'<text class="station-name" x="{x}" y="{label_y}">{line_markup}</text>'
+        f'<text class="station-status" x="{x}" y="{status_y}">{escape(value["display"])}</text>'
+        f'<title>{escape(title)} — {escape(value["display"])}</title></g></a>'
+    )
+
+
+def _safe_local_href(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        return None
+    if value.startswith(("/", "\\", "//")) or "\\" in value:
+        return None
+    decoded_path = unquote(parsed.path)
+    segments = decoded_path.split("/")
+    if (
+        "\\" in decoded_path
+        or any(ord(char) < 32 for char in decoded_path)
+        or any(segment in {"", ".", ".."} for segment in segments)
+    ):
+        return None
+    if any(":" in segment for segment in segments):
+        return None
+    return value
+
+
+def _flow_links(report: dict[str, Any], stage_name: str) -> str:
+    evidence = report.get("flowEvidence")
+    references = evidence.get(stage_name) if isinstance(evidence, dict) else None
+    safe_links = []
+    workflow = report.get("workflow") if isinstance(report.get("workflow"), dict) else {}
+    stages = workflow.get("stages") if isinstance(workflow.get("stages"), dict) else {}
+    recorded = stages.get(stage_name) if isinstance(stages.get(stage_name), dict) else {}
+    unavailable = bool(recorded.get("evidence"))
+    for item in references if isinstance(references, list) else []:
+        if not isinstance(item, dict):
+            unavailable = True
+            continue
+        if item.get("available") is not True:
+            unavailable = True
+            continue
+        href = _safe_local_href(item.get("href"))
+        label = item.get("label")
+        if href is None or not isinstance(label, str) or not label:
+            unavailable = True
+            continue
+        label = label.replace("\\", "/").rsplit("/", 1)[-1]
+        if label in {"", ".", ".."}:
+            unavailable = True
+            continue
+        safe_links.append(
+            f'<li><a href="{escape(href, quote=True)}">{_text(label)}</a></li>'
+        )
+    if not safe_links:
+        message = (
+            "Evidence is recorded but unavailable or non-portable."
+            if unavailable else "No linked stage evidence is recorded in this snapshot."
+        )
+        return f'<p class="muted">{message}</p>'
+    if unavailable:
+        safe_links.append('<li class="muted">Some recorded evidence is unavailable or non-portable.</li>')
+    return '<ul class="flow-artifact-links">' + "".join(safe_links) + "</ul>"
+
+
+def _flow_rule_detail_link(index: int, name: Any) -> str:
+    return f'<a href="#rule-detail-{index}">{_text(name)}</a>'
+
+
+def _flow_stage_detail(stage_name: str, report: dict[str, Any]) -> str:
+    workflow = report.get("workflow") if isinstance(report.get("workflow"), dict) else {}
+    stages = workflow.get("stages") if isinstance(workflow.get("stages"), dict) else {}
+    stage = stages.get(stage_name)
+    preflight = report.get("qualificationPreflight") if isinstance(report.get("qualificationPreflight"), dict) else {}
+    if stage_name == "setup":
+        setup_value = _setup_station_value(report)
+        stage = {"status": "unknown", "message": setup_value["message"]}
+    elif stage_name == "preflight":
+        preflight_value = _preflight_station_value(preflight)
+        stage = {
+            "status": preflight_value["raw"] or "unknown",
+            "message": preflight_value["message"],
+        }
+        if isinstance(preflight.get("checkedAt"), str):
+            stage["updatedAt"] = preflight["checkedAt"]
+    elif stage_name == "validationSuite":
+        suite_value = _validation_suite_value(report)
+        stage = {
+            "status": "unknown",
+            "message": suite_value["message"],
+        }
+    elif stage_name == "queryValidation":
+        query_value = _query_validation_value(report)
+        stage = {
+            "status": query_value["raw"],
+            "message": "Status is derived only from recorded semantic query-parity evidence; zero or missing row counts are not a pass.",
+        }
+    elif stage_name == "packageAcceptance":
+        package_value = _package_acceptance_value(report)
+        stage = {
+            "status": "unknown",
+            "message": package_value["message"],
+        }
+    freshness = workflow.get("packageFreshness") if stage_name == "packaging" else None
+    value = _flow_stage(stage, freshness=freshness)
+    if stage_name == "preflight":
+        value = {**value, **preflight_value}
+    elif stage_name == "validationSuite":
+        value = {**value, **_validation_suite_value(report)}
+    elif stage_name == "queryValidation":
+        value = {**value, **_query_validation_value(report)}
+    elif stage_name == "packageAcceptance":
+        value = {**value, **_package_acceptance_value(report)}
+    label = {
+        "validationSuite": "Official full-suite validation rerun",
+        "deployment": "Direct AR/CD testing-pair deployment",
+        "queryValidation": "Semantic/query validation",
+        "packageAcceptance": "Full-package deployment and read-back",
+    }.get(stage_name, STAGE_LABELS.get(stage_name, "Publication"))
+    description = FLOW_DESCRIPTIONS.get(stage_name, FLOW_DESCRIPTIONS["publication"])
+    stage_status = (
+        f'<p><strong>Recorded stage status:</strong> {_text(value["raw"] or "Evidence unavailable")} '
+        f'· {_text(value["display"])}</p>'
+    )
+    freshness_status = ""
+    if stage_name == "packaging":
+        fresh_value = (
+            freshness.get("status")
+            if isinstance(freshness, dict) and isinstance(freshness.get("status"), str)
+            else "Evidence unavailable"
+        )
+        freshness_status = f'<p><strong>Package freshness:</strong> {_text(fresh_value)}</p>'
+        if value["freshnessReason"]:
+            freshness_status += f'<p>{_text(value["freshnessReason"])}</p>'
+    if value["message"]:
+        message = f'<p><strong>Recorded remarks:</strong> {_safe_flow_message(value["message"])}</p>'
+    elif stage is None:
+        message = '<p class="muted">No recorded stage status or remarks.</p>'
+    else:
+        message = '<p class="muted">No stage remarks recorded.</p>'
+    timestamps = []
+    if value["updated"]:
+        timestamps.append(f'Updated: {_text(value["updated"])}')
+    if value["timing"]:
+        timestamps.append(_text(value["timing"]))
+    if value["attempts"]:
+        timestamps.append(f'Attempts: {_text(value["attempts"])}')
+    timing = f'<p class="muted">{" · ".join(timestamps)}</p>' if timestamps else ""
+    stage_evidence = _flow_links(report, stage_name)
+    rules = report.get("rules") if isinstance(report.get("rules"), list) else []
+    rule_proof = ""
+    if stage_name == "setup":
+        setup = report.get("startupSetup") if isinstance(report.get("startupSetup"), dict) else {}
+        setup_target = setup.get("target") if isinstance(setup.get("target"), dict) else {}
+        auth = setup.get("authentication") if isinstance(setup.get("authentication"), dict) else {}
+        consent = (
+            report.get("deploymentPlanning", {}).get("deploymentPlan", {}).get("planningConsent", {})
+            if isinstance(report.get("deploymentPlanning"), dict)
+            and isinstance(report.get("deploymentPlanning", {}).get("deploymentPlan"), dict)
+            else {}
+        )
+        details = [
+            f'<li>Explicit migration run ID: {_text(setup.get("runId") or "Not recorded")}</li>',
+            f'<li>Confirmed workflow profile: {_text(setup.get("profile") or "Not recorded")}</li>',
+            f'<li>Local Python/CLI/tool checks: {_text(setup.get("localToolChecks") or "Not recorded")}</li>',
+            f'<li>Locked target record: {_text("Confirmed" if setup.get("targetLocked") else "Not confirmed")} · source: {_text(setup.get("targetSource") or "Not recorded")}</li>',
+            f'<li>Cached authentication evidence: {_text(auth.get("status") or "Not checked in this run")}</li>',
+            f'<li>Advance planning consent: {_text(consent.get("status") or "Not recorded")} · hash: <code>{_text(consent.get("planSha256") or "Not recorded")}</code></li>',
+            '<li>Exact-scope write approval: Not recorded. A recorded target or cached auth does not authorize any write.</li>',
+        ]
+        if setup_target:
+            details.extend(
+                f'<li>{_text(key)}: {_text(value)}</li>'
+                for key, value in setup_target.items()
+            )
+        if isinstance(auth.get("checkedAt"), str):
+            details.append(
+                f'<li>Last recorded scoped preflight: {_text(auth["checkedAt"])}; '
+                'this is later-stage evidence, not an initial setup pass.</li>'
+            )
+        notes = setup.get("notes") if isinstance(setup.get("notes"), list) else []
+        details.extend(f'<li>{_safe_flow_message(note)}</li>' for note in notes if isinstance(note, str))
+        rule_proof = (
+            '<h4>Persisted setup/configuration facts</h4><ul>'
+            + "".join(details)
+            + '</ul><p class="muted">The .env target keys are configuration only; they do not prove Graph/ARM authentication, scoped read access, management permission, effective RBAC, or deployment approval. The report does not run doctor, authenticate, inspect auth caches, or make network calls.</p>'
+            + ('<p>Qualification still requires a fresh read-only preflight immediately before each deployment phase.</p>' if setup.get("profile") == "qualification" else "")
+        )
+    elif stage_name in {"discovery", "conversion"}:
+        entries = []
+        for index, rule in enumerate(rules):
+            if not isinstance(rule, dict):
+                continue
+            custom = rule.get("customDetection") if isinstance(rule.get("customDetection"), dict) else {}
+            findings = []
+            if stage_name == "conversion":
+                findings.extend(str(item) for item in custom.get("reviewReasons") or [])
+                findings.extend(
+                    str(item.get("message") or item.get("stage") or "Recorded conversion error")
+                    for item in rule.get("errors") or [] if isinstance(item, dict)
+                )
+                status = custom.get("conversionStatus") or "not recorded"
+                text = f'Conversion: {_text(status)}'
+                if findings:
+                    text += " · " + _text("; ".join(findings))
+            else:
+                text = (
+                    f'Source file: {_text(Path(str(rule.get("sourceFile") or "")).name or "Not recorded")} · '
+                    f'Conversion: {_text(custom.get("conversionStatus") or "not recorded")}'
+                )
+            entries.append(f'<li>{_flow_rule_detail_link(index, rule.get("name"))} — {text}</li>')
+        if entries:
+            rule_proof = '<details><summary>Rule-level evidence</summary><ul>' + "".join(entries) + "</ul></details>"
+        elif stage_name == "discovery":
+            rule_proof = '<p class="muted">No source-rule inventory is recorded in this report.</p>'
+    elif stage_name == "validation":
+        entries = []
+        for index, rule in enumerate(rules):
+            if not isinstance(rule, dict):
+                continue
+            custom = rule.get("customDetection") if isinstance(rule.get("customDetection"), dict) else {}
+            analytic = rule.get("analyticRule") if isinstance(rule.get("analyticRule"), dict) else {}
+            results = [
+                f'Local structure: {_status_label(custom.get("structuralStatus"))}'
+            ]
+            for side_name, side in (("Source query", analytic), ("Converted query", custom)):
+                for runtime in side.get("runtime") or []:
+                    row_count = runtime.get("rowCount")
+                    rows_text = f'{_text(row_count)} rows' if row_count is not None else "row count unavailable"
+                    results.append(
+                        f'{side_name} ({_text(runtime.get("provider") or "provider unavailable")}): '
+                        f'{_status_label(runtime.get("status"))}, {rows_text}'
+                    )
+            entries.append(
+                f'<li>{_flow_rule_detail_link(index, rule.get("name"))} — {_text("; ".join(results))}</li>'
+            )
+        rule_proof = (
+            '<details><summary>Structural and query-provider results</summary><ul>' + "".join(entries) + "</ul></details>"
+            if entries else '<p class="muted">No per-rule structural or query-provider results are recorded.</p>'
+        )
+    elif stage_name in {"deployment", "mockIngestion", "alertParity"}:
+        if stage_name == "deployment":
+            entries = []
+            for index, rule in enumerate(rules):
+                if not isinstance(rule, dict):
+                    continue
+                custom = rule.get("customDetection") if isinstance(rule.get("customDetection"), dict) else {}
+                analytic = rule.get("analyticRule") if isinstance(rule.get("analyticRule"), dict) else {}
+                entries.append(
+                    f'<li>{_flow_rule_detail_link(index, rule.get("name"))} — '
+                    f'Source: {_status_label(analytic.get("deploymentStatus"))}; '
+                    f'XDR: {_status_label(custom.get("deploymentStatus"))}</li>'
+                )
+        elif stage_name == "alertParity":
+            entries = []
+            for index, rule in enumerate(rules):
+                if isinstance(rule, dict):
+                    custom = rule.get("customDetection") if isinstance(rule.get("customDetection"), dict) else {}
+                    entries.append(
+                        f'<li>{_flow_rule_detail_link(index, rule.get("name"))} — '
+                        f'Strict alert parity: {_status_label(custom.get("alertStatus"))}</li>'
+                    )
+        else:
+            entries = []
+        if entries:
+            rule_proof = '<details><summary>Recorded per-rule outcomes</summary><ul>' + "".join(entries) + "</ul></details>"
+        elif stage_name == "mockIngestion":
+            ingestion = report.get("ingestion")
+            record_count = len(ingestion) if isinstance(ingestion, list) else 0
+            rule_proof = (
+                f'<p>{record_count} ingestion report(s) were included in this snapshot.</p>'
+                if record_count else '<p class="muted">No ingestion reports are recorded in this snapshot.</p>'
+            )
+    elif stage_name == "preflight":
+        auth = preflight.get("authentication") if isinstance(preflight.get("authentication"), dict) else {}
+        permissions = preflight.get("permissions") if isinstance(preflight.get("permissions"), dict) else {}
+        read_checks = preflight.get("readChecks") if isinstance(preflight.get("readChecks"), list) else []
+        dcr = preflight.get("dcr") if isinstance(preflight.get("dcr"), dict) else {}
+        checks = []
+        for field, label in (
+            ("status", "Overall Graph preflight"),
+            ("method", "Selected cached-auth method"),
+            ("selectedMethod", "Selected cached-auth method"),
+            ("requestedScope", "Requested scope"),
+            ("tenantMatch", "Tenant match"),
+            ("graphAudience", "Graph audience"),
+        ):
+            if auth.get(field) is not None:
+                checks.append(f'<li>{label}: {_text(auth[field])}</li>')
+        for field, label in (
+            ("readAccess", "Read access"),
+            ("writeScopeInToken", "Write scope in token"),
+            ("consent", "Consent"),
+            ("writeAuthorization", "Write authorization"),
+        ):
+            if permissions.get(field) is not None:
+                checks.append(f'<li>{label}: {_text(permissions[field])}</li>')
+        grant = preflight.get("managementPermissionGrant")
+        grant = grant if isinstance(grant, dict) else {}
+        required_permission = preflight.get("requiredManagementPermission")
+        if required_permission:
+            checks.append(f'<li>Required management permission: {_text(required_permission)}</li>')
+        if grant:
+            checks.append(
+                f'<li>Required write-grant status: {_text(grant.get("status"))}; '
+                f'grant type: {_text(grant.get("grantType"))}; claim type: {_text(grant.get("claimType"))}</li>'
+            )
+            checks.append(
+                f'<li>Grant evidence permission: {_text(grant.get("permission"))}; '
+                f'credential request scope: {_text(grant.get("credentialRequestScope"))}</li>'
+            )
+            if grant.get("reason"):
+                checks.append(f'<li>Grant assessment: {_safe_flow_message(grant["reason"])}</li>')
+        if preflight.get("deploymentReadiness") is not None:
+            checks.append(f'<li>Deployment readiness assessment: {_text(preflight.get("deploymentReadiness"))}</li>')
+        checks.append(f'<li>Effective management role: {_text(preflight.get("effectiveRoleStatus"))}</li>')
+        claims = preflight.get("tokenPermissionClaims")
+        claims = claims if isinstance(claims, dict) else {}
+        if claims:
+            checks.append(
+                f'<li>Token permission-claim inspection: {_text(claims.get("status"))}; '
+                f'claim type: {_text(claims.get("claimType"))}</li>'
+            )
+        if read_checks:
+            checks.append(
+                '<li>Exact-rule GET checks: '
+                + "; ".join(
+                    _text(" · ".join(
+                        str(check[key]) for key in ("status", "httpStatus") if check.get(key) is not None
+                    )) for check in read_checks if isinstance(check, dict)
+                )
+                + '</li>'
+            )
+        if dcr:
+            checks.extend([
+                f'<li>DCR preflight: {_text(dcr.get("status"))}; authentication: {_text(dcr.get("authenticationStatus"))}</li>',
+                f'<li>Locked-target verification: {_text(dcr.get("targetVerificationStatus"))}; local contract readiness: {_text(dcr.get("localReadinessStatus"))}</li>',
+                f'<li>Workspace query permission: {_text(dcr.get("workspaceQueryPermissionStatus"))}; contracts recorded: {_text(dcr.get("contractCount"))}</li>',
+            ])
+        if not checks:
+            rule_proof = '<p class="muted">No persisted Graph authentication, scope, GET, DCR, or workspace-query preflight details are available.</p>'
+        else:
+            checks.extend([
+                '<li>Required CustomDetection.ReadWrite.All grant is distinct from read grant, successful GET, effective RBAC, and write authorization.</li>',
+                '<li>Preflight is diagnostic only; it does not prove effective write authorization or approve a write.</li>',
+                '<li>Query-permission preflight is not semantic query parity, telemetry ingestion, or alert parity.</li>',
+            ])
+            rule_proof = '<h4>Recorded read-only checks</h4><ul>' + "".join(checks) + "</ul>"
+    elif stage_name == "packageAcceptance":
+        plan = package_value.get("plan") if isinstance(package_value.get("plan"), dict) else {}
+        plan_types = plan.get("resourceTypes") if isinstance(plan.get("resourceTypes"), list) else []
+        plan_identity = plan.get("packageIdentity") if isinstance(plan.get("packageIdentity"), dict) else {}
+        type_list = (
+            '<ul>' + "".join(f'<li><code>{_text(item)}</code></li>' for item in plan_types) + '</ul>'
+            if plan_types else '<p class="muted">No recorded package-acceptance resource list.</p>'
+        )
+        identity_text = " · ".join(
+            f'{_text(key)}: {_text(value)}' for key, value in plan_identity.items()
+        ) or "Package identity not recorded in acceptance plan."
+        rule_proof = (
+            f'<p><strong>Recorded proposal status:</strong> {_text(plan.get("status"))}</p>'
+            f'<p><strong>Proposal package identity:</strong> {identity_text}</p>'
+            f'<p><strong>Proposal execution status:</strong> {_text(plan.get("executionStatus"))}</p>'
+            f'<p><strong>Proposal approval status:</strong> {_text(plan.get("approvalStatus"))}</p>'
+            + type_list
+            + '<p>Proposal/planning metadata is not final exact-scope approval, execution, or package acceptance evidence.</p>'
+        )
+    elif stage_name == "validationSuite":
+        canonical_status = suite_value.get("canonicalStatus")
+        rule_proof = (
+            f'<p>Recorded canonical structural/query Validation status: {_text(canonical_status)}</p>'
+            '<p>A prior structural or source-query pass does not prove the current full official local validation rerun.</p>'
+        )
+    elif stage_name == "queryValidation":
+        counts = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        rule_proof = (
+            f'<p>Recorded query parity passed: {_text(counts.get("queryParityPassed"))} of {_text(counts.get("rules"))} rules.</p>'
+            '<p>Missing checks, zero-row results, and query-permission checks are not semantic validation passes.</p>'
+        )
+    if stage_name == "publication":
+        message = '<p class="muted">Publication is external and not tracked. No publication link or completion status is available here.</p>'
+        stage_evidence = '<p class="muted">No publication evidence is recorded.</p>'
+    if stage_name == "report" and report.get("generatedAt"):
+        stage_status = (
+            f'<p><strong>Report snapshot:</strong> Generated {_text(report["generatedAt"])}</p>'
+            + (f'<p><strong>Recorded report-stage status:</strong> {_text(value["raw"])} · {_text(value["display"])}</p>' if value["raw"] else "")
+        )
+    return (
+        f'<section class="flow-evidence-entry" id="flow-evidence-{escape(stage_name, quote=True)}" '
+        f'aria-labelledby="flow-evidence-heading-{escape(stage_name, quote=True)}">'
+        f'<h3 id="flow-evidence-heading-{escape(stage_name, quote=True)}">{_text(label)} evidence</h3>'
+        + f'<p class="muted">{_text(description)}</p>'
+        + stage_status + freshness_status + message + timing + rule_proof
+        + '<h4>Evidence artifacts</h4>' + stage_evidence + '</section>'
+    )
+
+
+def _flow_evidence_html(report: dict[str, Any], show_qualification: bool) -> str:
+    stages = ["setup", "discovery", "conversion", "validation", "packaging"]
+    if show_qualification:
+        stages.extend([
+            "validationSuite", "preflight", "deployment", "mockIngestion",
+            "queryValidation", "alertParity", "packageAcceptance",
+        ])
+    stages.extend(["report", "publication"])
+    return (
+        '<section class="panel" aria-labelledby="flow-evidence-heading">'
+        '<h2 id="flow-evidence-heading">Migration evidence</h2>'
+        '<p class="muted">Each station links here to its recorded evidence. Artifact links are limited to files inside this selected migration run; unavailable or non-portable references are stated without exposing local paths.</p>'
+        + "".join(_flow_stage_detail(name, report) for name in stages)
+        + '</section>'
+    )
+
+
+def _flow_html(report: dict[str, Any]) -> str:
+    workflow = report.get("workflow") if isinstance(report.get("workflow"), dict) else {}
+    stages = workflow.get("stages") if isinstance(workflow.get("stages"), dict) else {}
+    recorded_profile = workflow.get("profile")
+    profile = recorded_profile if isinstance(recorded_profile, str) and recorded_profile in {"authoring", "qualification"} else None
+    mode = profile if workflow.get("profileSelectionConfirmed") is True else None
+    freshness = workflow.get("packageFreshness")
+    values = {
+        name: _flow_stage(stage, freshness=freshness if name == "packaging" else None)
+        for name, stage in stages.items()
+    }
+    for name, _ in FLOW_STATIONS:
+        values.setdefault(name, _flow_stage(None))
+    qualification_evidence = any(
+        isinstance(stages.get(name), dict)
+        and (
+            (
+                stages[name].get("status") is not None
+                and stages[name].get("status") != "notRequired"
+            )
+            or (
+                stages[name].get("attempts") is not None
+                and stages[name].get("attempts") != 0
+            )
+            or bool(stages[name].get("evidence"))
+            or bool(stages[name].get("message"))
+        )
+        for name in ("deployment", "mockIngestion", "alertParity")
+    )
+    qualification_evidence = qualification_evidence or any(
+        isinstance(rule, dict)
+        and isinstance(rule.get("queryParity"), dict)
+        and rule["queryParity"].get("status") not in {None, "not-run", "not-recorded"}
+        for rule in report.get("rules", [])
+    )
+    planning = report.get("deploymentPlanning")
+    package_acceptance_plan = (
+        planning.get("packageAcceptancePlan")
+        if isinstance(planning, dict) and isinstance(planning.get("packageAcceptancePlan"), dict)
+        else {}
+    )
+    qualification_evidence = qualification_evidence or package_acceptance_plan.get("recorded") is True
+    show_qualification = mode == "qualification" or qualification_evidence
+    preflight_evidence = bool(
+        (report.get("qualificationPreflight") or {}).get("graphRecorded") is True
+        or (report.get("qualificationPreflight") or {}).get("dcrRecorded") is True
+    )
+    show_qualification = show_qualification or preflight_evidence
+    compact = mode == "authoring" and not show_qualification
+    setup_value = _setup_station_value(report)
+    report_value = _flow_stage(stages.get("report"))
+    if report.get("generatedAt"):
+        report_value = {
+            **report_value,
+            "state": "completed" if report_value["raw"] in {"", "passed"} else report_value["state"],
+            "display": "Snapshot generated" if report_value["raw"] in {"", "passed"} else report_value["display"],
+            "message": report_value["message"] or "This offline JSON/HTML snapshot was generated at the timestamp shown above.",
+            "updated": report_value["updated"] or str(report["generatedAt"]),
+        }
+    coordinates = (
+        {"setup": 70, "discovery": 250, "conversion": 430, "validation": 610, "packaging": 790, "report": 980, "publication": 1120}
+        if compact else
+        {"setup": 80, "discovery": 260, "conversion": 440, "validation": 620, "packaging": 800, "report": 1880, "publication": 2040}
+    )
+    y = 92 if compact else 105
+    station_specs = [
+        ("setup", "Necessary setup / initial preflight", ("Necessary setup", "initial preflight"), coordinates["setup"], setup_value),
+        ("discovery", "Discovery", ("Discovery",), coordinates["discovery"], values["discovery"]),
+        ("conversion", "Conversion", ("Conversion",), coordinates["conversion"], values["conversion"]),
+        ("validation", "Validation", ("Validation",), coordinates["validation"], values["validation"]),
+        ("packaging", "Packaging", ("Packaging",), coordinates["packaging"], values["packaging"]),
+    ]
+    if show_qualification:
+        station_specs.extend([
+            ("validationSuite", "Official validation rerun", ("Official", "validation rerun"), 930, _validation_suite_value(report)),
+            ("preflight", "Just-in-time preflight", ("Fresh", "preflight"), 1080, _preflight_station_value(
+                report.get("qualificationPreflight")
+                if isinstance(report.get("qualificationPreflight"), dict) else {}
+            )),
+            ("deployment", "Direct AR/CD pair deployment", ("Direct AR/CD", "pair deployment"), 1230, values["deployment"]),
+            ("mockIngestion", "Mock ingestion", ("Shared mock", "ingestion"), 1380, values["mockIngestion"]),
+            ("queryValidation", "Semantic/query validation", ("Semantic/query", "validation"), 1530, _query_validation_value(report)),
+            ("alertParity", "Alert parity", ("Alert", "parity"), 1680, values["alertParity"]),
+            ("packageAcceptance", "Full package deployment", ("Full package", "deployment"), 1830, _package_acceptance_value(report)),
+        ])
+    station_specs.extend([
+        ("report", "Report", ("Report", "snapshot"), coordinates["report"], report_value),
+        ("publication", "External publication (optional)", ("External", "publish (optional)"), coordinates["publication"], {
+            "state": "unknown", "display": "Not tracked", "raw": "", "freshness": "",
+            "freshnessReason": "",
+            "message": "Optional publication is external to the canonical workflow and has no recorded status here. A package artifact does not prove publication.",
+            "evidence": [], "updated": "", "timing": "", "attempts": "",
+        }),
+    ])
+    lines = [
+        _flow_station(
+            key, title, title_lines, x,
+            288 if key in {
+                "validationSuite", "preflight", "deployment", "mockIngestion",
+                "queryValidation", "alertParity", "packageAcceptance",
+            } else y,
+            value,
+            branch=key in {
+                "validationSuite", "preflight", "deployment", "mockIngestion",
+                "queryValidation", "alertParity", "packageAcceptance",
+            },
+            compact=compact,
+        )
+        for key, title, title_lines, x, value in station_specs
+    ]
+    route_authoring = "active" if mode == "authoring" else ""
+    route_qualification = "active" if mode == "qualification" else ""
+    branch_label = (
+        "Lab qualification selected"
+        if mode == "qualification"
+        else "Lab evidence recorded · authoring"
+        if mode == "authoring"
+        else "Lab evidence present · mode unknown"
+    )
+    if mode == "qualification":
+        mode_label = "Qualification · lab validation"
+        mode_note = "The selected qualification route follows Packaging, then rejoins at Report. Mandatory structural validation remains on the main route."
+    elif compact:
+        mode_label = "Authoring · no lab qualification"
+        mode_note = "Lab qualification was not selected. The optional branch is omitted; mandatory structural validation and packaging remain on this route."
+    elif mode == "authoring":
+        mode_label = "Authoring · qualification evidence recorded"
+        mode_note = "The authoring profile is recorded, and existing lab-stage evidence remains visible rather than being hidden."
+    elif show_qualification:
+        mode_label = "Mode not recorded · qualification evidence present"
+        mode_note = "The selected mode is unavailable in this legacy report. Qualification-stage evidence is shown without inferring profile selection."
+    else:
+        mode_label = "Mode not recorded"
+        mode_note = "The selected mode is unavailable. No authoring or qualification profile is inferred; statuses remain unknown unless recorded."
+    workflow_status = workflow.get("status") if isinstance(workflow.get("status"), str) else None
+    overall_status = _status_label(workflow_status) if workflow_status else "Evidence unavailable"
+    description = (
+        "Necessary setup and initial preflight, discovery, conversion, mandatory validation, packaging and report, followed by optional external publication."
+        if compact else
+        "Necessary setup and initial preflight, discovery, conversion, mandatory validation and V3.1 packaging continue to Report. The optional qualification branch illustrates a separate local validation rerun, a fresh read-only preflight, direct AR/CD pairs, fixture ingestion and semantic checks, alert parity, then separately approved full-package deployment before Report. These display-only planned steps do not alter the canonical workflow."
+    )
+    svg_viewbox = "0 0 1160 245" if compact else "0 0 2110 420"
+    route_markup = (
+        f'<path class="route route-prefix active" d="M{coordinates["setup"]} {y} H{coordinates["packaging"]}"/>'
+        f'<path class="route route-authoring {_text(route_authoring)}" d="M{coordinates["packaging"]} {y} H{coordinates["report"]}"/>'
+        f'<path class="route route-external" d="M{coordinates["report"] + 21} {y} H{coordinates["publication"] - 21}"/>'
+    )
+    if show_qualification:
+        route_markup += (
+            f'<path class="route route-qualification {_text(route_qualification)}" d="M800 126 V267 H1830"/>'
+            f'<path class="route route-qualification {_text(route_qualification)}" d="M1830 267 C1850 220 1865 158 1880 126"/>'
+        )
+    return (
+        '<section class="panel subway-panel" aria-labelledby="flow-heading">'
+        f'<h2 id="flow-heading">Migration flow <span class="flow-mode">{_text(mode_label)}</span></h2>'
+        f'<p><strong>Recorded workflow status:</strong> {_text(overall_status)}</p>'
+        '<p class="muted">A snapshot of recorded workflow state, generated at the timestamp above; this diagram does not poll or change stages. Each clickable station opens its stage-specific evidence below.</p>'
+        f'<p class="muted">{_text(mode_note)}</p>'
+        '<div class="flow-scroll" role="region" aria-label="Scrollable migration flow diagram" tabindex="0">'
+        f'<svg class="subway{" compact" if compact else " qualification" if show_qualification else ""}" viewBox="{svg_viewbox}" role="group" aria-labelledby="flow-svg-title flow-svg-desc">'
+        '<title id="flow-svg-title">Migration workflow subway schematic</title>'
+        f'<desc id="flow-svg-desc">{escape(description)}</desc>'
+        + route_markup
+        + (f'<text class="route-label" x="{(coordinates["packaging"] + coordinates["report"]) // 2}" y="{y - 24}">Authoring route</text>' if compact else "")
+        + (f'<text class="branch-heading" x="810" y="225">{escape(branch_label)}</text>' if show_qualification else "")
+        + "".join(lines)
+        + '</svg></div>'
+        '<p class="muted">Tab moves between stations; press Enter to open that station’s recorded evidence. Underlined labels, hover and focus cues identify links. Status words and symbols supplement color.</p>'
+        '<ul class="flow-legend" aria-label="Station status legend">'
+        '<li><span class="flow-key completed" aria-hidden="true"></span>Completed / snapshot</li>'
+        '<li><span class="flow-key running" aria-hidden="true"></span>In progress</li>'
+        '<li><span class="flow-key blocked" aria-hidden="true"></span>Blocked or failed</li>'
+        '<li><span class="flow-key stale" aria-hidden="true"></span>Stale</li>'
+        '<li><span class="flow-key pending" aria-hidden="true"></span>Pending</li>'
+        '<li><span class="flow-key not-required" aria-hidden="true"></span>Not required</li>'
+        '<li><span class="flow-key unknown" aria-hidden="true"></span>Unknown / not tracked</li>'
+        '</ul>'
+        '</section>'
+        + _flow_evidence_html(report, show_qualification)
+    )
+
+
+def _deployment_planning_html(report: dict[str, Any]) -> str:
+    plan = report.get("deploymentPlanning")
+    plan = plan if isinstance(plan, dict) else {}
+    contract = plan.get("deploymentPlan")
+    contract = contract if isinstance(contract, dict) else {}
+    profile = plan.get("profile")
+    selected_profile = contract.get("selectedProfile")
+    profile_label = selected_profile if isinstance(selected_profile, str) else {
+        "authoring": "Authoring",
+        "qualification": "Qualification",
+        "unknown": "Mode not recorded",
+    }.get(profile, "Mode not recorded")
+    inventory = contract.get("packageResourceInventory")
+    if not isinstance(inventory, list) or not inventory:
+        inventory = plan.get("resourceInventory")
+    rows = []
+    if isinstance(inventory, list):
+        for item in inventory:
+            if not isinstance(item, dict):
+                continue
+            forms = item.get("sourceForms")
+            form_text = ", ".join(str(value) for value in forms) if isinstance(forms, list) else "not recorded"
+            resource_type = item.get("type") or item.get("typeAtVersion") or "Not recorded"
+            api_version = item.get("apiVersion")
+            if not api_version and isinstance(item.get("typeAtVersion"), str) and "@" in item["typeAtVersion"]:
+                resource_type, api_version = item["typeAtVersion"].rsplit("@", 1)
+            extension = "Yes" if item.get("extensionResource") is True else "No / not recorded"
+            rows.append(
+                "<tr>"
+                f'<td><code>{_text(resource_type)}</code></td>'
+                f'<td>{_text(api_version or "Not recorded")}</td>'
+                f'<td>{_text(item.get("count"))}</td>'
+                f'<td>{_text(form_text)}</td>'
+                f'<td>{extension}</td>'
+                "</tr>"
+            )
+    if not rows:
+        rows = ['<tr><td colspan="5">No package resource inventory is recorded in this snapshot.</td></tr>']
+    defaults = plan.get("deploymentDefaults")
+    if isinstance(defaults, list):
+        default_lines = [
+            f'<li>{_safe_flow_message(item.get("name"))}: {_text(item.get("value"))}</li>'
+            for item in defaults
+            if isinstance(item, dict) and isinstance(item.get("value"), bool)
+        ]
+    else:
+        default_lines = []
+    template_hash = plan.get("templateSha256")
+    recorded_hash = plan.get("recordedTemplateSha256")
+    package_hash = plan.get("packageArtifactsSha256")
+    input_hash = plan.get("packageInputSha256")
+    hash_markup = (
+        f'<p>Current template SHA-256: <code>{_text(template_hash)}</code></p>'
+        if isinstance(template_hash, str) and re.fullmatch(r"[0-9a-fA-F]{64}", template_hash)
+        else '<p>Current template SHA-256: unavailable.</p>'
+    )
+    if isinstance(recorded_hash, str) and re.fullmatch(r"[0-9a-fA-F]{64}", recorded_hash):
+        hash_markup += f'<p>Package-recorded template SHA-256: <code>{_text(recorded_hash)}</code></p>'
+    if isinstance(package_hash, str) and re.fullmatch(r"[0-9a-fA-F]{64}", package_hash):
+        hash_markup += f'<p>Package artifacts SHA-256: <code>{_text(package_hash)}</code></p>'
+    if isinstance(input_hash, str) and re.fullmatch(r"[0-9a-fA-F]{64}", input_hash):
+        hash_markup += f'<p>Package input identity SHA-256: <code>{_text(input_hash)}</code></p>'
+    freshness = plan.get("packageFreshness")
+    identity = plan.get("packageIdentity")
+    startup = report.get("startupSetup")
+    startup = startup if isinstance(startup, dict) else {}
+    target = (
+        contract.get("target")
+        if isinstance(contract.get("target"), dict) and contract.get("target")
+        else startup.get("target")
+    )
+    target = target if isinstance(target, dict) else {}
+    target_source = (
+        "Hash-bound plan target"
+        if contract.get("target")
+        else startup.get("targetSource") or "Not recorded"
+    )
+    target_html = (
+        f'<p class="muted">{_text(target_source)} · '
+        f'{"locked" if startup.get("targetLocked") or contract.get("target") else "lock not recorded"}</p>'
+        + "<dl class=\"target-data\">" + "".join(
+            f'<div><dt>{_text(key)}</dt><dd>{_text(value)}</dd></div>'
+            for key, value in target.items()
+        ) + "</dl>"
+        if target else '<p class="muted">No target is recorded in this run; a formal deployment plan is also not recorded.</p>'
+    )
+    source_inventory = contract.get("sourceInventory")
+    source_inventory_html = (
+        "<ul>" + "".join(
+            f'<li>{_text(key)}: {_text(value)}</li>'
+            for key, value in source_inventory.items()
+        ) + "</ul>"
+        if isinstance(source_inventory, dict) and source_inventory
+        else (
+            f'<p class="muted">No plan-bound source inventory recorded. This report includes '
+            f'{_text(len(report.get("rules", [])))} source rule(s); this count is not an approved deployment scope.</p>'
+        )
+    )
+    detection_scope = contract.get("detectionScope")
+    detection_scope_items = (
+        [
+            f'{_text(key)}: {_text(value)}'
+            for key, value in detection_scope.items()
+        ]
+        if isinstance(detection_scope, dict)
+        else []
+    )
+    id_lists = []
+    if isinstance(detection_scope, dict):
+        for key in (
+            "currentReviewedDraftIds", "eligibleAdditionalRuleIds",
+            "excludedRuleIds", "ineligibleRuleIds", "duplicateSourceRuleIds",
+        ):
+            values = detection_scope.get(key)
+            if isinstance(values, list) and values:
+                id_lists.append(
+                    f'<details><summary>{_text(key)} ({len(values)})</summary><ul>'
+                    + "".join(f'<li><code>{_text(value)}</code></li>' for value in values if isinstance(value, str))
+                    + '</ul></details>'
+                )
+    eligible_ids_html = "".join(id_lists)
+    caps = contract.get("scopeCaps")
+    cap_html = (
+        "<dl class=\"compact-data\">" + "".join(
+            f'<div><dt>{_text(key)}</dt><dd>{_text(value)}</dd></div>' for key, value in caps.items()
+        ) + "</dl>"
+        if isinstance(caps, dict) and caps
+        else ""
+    )
+    consent = contract.get("planningConsent")
+    consent = consent if isinstance(consent, dict) else {}
+    consent_status = consent.get("status") if isinstance(consent.get("status"), str) else "not-recorded"
+    consent_status_label = "Not recorded" if consent_status == "not-recorded" else consent_status
+    consent_keys = consent.get("componentKeys") if isinstance(consent.get("componentKeys"), list) else []
+    consent_types = consent.get("resourceTypes") if isinstance(consent.get("resourceTypes"), list) else []
+    consent_flags = consent.get("selectedFlags") if isinstance(consent.get("selectedFlags"), dict) else {}
+    consent_max_additional = consent.get("maxAdditionalCustomDetections")
+    component_markup = []
+    components = contract.get("components")
+    if isinstance(components, dict):
+        for key, component in components.items():
+            if not isinstance(component, dict):
+                continue
+            non_consentable = (
+                component.get("consentable") is False
+                or key in {"controlledAlertParity", "ownedResourceCleanup"}
+            )
+            resource_types = component.get("resourceTypes")
+            types_html = (
+                "<ul class=\"component-types\">" + "".join(f'<li><code>{_text(item)}</code></li>' for item in resource_types) + "</ul>"
+                if isinstance(resource_types, list) and resource_types else ""
+            )
+            selected_flags = component.get("selectedFlags")
+            flags_html = (
+                "<ul>" + "".join(f'<li>{_text(name)}: {_text(value)}</li>' for name, value in selected_flags.items()) + "</ul>"
+                if isinstance(selected_flags, dict) and selected_flags
+                else '<p class="muted">Selected flags not recorded.</p>'
+            )
+            component_status = component.get("planningConsent")
+            component_status = component_status if isinstance(component_status, str) else "not-recorded"
+            component_fields = {
+                name: value for name, value in component.items()
+                if name not in {"resourceTypes", "planningConsent"}
+            }
+            component_plan_status = component.get("status") or "not-recorded"
+            component_reason = component.get("reason")
+            if non_consentable:
+                status_markup = (
+                    f'<p><strong>Coverage status:</strong> {_text(component_plan_status)} · '
+                    'not consentable and not deployment approval.</p>'
+                    '<p><strong>Advance consent support:</strong> No.</p>'
+                )
+            else:
+                status_markup = (
+                    f'<p><strong>Plan status:</strong> {_text(component_plan_status)} · '
+                    f'<strong>Advance consent:</strong> {_text(component_status)}</p>'
+                )
+            coverage_fields = (
+                (
+                    "eligiblePairRuleIds", "maximumRulePairCount",
+                    "maximumEnableWriteRequests", "maximumRestoreWriteRequests",
+                    "maximumWriteRequestsForOneBoundedRun", "timeWindow",
+                    "restoreDisabledAfterRun", "abortOnRestoreFailure",
+                    "repeatedRunsAllowed", "maximumRepeatedRuns",
+                    "deleteCap", "maximumDeleteResourceCount",
+                    "resources", "resourceIds", "resourceTypes", "ownershipEvidence",
+                    "existingResourceDeletionAllowed", "unownedResourceDeletionAllowed",
+                )
+                if non_consentable else ()
+            )
+            if non_consentable:
+                coverage_fields += tuple(
+                    name for name in component
+                    if isinstance(name, str)
+                    and any(token in name.casefold() for token in ("restore", "abort", "repeat"))
+                    and name not in coverage_fields
+                )
+            coverage_summary_items = []
+            for name in coverage_fields:
+                if name not in component:
+                    continue
+                value = component[name]
+                if name in {"eligiblePairRuleIds", "resources", "resourceTypes"} and isinstance(value, list):
+                    rendered_value = f"{len(value)} recorded" + (
+                        ": " + ", ".join(str(item) for item in value)
+                        if name == "eligiblePairRuleIds" and value else ""
+                    )
+                else:
+                    rendered_value = json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
+                coverage_summary_items.append(
+                    f'<li><strong>{_text(name)}:</strong> {_text(rendered_value)}</li>'
+                )
+            coverage_summary = (
+                '<ul class="component-coverage-summary">'
+                + "".join(coverage_summary_items) + '</ul>'
+                if coverage_summary_items else ""
+            )
+            component_markup.append(
+                f'<section class="planning-card"><h4>{_text(key)}</h4>'
+                + status_markup
+                + (f'<p><strong>Recorded reason:</strong> {_safe_flow_message(component_reason)}</p>' if isinstance(component_reason, str) and component_reason else "")
+                + coverage_summary
+                + types_html
+                + (flags_html if selected_flags else "")
+                + (f'<details><summary>Recorded component evidence</summary><pre>{_text(json.dumps(component_fields, indent=2, sort_keys=True))}</pre></details>' if component_fields else "")
+                + '</section>'
+            )
+    if not component_markup:
+        component_markup.append('<p class="muted">No component-specific plan or consent evidence is recorded.</p>')
+    plan_fingerprint = contract.get("planSha256")
+    plan_fingerprint_html = (
+        f'<p>Plan SHA-256: <code>{_text(plan_fingerprint)}</code></p>'
+        if isinstance(plan_fingerprint, str) and re.fullmatch(r"[0-9a-fA-F]{64}", plan_fingerprint)
+        else '<p>Plan fingerprint: unavailable.</p>'
+    )
+    contract_artifact_hashes = contract.get("packageArtifactHashes")
+    if isinstance(contract_artifact_hashes, dict):
+        plan_fingerprint_html += "".join(
+            f'<p>Planned { _text(name) } SHA-256: <code>{_text(value)}</code></p>'
+            for name, value in contract_artifact_hashes.items()
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value)
+        )
+    dcr_resolver = contract.get("dcrResolver")
+    dcr_resolver_html = (
+        "<ul>" + "".join(f'<li>{_text(key)}: {_text(value)}</li>' for key, value in dcr_resolver.items()) + "</ul>"
+        if isinstance(dcr_resolver, dict) and dcr_resolver
+        else '<p class="muted">DCR resolver restrictions not recorded.</p>'
+    )
+    package_acceptance = contract.get("packageAcceptancePlan")
+    if not isinstance(package_acceptance, dict) or not package_acceptance:
+        package_acceptance = plan.get("packageAcceptancePlan")
+    package_acceptance = package_acceptance if isinstance(package_acceptance, dict) else {}
+    package_input_hash = contract.get("packageInputSha256")
+    if isinstance(package_input_hash, str) and re.fullmatch(r"[0-9a-fA-F]{64}", package_input_hash):
+        plan_fingerprint_html += f'<p>Package input SHA-256: <code>{_text(package_input_hash)}</code></p>'
+    recorded_artifact_hashes = contract.get("recordedPackageArtifactHashes")
+    if isinstance(recorded_artifact_hashes, dict):
+        plan_fingerprint_html += "".join(
+            f'<p>Recorded { _text(name) } SHA-256: <code>{_text(value)}</code></p>'
+            for name, value in recorded_artifact_hashes.items()
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value)
+        )
+    dcr_evidence = contract.get("dcrEvidence") if isinstance(contract.get("dcrEvidence"), dict) else {}
+    dcr_resolver = contract.get("dcrResolver") if isinstance(contract.get("dcrResolver"), dict) else {}
+    workflow = report.get("workflow") if isinstance(report.get("workflow"), dict) else {}
+    workflow_stages = workflow.get("stages") if isinstance(workflow.get("stages"), dict) else {}
+    validation_stage = workflow_stages.get("validationSuite")
+    validation_stage = validation_stage if isinstance(validation_stage, dict) else {}
+    deployment_stage = workflow_stages.get("deployment")
+    deployment_stage = deployment_stage if isinstance(deployment_stage, dict) else {}
+    validation_summary = _validation_suite_value(report)
+    package_acceptance_summary = package_acceptance
+    target_json = _text(json.dumps(target, sort_keys=True, indent=2)) if target else ""
+    source_json = _text(json.dumps(source_inventory, sort_keys=True, indent=2)) if isinstance(source_inventory, dict) and source_inventory else ""
+    detection_json = _text(json.dumps(detection_scope, sort_keys=True, indent=2)) if isinstance(detection_scope, dict) and detection_scope else ""
+    component_consent_note = (
+        "Advance consent applies only to the listed persisted component scope."
+        if consent_status == "approved" and consent_keys
+        else "No approved component scope is recorded; conditional resource plans are not consent."
+    )
+    current_package_status = plan.get("packageIdentity")
+    current_package_status = (
+        current_package_status.get("status")
+        if isinstance(current_package_status, dict)
+        else plan.get("packageIdentity")
+    )
+    version = plan.get("packageVersion") or (
+        current_package_status.get("version")
+        if isinstance(current_package_status, dict)
+        else None
+    )
+    if not version:
+        version = "Not recorded"
+    deployment_message = deployment_stage.get("message")
+    deployment_summary = (
+        f'<p><strong>Current deployment blocker:</strong> {_safe_flow_message(deployment_message)}</p>'
+        if deployment_stage.get("status") in {"blocked", "failed"} and deployment_message
+        else ""
+    )
+    target_summary = (
+        target.get("workspaceName")
+        or target.get("workspaceResourceId")
+        or target.get("resourceGroup")
+        or "Not recorded"
+    )
+    if profile_label == "qualification" and contract.get("executionMode") == "pairs":
+        route_summary = "Qualification · direct AR/CD pairs first"
+    elif profile_label == "qualification" and contract.get("executionMode") == "package":
+        route_summary = "Qualification · full-package acceptance selected"
+    elif profile_label == "qualification" and contract.get("executionMode") == "both":
+        route_summary = "Qualification · selected components"
+    else:
+        route_summary = f'{profile_label} · {contract.get("executionMode") or "selection not recorded"}'
+    target_fallback_text = (
+        "Recorded run target; not bound to a formal deployment plan."
+        if target and not contract.get("target")
+        else "Target is hash-bound to the persisted plan."
+        if target and contract.get("target")
+        else "Target details are not available in this selected run."
+    )
+    consent_scope_text = (
+        " · ".join(_text(value) for value in consent_keys)
+        if consent_keys
+        else "No approved component scope recorded"
+    )
+    if consent_status != "approved":
+        consent_scope_text = "No approved component scope recorded"
+    inventory_status = (
+        "Plan-bound source inventory recorded"
+        if isinstance(source_inventory, dict) and source_inventory
+        else f'{len(report.get("rules", []))} source rule(s) in this report only'
+    )
+    hash_details = (
+        f'<details class="planning-details"><summary>Package hashes and plan provenance</summary>'
+        + hash_markup + plan_fingerprint_html
+        + (f'<p>Package content SHA-256: <code>{_text(contract.get("packageContentSha256"))}</code></p>' if contract.get("packageContentSha256") else "")
+        + (f'<p>Source inventory SHA-256: <code>{_text(contract.get("sourceInventorySha256"))}</code></p>' if contract.get("sourceInventorySha256") else "")
+        + '</details>'
+    )
+    package_default_details = (
+        f'<details class="planning-details"><summary>Recorded package defaults ({len(default_lines)})</summary>'
+        + (f'<ul>{"".join(default_lines)}</ul>' if default_lines else '<p class="muted">No package defaults recorded.</p>')
+        + '</details>'
+    )
+    scope_details = (
+        f'<details class="planning-details"><summary>Detailed source/scope inventory</summary>'
+        + (f'<pre>{source_json}</pre>' if source_json else '<p>No plan-bound source inventory.</p>')
+        + (f'<pre>{detection_json}</pre>' if detection_json else '<p>No plan-bound detection scope.</p>')
+        + (f'<pre>{_text(json.dumps(caps, sort_keys=True, indent=2))}</pre>' if isinstance(caps, dict) and caps else "")
+        + eligible_ids_html
+        + '</details>'
+    )
+    dcr_details = (
+        f'<details class="planning-details"><summary>Preflight DCR evidence and resolver limits</summary>'
+        + (
+            f'<p><strong>Resolver:</strong> {_text(dcr_resolver.get("kind") or "not recorded")} · '
+            f'arbitrary solution-owned DCR discovery: {_text(dcr_resolver.get("arbitrarySolutionOwnedDcrDiscovery", "unknown"))}</p>'
+            if dcr_resolver else '<p class="muted">DCR resolver restrictions are not recorded.</p>'
+        )
+        + (f'<pre>{_text(json.dumps(dcr_evidence, sort_keys=True, indent=2))}</pre>' if dcr_evidence else "")
+        + (f'<pre>{_text(json.dumps(dcr_resolver, sort_keys=True, indent=2))}</pre>' if dcr_resolver else "")
+        + f'<p><strong>Bicep extensibility / what-if:</strong> {_text(contract.get("whatIfSupport") or "not-evaluated")}</p>'
+        + '</details>'
+    )
+    package_acceptance_details = (
+        f'<details class="planning-details"><summary>Full-package acceptance proposal</summary>'
+        + (f'<pre>{_text(json.dumps(package_acceptance_summary, sort_keys=True, indent=2))}</pre>' if package_acceptance_summary else '<p class="muted">No package acceptance plan recorded.</p>')
+        + '<p>V3.1 package creation is separate from later full-package deployment. AR/CD pair results do not establish package acceptance.</p>'
+        + '</details>'
+    )
+    return (
+        '<section class="panel" id="deployment-planning" aria-labelledby="deployment-planning-heading">'
+        '<h2 id="deployment-planning-heading">Deployment scope and approval status '
+        '<span class="flow-mode">Informational snapshot · no write authorization</span></h2>'
+        '<div class="planning-summary-grid">'
+        f'<div class="planning-summary-card"><strong>Profile / route</strong><span>{_text(route_summary)}</span></div>'
+        f'<div class="planning-summary-card"><strong>Recorded target</strong><span>{_text(target_summary)}</span></div>'
+        f'<div class="planning-summary-card"><strong>Formal scope plan</strong><span>{_text(contract.get("status") or "not-recorded")}</span></div>'
+        f'<div class="planning-summary-card"><strong>Current package</strong><span>{_text(version)} · freshness {_text(freshness or "unknown")} · identity {_text(current_package_status or "unknown")}</span></div>'
+        f'<div class="planning-summary-card"><strong>Official local validation</strong><span>{_text(validation_summary.get("display") or "Not recorded")}</span></div>'
+        f'<div class="planning-summary-card"><strong>Advance planning consent</strong><span>{_text(consent_status_label)} · {_text(consent_scope_text)}</span></div>'
+        '<div class="planning-summary-card"><strong>Exact-scope write approval</strong><span>Not recorded. Required immediately before each environment write.</span></div>'
+        '</div>'
+        + deployment_summary
+        + '<p class="muted">A missing formal plan is not evidence that no run target exists. The setup station shows only persisted target/profile data; it never runs doctor, authentication, discovery, or network checks.</p>'
+        + '<div class="planning-layout">'
+        + '<section class="planning-card" aria-labelledby="planning-target">'
+        + '<h3 id="planning-target">Target and run context</h3>'
+        + f'<p class="muted">{_text(target_fallback_text)}</p>'
+        + (f'<dl class="target-data">{"".join(f"<div><dt>{_text(key)}</dt><dd>{_text(value)}</dd></div>" for key, value in target.items())}</dl>' if target else '<p class="muted">No target details are recorded.</p>')
+        + f'<p><strong>Target source:</strong> {_text(target_source or "not recorded")}</p>'
+        + f'<p><strong>Plan status:</strong> {_text(contract.get("status") or "No formal plan recorded")}</p>'
+        + (f'<p><strong>Planning consent fingerprint:</strong> <code>{_text(consent.get("planSha256"))}</code></p>' if consent.get("planSha256") else "")
+        + '</section>'
+        + '<section class="planning-card" aria-labelledby="planning-source-summary">'
+        + '<h3 id="planning-source-summary">Source and selected scope</h3>'
+        + f'<p>{_text(inventory_status)}</p>'
+        + (source_inventory_html if isinstance(source_inventory, dict) and source_inventory else "")
+        + (f'<p><strong>Detection scope:</strong> {_text(" · ".join(detection_scope_items))}</p>' if detection_scope_items else "")
+        + (cap_html if cap_html else "")
+        + scope_details
+        + '</section></div>'
+        + '<section class="planning-card planning-inventory" aria-labelledby="package-resource-inventory">'
+        + '<h3 id="package-resource-inventory">Package resource inventory</h3>'
+        + '<p class="muted">Candidate package contents are inventory, not a selected or approved deployment scope. Resource type/API columns retain readable widths; scroll this table horizontally on narrow screens.</p>'
+        + '<div class="planning-table-scroll" role="region" aria-label="Horizontally scrollable package resource inventory" tabindex="0">'
+        + '<table class="resource-inventory"><thead><tr><th scope="col">Resource type</th><th scope="col">API version</th><th scope="col">Count</th><th scope="col">Source form</th><th scope="col">Extension</th></tr></thead><tbody>'
+        + "".join(rows)
+        + '</tbody></table></div></section>'
+        + '<section class="planning-card" aria-labelledby="deployment-components-heading">'
+        + '<h3 id="deployment-components-heading">Component plans and advance consent</h3>'
+        + f'<p>{_text(component_consent_note)}</p>'
+        + '<div class="component-plan-grid">'
+        + ("".join(component_markup) if component_markup else '<p class="muted">No component plans are recorded. Conditional provisioning is not approval.</p>')
+        + '</div>'
+        + (f'<p><strong>Consent resource types:</strong> {_text(", ".join(consent_types))}</p>' if consent_status == "approved" and consent_types else "")
+        + (f'<p><strong>Approved max additional detections:</strong> {_text(consent_max_additional)}</p>' if consent_status == "approved" and consent_max_additional is not None else "")
+        + (f'<details class="planning-details"><summary>Approved package flags and conditional selections</summary><pre>{_text(json.dumps({"packageFlags": consent_flags, "conditionalSelections": consent.get("conditionalSelections")}, sort_keys=True, indent=2))}</pre></details>' if consent_status == "approved" else "")
+        + package_default_details + dcr_details + package_acceptance_details
+        + '<p class="muted">No cleanup, deletion, retention change, RBAC assignment, enablement, or recurring job is implied by these plans. Exact-scope approval and readiness are separate from advance consent.</p>'
+        + '</section>'
+        + hash_details
+        + '</section>'
+    )
 def render_dashboard(report: dict[str, Any]) -> str:
     workflow = report.get("workflow") or {}
     candidates = review_candidates(report)
@@ -923,7 +2282,9 @@ def render_dashboard(report: dict[str, Any]) -> str:
         f"<script>{THEME_SCRIPT}</script><style>{STYLE}</style></head><body><main>"
         f'<h1>{_text(report["solution"])} migration report</h1>'
         f'<p class="muted">Generated {_text(report.get("generatedAt"))} · Offline report · No environment writes</p>'
+        + _flow_html(report)
         + scope_notice
+        + _deployment_planning_html(report)
         + _findings_chart_html(report["rules"])
         + _run_html(report)
         + '<section class="panel" aria-labelledby="overview"><h2 id="overview">Current artifact overview</h2>'

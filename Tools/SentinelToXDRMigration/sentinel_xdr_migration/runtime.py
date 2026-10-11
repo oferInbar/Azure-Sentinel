@@ -39,11 +39,13 @@ PROVIDER_PLATFORMS = {
     "graph": "Microsoft Defender XDR Advanced Hunting",
     "triage-mcp": "Microsoft Sentinel Triage MCP",
     "log-analytics-cli": "Microsoft Sentinel Log Analytics",
+    "azure-monitor-sdk": "Microsoft Sentinel Log Analytics (Azure Monitor Query SDK)",
 }
 PROVIDER_QUERY_SURFACES = {
     "graph": "defender-advanced-hunting",
     "triage-mcp": "microsoft-sentinel-triage",
     "log-analytics-cli": "log-analytics-workspace",
+    "azure-monitor-sdk": "log-analytics-workspace",
 }
 SUPPORTED_EXTERNAL_PROVIDERS = frozenset(
     provider for provider in PROVIDER_PLATFORMS if provider != "graph"
@@ -88,6 +90,7 @@ def _write_runtime_artifacts(
     table_availability: dict[str, Any] | None = None,
     provider_fallback: dict[str, Any] | None = None,
     provider_failure: dict[str, Any] | None = None,
+    family_complete: bool | None = None,
 ) -> dict[str, Any]:
     output = report_directory(root, create=True)
     summary = {
@@ -104,6 +107,8 @@ def _write_runtime_artifacts(
         "providerFallback": provider_fallback,
         "results": results,
     }
+    if family_complete is not None:
+        summary["familyComplete"] = family_complete
     if provider_failure:
         summary["providerFailure"] = provider_failure
     json_path = output / f"runtime-validation.{provider}.json"
@@ -166,7 +171,7 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
         for name, path in paths.items()
     }
     source_reports = []
-    for provider in ("triage-mcp", "log-analytics-cli"):
+    for provider in ("triage-mcp", "azure-monitor-sdk", "log-analytics-cli"):
         report_path = report_directory(root) / f"runtime-validation.{provider}.json"
         if report_path.is_file():
             source_reports.append((provider, report_path))
@@ -222,7 +227,39 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
     source_passed = False
     source_provider_used = None
     source_issues: list[str] = []
-    for provider, report_path in source_reports:
+    available_source_reports = [
+        (provider, report_path)
+        for provider, report_path in source_reports
+        if report_path.is_file()
+    ]
+    for index, (provider, report_path) in enumerate(available_source_reports):
+        if index:
+            previous_provider, previous_path = available_source_reports[0]
+            try:
+                previous_report = json.loads(previous_path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                break
+            if (
+                previous_provider != "triage-mcp"
+                or not isinstance(previous_report, dict)
+                or not isinstance(previous_report.get("providerFailure"), dict)
+            ):
+                break
+            try:
+                fallback_report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                break
+            proof = fallback_report.get("providerFallback") if isinstance(fallback_report, dict) else None
+            if (
+                not isinstance(proof, dict)
+                or proof.get("mcpProvider") != "triage-mcp"
+                or proof.get("fallbackProvider") != provider
+                or proof.get("batchComplete") is not True
+                or proof.get("permissionsVerified") is not True
+                or proof.get("kqlError") is not False
+            ):
+                continue
+        current_failures_before = len(current_query_failures)
         passed, family_issues = inspect_family(
             provider,
             report_path,
@@ -236,6 +273,18 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
             source_provider_used = provider
             break
         source_issues.extend(family_issues)
+        if len(current_query_failures) > current_failures_before:
+            break
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            break
+        if (
+            provider != "triage-mcp"
+            or not isinstance(report, dict)
+            or not isinstance(report.get("providerFailure"), dict)
+        ):
+            break
     if not source_passed:
         issues.extend(source_issues or ["no Sentinel runtime validation report is available"])
 
@@ -617,12 +666,180 @@ def validate_advanced_hunting(
     )
 
 
+def validate_sentinel_sdk(
+    solution: str | Path,
+    *,
+    target: dict[str, str],
+    request_timeout_seconds: int = 90,
+    family_timeout_seconds: int = 30 * 60,
+    provider_gap_evidence: str | Path | None = None,
+    _credential_factory=None,
+    _client_factory=None,
+    _scope_verifier=None,
+    _monotonic=None,
+    _sleep=None,
+) -> dict[str, Any]:
+    """Run the complete current Sentinel source-query family with Azure Monitor SDK."""
+    from .content_paths import content_path
+    from .converter import analytic_rule_files, solution_paths, xdr_detection_files
+    from .logs_query import (
+        DEFAULT_FAMILY_TIMEOUT_SECONDS,
+        DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        azure_cli_credential,
+        execute_workspace_query,
+        logs_query_client,
+        query_family,
+        verify_azure_cli_target,
+    )
+
+    root, analytic, output = solution_paths(solution)
+    provider = "azure-monitor-sdk"
+    provider_fallback = _load_provider_fallback(
+        provider_gap_evidence,
+        query_family="sentinel",
+        fallback_provider=provider,
+    )
+    sources = analytic_rule_files(root)
+    if not sources:
+        raise ValueError("complete Sentinel source-query inventory is empty; no SDK validation report was written")
+
+    source_by_path: dict[str, tuple[Path, str, str]] = {}
+    for source_path in sources:
+        relative = source_path.relative_to(analytic).as_posix()
+        with source_path.open(encoding="utf-8-sig") as handle:
+            source = yaml.safe_load(handle)
+        if not isinstance(source, dict) or not isinstance(source.get("query"), str) or not source["query"].strip():
+            raise ValueError(f"source Analytic Rule has no non-empty query: {source_path}")
+        query = source["query"]
+        source_by_path[relative] = (source_path, query, _query_sha256(query))
+
+    detections: dict[str, str] = {}
+    for detection_path in xdr_detection_files(output):
+        with detection_path.open(encoding="utf-8-sig") as handle:
+            detection = yaml.safe_load(handle)
+        source_ref = ((detection or {}).get("contentProvenance") or {}).get("source") or {}
+        source_path_ref = source_ref.get("path")
+        if not isinstance(source_path_ref, str):
+            raise ValueError(f"Custom Detection provenance is missing its source path: {detection_path}")
+        source_path = content_path(root, source_path_ref)
+        if not source_path.is_file():
+            raise ValueError(f"Custom Detection source Analytic Rule is missing: {source_path_ref}")
+        relative = source_path.relative_to(analytic).as_posix()
+        if relative not in source_by_path:
+            raise ValueError(f"Custom Detection provenance is outside the complete source inventory: {source_path_ref}")
+        if relative in detections.values():
+            raise ValueError(f"multiple Custom Detections refer to the same source Analytic Rule: {source_path_ref}")
+        current_hash = source_by_path[relative][2]
+        if source_ref.get("querySha256") != current_hash:
+            raise ValueError(f"Custom Detection provenance has a stale source-query hash: {source_path_ref}")
+        detections[detection_path.relative_to(output).as_posix()] = relative
+
+    if set(detections.values()) != set(source_by_path):
+        raise ValueError(
+            "SDK validation requires the complete source inventory to map one-to-one to "
+            "generated detections "
+            f"(missing={sorted(set(source_by_path) - set(detections.values()))}, "
+            f"extra={sorted(set(detections.values()) - set(source_by_path))})"
+        )
+    queries = [
+        {
+            "detection": detection,
+            "query": source_by_path[source_relative][1],
+            "querySha256": source_by_path[source_relative][2],
+        }
+        for detection, source_relative in sorted(detections.items())
+    ]
+
+    results: list[dict[str, Any]]
+    provider_failure = None
+    scope_verifier = _scope_verifier or verify_azure_cli_target
+    try:
+        scope_verifier(target)
+        credential_factory = _credential_factory or azure_cli_credential
+        client_factory = _client_factory or logs_query_client
+        credential = credential_factory(target)
+        client = client_factory(credential, retry_total=0)
+        try:
+            results = query_family(
+                client,
+                target["workspaceCustomerId"],
+                queries,
+                request_timeout_seconds=request_timeout_seconds,
+                family_timeout_seconds=(
+                    family_timeout_seconds
+                    if family_timeout_seconds is not None
+                    else DEFAULT_FAMILY_TIMEOUT_SECONDS
+                ),
+                monotonic=_monotonic or time.monotonic,
+                sleep=_sleep or time.sleep,
+            )
+            provider_failure_result = next(
+                (
+                    item for item in results
+                    if item.get("failureKind") not in {
+                        None, "query", "partial-response",
+                    }
+                ),
+                None,
+            )
+            if provider_failure_result:
+                provider_failure = {
+                    "failureKind": provider_failure_result.get("failureKind"),
+                    "statusCode": provider_failure_result.get("statusCode", 0),
+                    "error": provider_failure_result.get("error"),
+                    "errorDetails": provider_failure_result.get("errorDetails"),
+                }
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+    except Exception as exc:
+        if isinstance(exc, (ValueError, TypeError)):
+            raise
+        failure_kind = getattr(exc, "failure_kind", "provider")
+        provider_failure = {
+            "failureKind": failure_kind,
+            "statusCode": int(getattr(exc, "status_code", 0) or 0),
+            "error": str(exc)[:2000],
+            "errorDetails": str(getattr(exc, "error_details", exc))[:8000],
+        }
+        results = [
+            {
+                "detection": item["detection"],
+                "status": "not-run",
+                "valid": False,
+                "querySha256": item["querySha256"],
+                "statusCode": provider_failure["statusCode"],
+                "rowCount": 0,
+                "schema": [],
+                "error": "query was not dispatched because provider initialization or target authentication failed",
+                "errorDetails": provider_failure["error"],
+            }
+            for item in queries
+        ]
+    family_complete = len(results) == len(queries) and all(
+        item.get("status") != "not-run" for item in results
+    )
+    report = record_runtime_validation(
+        root,
+        provider=provider,
+        results_data=results,
+        provider_gap_evidence=provider_gap_evidence,
+        provider_failure=provider_failure,
+        family_complete=family_complete,
+    )
+    return report
+
+
 def record_runtime_validation(
     solution: str | Path,
     *,
     provider: str,
-    results_path: str | Path,
+    results_path: str | Path | None = None,
+    results_data: list[dict[str, Any]] | None = None,
     provider_gap_evidence: str | Path | None = None,
+    provider_failure: dict[str, Any] | None = None,
+    family_complete: bool | None = None,
 ) -> dict[str, Any]:
     if provider not in SUPPORTED_EXTERNAL_PROVIDERS:
         raise ValueError(
@@ -632,15 +849,20 @@ def record_runtime_validation(
     provider_fallback = _load_provider_fallback(
         provider_gap_evidence,
         query_family="sentinel",
-        fallback_provider="log-analytics-cli",
+        fallback_provider=provider,
     )
-    if provider_fallback and provider != "log-analytics-cli":
-        raise ValueError("Sentinel MCP fallback results must be recorded under log-analytics-cli")
+    if provider_fallback and provider != provider_fallback["fallbackProvider"]:
+        raise ValueError("Sentinel MCP fallback results must be recorded under the approved fallback provider")
     root = Path(solution).expanduser().resolve()
     output = root / "XDR Detections"
     detection_paths = {path.relative_to(output).as_posix(): path for path in _detection_files(output)}
     expected = set(detection_paths)
-    raw = json.loads(Path(results_path).expanduser().read_text(encoding="utf-8"))
+    if (results_path is None) == (results_data is None):
+        raise ValueError("provide exactly one of results_path or results_data")
+    raw = (
+        json.loads(Path(results_path).expanduser().read_text(encoding="utf-8"))
+        if results_path is not None else results_data
+    )
     entries = raw.get("results") if isinstance(raw, dict) else raw
     if not isinstance(entries, list):
         raise ValueError("runtime results must be a JSON list or an object containing results")
@@ -703,7 +925,7 @@ def record_runtime_validation(
                     "Sentinel validation query hash is stale; rerun the complete Sentinel "
                     "query family against the current source queries"
                 )
-        if status == "passed" and detection in detection_paths:
+        if status == "passed" and provider == "graph" and detection in detection_paths:
             document = yaml.safe_load(detection_paths[detection].read_text(encoding="utf-8-sig")) or {}
             details = (
                 ((document.get("properties") or {}).get("detectionAction") or {}).get("alertTemplate") or {}
@@ -717,8 +939,7 @@ def record_runtime_validation(
                     if binding_errors:
                         status = "failed"
                         error = "; ".join(binding_errors)
-        normalized.append(
-            {
+        normalized_entry = {
                 "detection": detection,
                 "status": status,
                 "valid": status == "passed",
@@ -729,12 +950,17 @@ def record_runtime_validation(
                 "error": error,
                 "errorDetails": entry.get("errorDetails"),
             }
-        )
+        for field in ("tables", "partialError", "failureKind", "attempts", "durationMs"):
+            if field in entry:
+                normalized_entry[field] = entry[field]
+        if entry.get("partial") is True:
+            normalized_entry["partial"] = True
+        normalized.append(normalized_entry)
 
-    if provider_fallback and any(item["status"] == "failed" for item in normalized):
+    if provider_fallback and any(item["status"] != "passed" for item in normalized):
         raise ValueError(
-            "provider fallback is not allowed when the fallback family contains a "
-            "KQL/runtime failure; retain the failure and do not relabel it as a provider gap"
+            "provider fallback is not allowed unless every fallback query completed "
+            "successfully; retain the failure and do not relabel it as a provider gap"
         )
 
     missing = sorted(expected - names)
@@ -747,5 +973,10 @@ def record_runtime_validation(
             details.append(f"unknown detections: {', '.join(unknown)}")
         raise ValueError("; ".join(details))
     return _write_runtime_artifacts(
-        root, provider, normalized, provider_fallback=provider_fallback,
+        root,
+        provider,
+        normalized,
+        provider_fallback=provider_fallback,
+        provider_failure=provider_failure,
+        family_complete=family_complete,
     )

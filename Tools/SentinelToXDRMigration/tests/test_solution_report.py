@@ -6,16 +6,209 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import yaml
 
 from sentinel_xdr_migration.converter import convert_solution
 from sentinel_xdr_migration.artifacts import report_directory
-from sentinel_xdr_migration.solution_report import build_solution_report
+from sentinel_xdr_migration.report_dashboard import _deployment_planning_html
+from sentinel_xdr_migration.solution_report import (
+    _package_resource_inventory,
+    _planning_summary,
+    _preflight_projection,
+    _selected_packaging_report,
+    build_solution_report,
+)
 from test_converter import RULE
 
 
 class SolutionReportTests(unittest.TestCase):
+    def test_selected_package_report_is_bound_to_current_workflow_attempt(self) -> None:
+        report_bytes = b"current package report"
+        report_hash = hashlib.sha256(report_bytes).hexdigest()
+        package_input_hash = "a" * 64
+        artifact_hashes = {
+            name: (value * 64)[:64]
+            for name, value in (
+                ("mainTemplate", "1"),
+                ("createUiDefinition", "2"),
+                ("testParameters", "3"),
+                ("zip", "4"),
+            )
+        }
+        attempt_id = "current-attempt"
+        selected_reference = "Logs/run/packaging.v3_1.current-attempt.json"
+        package_document = {
+            "packager": "V3.1",
+            "packageAttemptId": attempt_id,
+            "workflowRunId": "selected-run",
+            "packageArtifactsSha256": "b" * 64,
+            "packageInputs": {"after": {"sha256": package_input_hash}},
+            "packageArtifactHashes": artifact_hashes,
+        }
+        workflow = {
+            "runId": "selected-run",
+            "stages": {
+                "packaging": {
+                    "status": "passed",
+                    "artifacts": {
+                        "packageReport": selected_reference,
+                        "packageAttemptId": attempt_id,
+                        "packageReportSha256": report_hash,
+                    },
+                },
+            },
+            "packaging": {
+                "lastSuccessful": {
+                    "packageSucceeded": True,
+                    "attemptId": attempt_id,
+                    "packageReport": selected_reference,
+                    "packageReportSha256": report_hash,
+                    "packageArtifactsSha256": "b" * 64,
+                    "packageInputSha256": package_input_hash,
+                },
+            },
+        }
+        resolved = Mock()
+        resolved.resolve.return_value = Path("/selected-run/current-package.json")
+        resolved.read_bytes.return_value = report_bytes
+        with (
+            patch("sentinel_xdr_migration.solution_report.report_directory", return_value=Path("/selected-run/reports")),
+            patch("sentinel_xdr_migration.solution_report.resolve_artifact_reference", return_value=resolved),
+            patch("sentinel_xdr_migration.solution_report._read_run_json", return_value=package_document),
+        ):
+            selected, reference = _selected_packaging_report(Path("/selected-run"), workflow)
+        self.assertEqual(package_document, selected)
+        self.assertEqual(selected_reference, reference)
+
+        workflow["packaging"]["lastSuccessful"]["packageReport"] = "Logs/run/packaging.v3_1.json"
+        with (
+            patch("sentinel_xdr_migration.solution_report.report_directory", return_value=Path("/selected-run/reports")),
+            patch("sentinel_xdr_migration.solution_report.resolve_artifact_reference", return_value=resolved),
+            patch("sentinel_xdr_migration.solution_report._read_run_json", return_value=package_document),
+        ):
+            selected, reference = _selected_packaging_report(Path("/selected-run"), workflow)
+        self.assertEqual({}, selected)
+        self.assertIsNone(reference)
+
+    def test_planning_consent_requires_current_bound_plan_and_preserves_component_scope(self) -> None:
+        digest = "a" * 64
+        contract = {
+            "schemaVersion": "1.0.0",
+            "status": "provisional",
+            "selectedProfile": "qualification",
+            "executionMode": "pairs",
+            "target": {"workspaceResourceId": "<script>alert(1)</script>"},
+            "planSha256": digest,
+            "components": {
+                "disabledRulePairValidation": {
+                    "planningConsent": {"status": "approved"},
+                    "resourceTypes": ["Microsoft.Security/detectionRules@2026-06-01-preview"],
+                    "selectedFlags": {"disabledOnly": True},
+                },
+                "mockTelemetryIngestion": {
+                    "planningConsent": {"status": "unknown"},
+                    "conditional": True,
+                },
+            },
+            "planningConsent": {
+                "status": "approved",
+                "planSha256": digest,
+                "componentKeys": ["disabledRulePairValidation"],
+                "resourceTypes": ["Microsoft.Security/detectionRules@2026-06-01-preview"],
+                "selectedFlags": {"disabledOnly": True},
+            },
+            "exactScopeWriteApproval": "not-recorded",
+            "readiness": "not-evaluated",
+            "deploymentEvidence": "not-recorded",
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            projected = _planning_summary(
+                Path(folder),
+                {},
+                {"packageFreshness": {"status": "current"}},
+                {"deploymentPlanning": contract},
+            )
+
+        self.assertEqual("provisional", projected["deploymentPlan"]["status"])
+        self.assertEqual("stale", projected["deploymentPlan"]["planningConsent"]["status"])
+        self.assertEqual("not-recorded", projected["deploymentPlan"]["exactScopeWriteApproval"])
+        self.assertEqual("pairs", projected["deploymentPlan"]["executionMode"])
+        self.assertEqual(
+            ["Microsoft.Security/detectionRules@2026-06-01-preview"],
+            projected["deploymentPlan"]["components"]["disabledRulePairValidation"]["resourceTypes"],
+        )
+        self.assertEqual(
+            "stale",
+            projected["deploymentPlan"]["components"]["mockTelemetryIngestion"]["planningConsent"],
+        )
+        html = _deployment_planning_html({"deploymentPlanning": projected})
+        self.assertIn("Qualification", html)
+        self.assertIn("disabledRulePairValidation", html)
+        self.assertIn("Microsoft.Security/detectionRules", html)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertNotIn("<script>alert(1)</script>", html)
+
+    def test_package_inventory_reads_nested_arrays_and_language_version_two_resources(self) -> None:
+        inventory = _package_resource_inventory({
+            "resources": {
+                "nested": {
+                    "type": "Microsoft.Resources/deployments",
+                    "properties": {
+                        "template": {
+                            "resources": [
+                                {"type": "Microsoft.Security/detectionRules@2026-06-01-preview"},
+                            ],
+                        },
+                    },
+                },
+                "alertRule": {
+                    "type": "Microsoft.SecurityInsights/alertRules",
+                    "apiVersion": "2024-03-01",
+                },
+            },
+        })
+        by_type = {item["type"]: item for item in inventory}
+        self.assertEqual("2026-06-01-preview", by_type["Microsoft.Security/detectionRules"]["apiVersion"])
+        self.assertEqual(
+            "Microsoft.Security/detectionRules@2026-06-01-preview",
+            by_type["Microsoft.Security/detectionRules"]["originalType"],
+        )
+        self.assertEqual("2024-03-01", by_type["Microsoft.SecurityInsights/alertRules"]["apiVersion"])
+        self.assertIn("languageVersion 2 resource dictionary", by_type["Microsoft.SecurityInsights/alertRules"]["sourceForms"])
+        self.assertIn("nested ARM resources array", by_type["Microsoft.Security/detectionRules"]["sourceForms"])
+
+    def test_preflight_projection_keeps_management_grant_separate_from_read_and_get(self) -> None:
+        projected = _preflight_projection({
+            "status": "ready",
+            "requiredManagementPermission": "CustomDetection.ReadWrite.All",
+            "managementPermissionGrant": {
+                "status": "missing",
+                "grantType": "delegated",
+                "claimType": "scp",
+                "permission": "CustomDetection.ReadWrite.All",
+                "credentialRequestScope": "graph-resource-default",
+            },
+            "deploymentReadiness": "action-required",
+            "authentication": {
+                "status": "acquired",
+                "tokenPermissionClaims": {"status": "present", "claimType": "scp"},
+            },
+            "permissions": {
+                "readAccess": "confirmed",
+                "writeAuthorization": "not-tested",
+                "effectiveRole": {"status": "unknown"},
+            },
+            "readChecks": [{"status": "confirmed", "httpStatus": 200}],
+        })
+        self.assertEqual("confirmed", projected["permissions"]["readAccess"])
+        self.assertEqual(200, projected["readChecks"][0]["httpStatus"])
+        self.assertEqual("missing", projected["managementPermissionGrant"]["status"])
+        self.assertEqual("action-required", projected["deploymentReadiness"])
+        self.assertEqual("unknown", projected["effectiveRoleStatus"])
+        self.assertEqual("scp", projected["tokenPermissionClaims"]["claimType"])
+
     def test_runtime_pass_is_blocked_when_current_advanced_hunting_query_hash_differs(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "Example"

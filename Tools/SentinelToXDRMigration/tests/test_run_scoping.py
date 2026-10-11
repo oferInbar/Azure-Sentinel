@@ -47,6 +47,9 @@ class RunScopingTests(unittest.TestCase):
         flat = reports_base(self.solution)
         path.unlink()
         (path.parent / RUN_MARKER).unlink()
+        remaining = {item.name for item in path.parent.iterdir()}
+        self.assertEqual(remaining, {".workflow-state.lock"})
+        (path.parent / ".workflow-state.lock").unlink()
         path.parent.rmdir()
         (flat / "workflow-state.json").write_text(json.dumps(document))
         (flat / "manifest.json").write_text(json.dumps({"converted": 18, "needsReview": 22}))

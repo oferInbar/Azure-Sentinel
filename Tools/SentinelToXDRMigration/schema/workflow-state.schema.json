@@ -19,7 +19,7 @@
       "description": "Stable run directory identity. Added when initializing or explicitly migrating legacy state; resumption must keep this value."
     },
     "schemaVersion": {
-      "const": "1.1.0"
+      "const": "1.2.0"
     },
     "solution": {
       "type": "string",
@@ -221,7 +221,9 @@
         "schemaVersion",
         "lastSuccessful",
         "lastConsumedAction",
-        "currentAttempt"
+        "currentAttempt",
+        "releaseActions",
+        "pendingReleaseAction"
       ],
       "properties": {
         "schemaVersion": {
@@ -305,6 +307,46 @@
                 "failure": {
                   "type": "string"
                 }
+              }
+            }
+          ]
+        },
+        "releaseActions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "versionBump",
+              "packageInputSha256",
+              "selectedAt",
+              "status"
+            ],
+            "properties": {
+              "versionBump": {"enum": ["patch", "minor", "major"]},
+              "packageInputSha256": {"$ref": "#/$defs/sha256"},
+              "selectedAt": {"type": "string", "format": "date-time"},
+              "status": {"enum": ["selected", "consumed"]},
+              "historicalEvidence": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "pendingReleaseAction": {
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["versionBump", "packageInputSha256", "selectedAt"],
+              "properties": {
+                "versionBump": {"enum": ["patch", "minor", "major"]},
+                "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                "selectedAt": {"type": "string", "format": "date-time"}
               }
             }
           ]

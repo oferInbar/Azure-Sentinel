@@ -26,6 +26,8 @@ from .budget import (
 )
 from .onboarding import configure_workspace, doctor, setup
 from .deployment import deploy_solution, setup_deployment_authentication
+from .deployment_planning import persist_deployment_plan, record_planning_consent
+from .graph_readiness import preflight_deployment
 from .analytic_deployment import deploy_analytic_rules
 from .alert_parity import (
     abort_alert_parity,
@@ -33,7 +35,11 @@ from .alert_parity import (
     start_alert_parity,
     start_alert_parity_batch,
 )
-from .runtime import record_runtime_validation, validate_advanced_hunting
+from .runtime import (
+    record_runtime_validation,
+    validate_advanced_hunting,
+    validate_sentinel_sdk,
+)
 from .solution_report import build_solution_report
 from .target_context import diagnose_target, repair_target, require_locked_target
 from .target_config import resolve_qualification_target
@@ -45,6 +51,7 @@ from .workflow import (
     next_workflow_stage,
     read_authoring_contract,
     package_workflow_v3_1,
+    plan_new_package_release,
     refresh_yolo_authoring,
     run_yolo_authoring,
     start_workflow_stage,
@@ -105,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         "validate",
         "validation-plan",
         "validate-advanced-hunting",
+        "validate-sentinel-sdk",
     ):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--solution", required=True)
@@ -119,6 +127,23 @@ def main(argv: list[str] | None = None) -> int:
             subparser.add_argument(
                 "--provider-gap-evidence",
                 help="JSON evidence for a complete Graph fallback after a Triage MCP provider failure.",
+            )
+        if command == "validate-sentinel-sdk":
+            subparser.add_argument(
+                "--request-timeout-seconds",
+                type=int,
+                default=90,
+                help="Maximum server/network timeout per Logs query (1-600 seconds).",
+            )
+            subparser.add_argument(
+                "--family-timeout-seconds",
+                type=int,
+                default=1800,
+                help="Maximum elapsed budget for this complete source-query family (1-21600 seconds).",
+            )
+            subparser.add_argument(
+                "--provider-gap-evidence",
+                help="JSON evidence for the complete Azure Monitor SDK fallback after a Triage MCP provider failure.",
             )
     setup_parser = subparsers.add_parser(
         "setup", help="Initialize the toolkit and optionally launch guided authentication."
@@ -180,6 +205,61 @@ def main(argv: list[str] | None = None) -> int:
         help="Create or update generated Custom Detections through Microsoft Graph beta.",
     )
     deployment.add_argument("--solution", required=True)
+    deployment_preflight = subparsers.add_parser(
+        "preflight-deployment",
+        help=(
+            "Run local Graph readiness plus independent read-only DCR, ingestion, "
+            "query, and deployment permission diagnostics."
+        ),
+    )
+    deployment_preflight.add_argument("--solution", required=True)
+    deployment_preflight.add_argument(
+        "--auth-method",
+        choices=["azure-cli", "device-code", "browser"],
+        help=(
+            "Use this existing cached credential method only; authentication "
+            "is never started by preflight."
+        ),
+    )
+    deployment_plan = subparsers.add_parser(
+        "plan-deployment",
+        help="Persist a deterministic local Qualification deployment-scope plan; performs no cloud calls.",
+    )
+    deployment_plan.add_argument("--solution", required=True)
+    planning_consent = subparsers.add_parser(
+        "review-deployment-plan",
+        help="Record or decline component-specific planning consent bound to the current plan hash; authorizes no writes.",
+    )
+    planning_consent.add_argument("--solution", required=True)
+    planning_consent.add_argument("--expected-plan-sha256", required=True)
+    planning_consent.add_argument("--actor", required=True)
+    planning_consent.add_argument(
+        "--approve-component",
+        action="append",
+        choices=[
+            "sentinelAlertRules",
+            "xdrCustomDetections",
+            "fullPackageAcceptance",
+            "mockTelemetryIngestion",
+            "fallbackDcr",
+            "fallbackDce",
+            "customTableCreate",
+        ],
+        default=[],
+    )
+    planning_consent.add_argument("--decline", action="store_true")
+    planning_consent.add_argument("--reason")
+    planning_consent.add_argument("--max-additional-custom-detections", type=int)
+    planning_consent.add_argument(
+        "--package-flag",
+        action="append",
+        help="Explicit package selection as NAME=true|false; repeat for every package flag.",
+    )
+    planning_consent.add_argument(
+        "--dce-selected",
+        action="store_true",
+        help="Explicitly select the conditional DCE component for this plan.",
+    )
     analytic_deployment = subparsers.add_parser(
         "deploy-analytic-rules",
         help="Create or update source Sentinel analytic rules through Azure Resource Manager.",
@@ -244,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     record_parser.add_argument(
         "--provider",
         required=True,
-        choices=["triage-mcp", "log-analytics-cli"],
+        choices=["triage-mcp", "azure-monitor-sdk", "log-analytics-cli"],
     )
     record_parser.add_argument("--results", required=True)
     record_parser.add_argument(
@@ -257,9 +337,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     package_v3_1.add_argument("--solution", required=True)
     package_v3_1.add_argument(
+        "--toolkit-root",
+        help=(
+            "Repository root containing the V3.1 packaging toolkit. Defaults to the "
+            "solution's repository root."
+        ),
+    )
+    package_v3_1.add_argument(
         "--version-bump",
         required=True,
         choices=["none", "patch", "minor", "major"],
+    )
+    package_release = subparsers.add_parser(
+        "workflow-plan-package-release",
+        help="Explicitly select a new V3.1 release action for changed package inputs.",
+    )
+    package_release.add_argument("--solution", required=True)
+    package_release.add_argument("--version-bump", required=True, choices=["patch", "minor", "major"])
+    package_release.add_argument(
+        "--expected-package-input-sha256",
+        required=True,
+        help="Exact current package-input SHA-256 reported by workflow-status.",
     )
     workflow_init = subparsers.add_parser(
         "workflow-init",
@@ -400,6 +498,11 @@ def main(argv: list[str] | None = None) -> int:
     for subparser in subparsers.choices.values():
         if any(action.dest == "solution" for action in subparser._actions):
             subparser.add_argument("--run-id", help="Select an existing run; required when multiple runs exist.")
+    for action in subparsers.choices["workflow-plan-package-release"]._actions:
+        if action.dest == "run_id":
+            action.required = True
+            action.help = "Select the exact existing workflow run to update."
+            break
     subparsers.choices["workflow-init"].add_argument(
         "--new-run", action="store_true", help="Create an isolated new workflow instead of resuming."
     )
@@ -411,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "solution", None):
             selection = select_run(args.solution, args.run_id)
         # Read-only status and migration planning must not initialize or change artifacts.
-        if args.command not in {"migrate-reports", "workflow-status", "workflow-next", "workflow-init", "workflow-runs", "export-evidence"} and not (
+        if args.command not in {"migrate-reports", "workflow-status", "workflow-next", "workflow-init", "workflow-runs", "export-evidence", "preflight-deployment", "plan-deployment", "review-deployment-plan"} and not (
             args.command == "convert" and args.rule_id
         ):
             configure_logging(getattr(args, "solution", None))
@@ -468,6 +571,30 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "deploy":
             result = deploy_solution(args.solution)
+        elif args.command == "preflight-deployment":
+            result = preflight_deployment(
+                args.solution,
+                auth_method=args.auth_method,
+            )
+        elif args.command == "plan-deployment":
+            result = persist_deployment_plan(args.solution)
+        elif args.command == "review-deployment-plan":
+            package_flags: dict[str, bool] = {}
+            for name, value in _key_values(args.package_flag).items():
+                if value.casefold() not in {"true", "false"}:
+                    raise ValueError("--package-flag values must be true or false")
+                package_flags[name] = value.casefold() == "true"
+            result = record_planning_consent(
+                args.solution,
+                expected_plan_sha256=args.expected_plan_sha256,
+                actor=args.actor,
+                approved_components=args.approve_component,
+                declined=args.decline,
+                reason=args.reason,
+                max_additional_custom_detections=args.max_additional_custom_detections,
+                package_flags=package_flags,
+                dce_selected=args.dce_selected,
+            )
         elif args.command == "deploy-analytic-rules":
             result = deploy_analytic_rules(
                 args.solution,
@@ -512,12 +639,23 @@ def main(argv: list[str] | None = None) -> int:
                 result = package_workflow_v3_1(
                     args.solution,
                     requested_version_bump=args.version_bump,
+                    toolkit_root=args.toolkit_root,
                 )
             else:
                 raise ValueError(
                     "V3.1 package builds require a persisted workflow and campaign budget; "
                     "run workflow-init before packaging"
                 )
+        elif args.command == "workflow-plan-package-release":
+            if not args.run_id:
+                raise ValueError(
+                    "workflow-plan-package-release requires an explicit --run-id"
+                )
+            result = plan_new_package_release(
+                args.solution,
+                version_bump=args.version_bump,
+                expected_package_input_sha256=args.expected_package_input_sha256,
+            )
         elif args.command == "inspect":
             result = inspect_solution(args.solution)
         elif args.command == "convert":
@@ -543,6 +681,15 @@ def main(argv: list[str] | None = None) -> int:
             result = validate_advanced_hunting(
                 args.solution,
                 tenant_id=target["tenantId"] if target else None,
+                provider_gap_evidence=args.provider_gap_evidence,
+            )
+        elif args.command == "validate-sentinel-sdk":
+            target = require_locked_target(args.solution)
+            result = validate_sentinel_sdk(
+                args.solution,
+                target=target,
+                request_timeout_seconds=args.request_timeout_seconds,
+                family_timeout_seconds=args.family_timeout_seconds,
                 provider_gap_evidence=args.provider_gap_evidence,
             )
         elif args.command == "record-runtime-validation":
@@ -686,6 +833,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.command == "validate-advanced-hunting" and (
         result["invalid"] or result["blocked"]
+    ):
+        return 1
+    if args.command == "validate-sentinel-sdk" and (
+        result["invalid"] or result["blocked"] or not result.get("familyComplete", False)
     ):
         return 1
     if args.command == "record-runtime-validation" and (

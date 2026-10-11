@@ -184,3 +184,59 @@ class ReportReviewBrowserTests(unittest.TestCase):
         self.page.locator("#preview-decisions").click()
         self.assertIn("Import the existing configuration", self.page.locator("#review-feedback").inner_text())
         self.assertTrue(self.page.locator("#download-config").is_disabled())
+
+    def test_migration_flow_adapts_to_recorded_profile_and_station_evidence_links(self) -> None:
+        self.assertEqual(
+            self.page.locator("[data-flow-station]").evaluate_all(
+                "nodes => nodes.map(node => node.dataset.flowStation)"
+            ),
+            ["discovery", "conversion", "validation", "packaging", "report", "publication"],
+        )
+        validation = self.page.locator('[data-flow-station="validation"]')
+        validation.focus()
+        self.page.keyboard.press("Enter")
+        self.assertEqual(self.page.evaluate("location.hash"), "#flow-evidence-validation")
+        self.assertIn("Mandatory structural validation", self.page.locator("#flow-evidence-validation").inner_text())
+
+        self.value["workflow"].update(
+            profile="qualification",
+            profileSelectionConfirmed=True,
+            status="blocked",
+            packageFreshness={"status": "current", "reason": None},
+        )
+        self.value["workflow"]["stages"].update({
+            "packaging": {"status": "passed"},
+            "deployment": {"status": "blocked", "message": "Local suite failed."},
+            "mockIngestion": {"status": "pending"},
+            "alertParity": {"status": "pending"},
+        })
+        self.page.set_content(render_dashboard(self.value))
+        self.assertIn("Qualification · lab validation", self.page.locator("#flow-heading").inner_text())
+        self.assertEqual(
+            self.page.locator("[data-flow-station]").evaluate_all(
+                "nodes => nodes.map(node => node.dataset.flowStation)"
+            ),
+            [
+                "discovery", "conversion", "validation", "packaging",
+                "validationSuite", "preflight", "deployment", "mockIngestion",
+                "queryValidation", "alertParity", "packageAcceptance",
+                "report", "publication",
+            ],
+        )
+        deployment = self.page.locator('[data-flow-station="deployment"]')
+        deployment.focus()
+        self.page.keyboard.press("Enter")
+        self.assertEqual(self.page.evaluate("location.hash"), "#flow-evidence-deployment")
+        self.assertIn("Local suite failed.", self.page.locator("#flow-evidence-deployment").inner_text())
+        self.assertIn("Blocked", self.page.locator("#flow-evidence-deployment").inner_text())
+        self.page.locator('[data-flow-station="publication"]').click()
+        self.assertEqual(self.page.evaluate("location.hash"), "#flow-evidence-publication")
+        self.assertIn("Not tracked", self.page.locator("#flow-evidence-publication").inner_text())
+        self.assertIn("does not prove publication", self.page.locator("#flow-evidence-publication").inner_text())
+        self.assertTrue(self.page.locator('[data-flow-station="packageAcceptance"]').is_visible())
+        self.assertIn(
+            "full-package deployment and read-back are separate",
+            self.page.locator("#flow-evidence-packageAcceptance").inner_text().lower(),
+        )
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"))

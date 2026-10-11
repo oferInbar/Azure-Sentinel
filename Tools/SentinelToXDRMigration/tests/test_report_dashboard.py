@@ -6,7 +6,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 import unittest
 
-from sentinel_xdr_migration.report_dashboard import _chart_bucket, _findings, _findings_chart_html, _rule_status, _tactic_details, render_dashboard
+from sentinel_xdr_migration.report_dashboard import _chart_bucket, _findings, _findings_chart_html, _flow_stage, _rule_status, _safe_local_href, _tactic_details, render_dashboard
 
 
 def rule(name: str = "Example") -> dict:
@@ -30,7 +30,8 @@ def report(*rules: dict) -> dict:
         "solution": "Example solution", "generatedAt": "2026-10-07",
         "summary": {"converted": len(rules), "needsReview": 0, "deploymentReady": len(rules)},
         "workflow": {
-            "runId": "example-run", "profile": "authoring", "status": "blocked",
+            "runId": "example-run", "profile": "authoring",
+            "profileSelectionConfirmed": True, "status": "blocked",
             "workspaceConfigured": False,
             "stages": {
                 "conversion": {"status": "blocked", "message": "Semantic decisions remain; runtime not attempted.", "evidence": []},
@@ -49,6 +50,10 @@ class Structure(HTMLParser):
         self.controls: list[str] = []
         self.scripts = 0
         self.statuses: list[str] = []
+        self.flow_stations: list[str] = []
+        self.flow_station_links: list[tuple[str, str, str]] = []
+        self.flow_href: str | None = None
+        self.flow_label: str | None = None
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
         values = dict(attrs)
@@ -60,6 +65,21 @@ class Structure(HTMLParser):
             self.scripts += 1
         if tag == "tbody" and values.get("class") == "rule":
             self.statuses.append(values["data-status"])
+        if values.get("data-flow-station"):
+            self.flow_stations.append(values["data-flow-station"])
+            if self.flow_href is not None:
+                self.flow_station_links.append((
+                    values["data-flow-station"], self.flow_href,
+                    self.flow_label or "",
+                ))
+        if tag == "a" and "flow-link" in values.get("class", "").split():
+            self.flow_href = values.get("href")
+            self.flow_label = values.get("aria-label")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self.flow_href is not None:
+            self.flow_href = None
+            self.flow_label = None
 
 
 class ReportDashboardTests(unittest.TestCase):
@@ -85,7 +105,7 @@ class ReportDashboardTests(unittest.TestCase):
             self.assertIn(text, html)
         self.assertNotIn("Deployment ready", html)
         self.assertNotIn("AR rows: None", html)
-        self.assertEqual(html.count("Semantic decisions remain; runtime not attempted."), 1)
+        self.assertEqual(html.count("Semantic decisions remain; runtime not attempted."), 2)
         self.assertNotIn("deployment: not-run", html)
 
     def test_status_precedence_and_recorded_gate(self) -> None:
@@ -408,6 +428,305 @@ class ReportDashboardTests(unittest.TestCase):
         self.assertEqual(len(override["techniques"]), 2)
         self.assertTrue(all(value.startswith("<") for value in override["techniques"]))
         self.assertIn("illustrative, not ready to apply", html)
+
+    def test_authoring_flow_is_compact_and_never_omits_mandatory_validation(self) -> None:
+        value = report(rule())
+        html = render_dashboard(value)
+        parser = Structure()
+        parser.feed(html)
+        self.assertIn("Authoring · no lab qualification", html)
+        self.assertIn("mandatory structural validation and packaging remain on this route", html)
+        self.assertIn('viewBox="0 0 1160 245"', html)
+        self.assertIn("Mandatory structural validation and recorded runtime checks.", html)
+        self.assertNotIn('data-flow-station="deployment"', html)
+        self.assertNotIn('data-flow-station="mockIngestion"', html)
+        self.assertNotIn('data-flow-station="alertParity"', html)
+        self.assertEqual(
+            parser.flow_stations,
+            ["setup", "discovery", "conversion", "validation", "packaging", "report", "publication"],
+        )
+        self.assertEqual(
+            [name for name, _, _ in parser.flow_station_links],
+            parser.flow_stations,
+        )
+        self.assertTrue(all(
+            href.startswith("#flow-evidence-") and label
+            for _, href, label in parser.flow_station_links
+        ))
+        self.assertTrue(all(
+            href[1:] in parser.ids for _, href, _ in parser.flow_station_links
+        ))
+        self.assertLess(html.index('class="panel subway-panel"'), html.index('id="deployment-planning"'))
+        self.assertLess(html.index('data-flow-station="setup"'), html.index('data-flow-station="discovery"'))
+        self.assertIn("Necessary setup / initial preflight", html)
+        self.assertIn("does not run doctor, authenticate, inspect auth caches, or make network calls", html)
+        self.assertIn('data-flow-station="validation"', html)
+        self.assertIn("Informational snapshot · no write authorization", html)
+        self.assertIn("Advance planning consent", html)
+        self.assertIn("Exact-scope write approval", html)
+
+    def test_planning_inventory_has_a_readable_scrolling_table_and_collapsed_hashes(self) -> None:
+        value = report(rule())
+        value["deploymentPlanning"] = {
+            "profile": "qualification",
+            "deploymentPlan": {
+                "selectedProfile": "qualification",
+                "executionMode": "pairs",
+                "status": "provisional",
+                "target": {"workspaceResourceId": "/subscriptions/example/workspaces/demo"},
+                "packageResourceInventory": [{
+                    "type": "Microsoft.Security/detectionRules",
+                    "apiVersion": "2026-06-01-preview",
+                    "count": 1,
+                    "sourceForms": ["languageVersion 2 resource dictionary"],
+                    "extensionResource": True,
+                }],
+                "planningConsent": {"status": "not-recorded"},
+                "exactScopeWriteApproval": "not-recorded",
+            },
+        }
+        html = render_dashboard(value)
+        self.assertIn("planning-summary-grid", html)
+        self.assertIn("planning-table-scroll", html)
+        self.assertIn("min-width: 940px", html)
+        self.assertIn("word-break: normal", html)
+        self.assertIn("Package hashes and plan provenance", html)
+        self.assertIn("Microsoft.Security/detectionRules", html)
+        self.assertIn("2026-06-01-preview", html)
+        self.assertIn("Qualification · direct AR/CD pairs first", html)
+        self.assertIn("/subscriptions/example/workspaces/demo", html)
+        self.assertLess(html.index('class="panel subway-panel"'), html.index('id="deployment-planning"'))
+
+    def test_non_consentable_planning_coverage_shows_status_and_reason_without_approval(self) -> None:
+        value = report(rule())
+        value["deploymentPlanning"] = {
+            "deploymentPlan": {
+                "components": {
+                    "controlledAlertParity": {
+                        "consentable": False,
+                        "status": "provisional",
+                        "advanceConsentSupported": False,
+                        "eligiblePairRuleIds": ["reviewed-rule-id"],
+                        "maximumRulePairCount": 2,
+                        "maximumEnableWriteRequests": 4,
+                        "maximumRestoreWriteRequests": 4,
+                        "maximumWriteRequestsForOneBoundedRun": 8,
+                        "timeWindow": {"status": "not-recorded"},
+                        "planningConsent": "approved",
+                    },
+                    "ownedResourceCleanup": {
+                        "consentable": False,
+                        "status": "unsupported",
+                        "advanceConsentSupported": False,
+                        "deleteCap": 0,
+                        "resourceIds": [],
+                        "resourceTypes": [],
+                        "ownershipEvidence": "not-recorded",
+                        "existingResourceDeletionAllowed": False,
+                        "unownedResourceDeletionAllowed": False,
+                    },
+                },
+            },
+        }
+        html = render_dashboard(value)
+        parity_card = html.split("<h4>controlledAlertParity</h4>", 1)[1].split("</section>", 1)[0]
+        cleanup_card = html.split("<h4>ownedResourceCleanup</h4>", 1)[1].split("</section>", 1)[0]
+        self.assertIn("Coverage status:</strong> provisional", parity_card)
+        self.assertIn("not consentable and not deployment approval", parity_card)
+        self.assertIn("Advance consent support:</strong> No", parity_card)
+        self.assertIn("maximumWriteRequestsForOneBoundedRun", parity_card)
+        self.assertIn("not-recorded", parity_card)
+        self.assertIn("2", parity_card)
+        self.assertNotIn("Advance consent:</strong>", parity_card)
+        self.assertNotIn("approved", parity_card)
+        self.assertIn("Coverage status:</strong> unsupported", cleanup_card)
+        self.assertIn("deleteCap", cleanup_card)
+        self.assertIn("ownershipEvidence", cleanup_card)
+        self.assertIn("existingResourceDeletionAllowed", cleanup_card)
+        self.assertNotIn("Advance consent:</strong>", cleanup_card)
+
+    def test_qualification_flow_adds_preflight_before_deployment_and_preserves_failure(self) -> None:
+        value = report(rule())
+        value["workflow"].update(
+            profile="qualification",
+            profileSelectionConfirmed=True,
+            status="blocked",
+            packageFreshness={"status": "current", "reason": None},
+        )
+        value["workflow"]["stages"].update({
+            "packaging": {"status": "passed", "evidence": ["package-report.json"]},
+            "deployment": {
+                "status": "blocked", "message": "Local full-suite validation failed; Graph500011.",
+                "evidence": ["preflight-report.json"], "attempts": 1,
+                "startedAt": "2026-10-11T10:00:00+00:00",
+                "completedAt": "2026-10-11T10:00:02+00:00",
+            },
+            "mockIngestion": {"status": "pending"},
+            "alertParity": {"status": "pending"},
+        })
+        html = render_dashboard(value)
+        parser = Structure()
+        parser.feed(html)
+        self.assertIn("Qualification · lab validation", html)
+        self.assertIn("Recorded workflow status:</strong> Blocked", html)
+        self.assertIn("Local full-suite validation failed; Graph500011.", html)
+        self.assertIn("Package freshness:</strong> current", html)
+        self.assertIn("Elapsed: 2.0 seconds", html)
+        self.assertIn("Evidence is recorded but unavailable or non-portable", html)
+        self.assertIn('id="flow-evidence-preflight"', html)
+        self.assertLess(parser.flow_stations.index("packaging"), parser.flow_stations.index("deployment"))
+        self.assertLess(parser.flow_stations.index("packaging"), parser.flow_stations.index("preflight"))
+        self.assertLess(parser.flow_stations.index("packaging"), parser.flow_stations.index("validationSuite"))
+        self.assertLess(parser.flow_stations.index("validationSuite"), parser.flow_stations.index("preflight"))
+        self.assertLess(parser.flow_stations.index("preflight"), parser.flow_stations.index("deployment"))
+        self.assertLess(parser.flow_stations.index("deployment"), parser.flow_stations.index("mockIngestion"))
+        self.assertLess(parser.flow_stations.index("mockIngestion"), parser.flow_stations.index("queryValidation"))
+        self.assertLess(parser.flow_stations.index("queryValidation"), parser.flow_stations.index("alertParity"))
+        self.assertLess(parser.flow_stations.index("alertParity"), parser.flow_stations.index("report"))
+        self.assertLess(parser.flow_stations.index("alertParity"), parser.flow_stations.index("packageAcceptance"))
+        self.assertLess(parser.flow_stations.index("packageAcceptance"), parser.flow_stations.index("report"))
+        self.assertLess(parser.flow_stations.index("report"), parser.flow_stations.index("publication"))
+        self.assertIn('class="flow-station state-blocked"', html)
+        self.assertIn('data-flow-station="preflight"', html)
+        self.assertIn("Graph preflight not recorded", html)
+        self.assertIn("Current full-suite result not recorded", html)
+        self.assertIn("Full-package deployment and read-back are separate", html)
+
+    def test_unknown_mode_is_not_inferred_and_attempted_qualification_failures_stay_visible(self) -> None:
+        value = report(rule())
+        value["workflow"].pop("profileSelectionConfirmed")
+        value["workflow"]["stages"]["deployment"] = {
+            "status": "failed", "message": "Recorded deployment failure"
+        }
+        html = render_dashboard(value)
+        self.assertIn("Mode not recorded · qualification evidence present", html)
+        self.assertNotIn("Authoring · no lab qualification", html)
+        self.assertIn("Recorded deployment failure", html)
+        self.assertIn('data-flow-station="deployment"', html)
+        self.assertIn("class=\"subway qualification\"", html)
+
+    def test_legacy_missing_mode_and_stage_metadata_remain_unknown(self) -> None:
+        value = report(rule())
+        value["workflow"].pop("profileSelectionConfirmed")
+        value["workflow"].pop("profile")
+        value["workflow"].pop("stages")
+        html = render_dashboard(value)
+        self.assertIn("Mode not recorded", html)
+        self.assertNotIn("no lab qualification", html)
+        self.assertIn('class="flow-station state-unknown"', html)
+        self.assertIn("Evidence unavailable", html)
+        self.assertNotIn('data-flow-station="deployment"', html)
+
+    def test_stale_or_unverified_package_never_appears_completed(self) -> None:
+        value = report(rule())
+        value["workflow"]["stages"]["packaging"] = {"status": "passed"}
+        value["workflow"]["packageFreshness"] = {
+            "status": "stale", "reason": "package inputs changed",
+        }
+        html = render_dashboard(value)
+        self.assertIn("Stale package", html)
+        self.assertIn("Package freshness:</strong> stale", html)
+        self.assertIn("package inputs changed", html)
+        value["workflow"].pop("packageFreshness")
+        html = render_dashboard(value)
+        self.assertIn("Freshness unverified", html)
+
+    def test_flow_statuses_keep_running_unknown_and_recorded_details_distinct(self) -> None:
+        running = _flow_stage({
+            "status": "running", "attempts": 2,
+            "startedAt": "2026-10-11T10:00:00+00:00",
+            "updatedAt": "2026-10-11T10:01:00+00:00",
+            "evidence": ["stage-evidence.json"],
+        })
+        self.assertEqual(running["state"], "running")
+        self.assertEqual(running["display"], "In progress")
+        self.assertEqual(running["attempts"], "2")
+        self.assertEqual(running["evidence"], ["stage-evidence.json"])
+        self.assertEqual(running["timing"], "Started: 2026-10-11T10:00:00+00:00")
+        self.assertEqual(_flow_stage({"status": "unrecognized"})["state"], "unknown")
+        self.assertEqual(_flow_stage({"status": "notRequired"})["display"], "Not required")
+
+    def test_flow_is_data_driven_and_escapes_evidence_without_run_specific_facts(self) -> None:
+        value = report(rule())
+        hostile = '</script><img src=x onerror="alert(1)">'
+        value["workflow"]["stages"]["conversion"].update(
+            status="running", message=hostile, evidence=[hostile]
+        )
+        html = render_dashboard(value)
+        self.assertNotIn(hostile, html)
+        self.assertIn("&lt;/script&gt;&lt;img", html)
+        self.assertNotIn("Cisco", html)
+        self.assertNotIn("3.1.1", html)
+        self.assertIn('data-flow-station="conversion"', html)
+
+    def test_preflight_details_use_persisted_checks_without_claiming_write_approval(self) -> None:
+        value = report(rule())
+        value["qualificationPreflight"] = {
+            "status": "blocked",
+            "graphRecorded": True,
+            "authentication": {
+                "status": "acquired", "method": "azure-cli",
+                "requestedScope": "graph-resource-default", "tenantMatch": "unknown",
+            },
+            "permissions": {
+                "readAccess": "unknown", "writeScopeInToken": "unknown",
+                "consent": "unknown", "writeAuthorization": "not-tested",
+            },
+            "requiredManagementPermission": "CustomDetection.ReadWrite.All",
+            "managementPermissionGrant": {
+                "status": "missing", "grantType": "delegated",
+                "claimType": "scp", "permission": "CustomDetection.ReadWrite.All",
+                "credentialRequestScope": "graph-resource-default",
+            },
+            "deploymentReadiness": "action-required",
+            "effectiveRoleStatus": "unknown",
+            "tokenPermissionClaims": {"status": "present", "claimType": "scp"},
+            "readChecks": [{"status": "blocked", "httpStatus": 500}],
+            "dcr": {
+                "status": "action-required", "authenticationStatus": "unavailable",
+                "targetVerificationStatus": "not-checked", "localReadinessStatus": "ready",
+                "workspaceQueryPermissionStatus": "unknown", "contractCount": 1,
+            },
+        }
+        html = render_dashboard(value)
+        self.assertIn('data-flow-station="preflight"', html)
+        self.assertIn('class="flow-station state-blocked"', html)
+        self.assertIn("Selected cached-auth method: azure-cli", html)
+        self.assertIn("Exact-rule GET checks: blocked · 500", html)
+        self.assertIn("DCR preflight: action-required", html)
+        self.assertIn("Required management permission: CustomDetection.ReadWrite.All", html)
+        self.assertIn("Required write-grant status: missing", html)
+        self.assertIn("Deployment readiness assessment: action-required", html)
+        self.assertIn("Effective management role: unknown", html)
+        self.assertIn("Read access: unknown", html)
+        self.assertIn("Preflight is diagnostic only", html)
+        self.assertIn("not deployment or write approval", html.lower())
+        self.assertIn("Query-permission preflight is not semantic query parity", html)
+
+    def test_station_artifact_links_reject_untrusted_urls_and_preserve_informational_targets(self) -> None:
+        value = report(rule())
+        value["flowEvidence"] = {
+            "packaging": [
+                {"available": True, "label": "package & report.json", "href": "artifacts/package%20report.json"},
+                {"available": True, "label": "<img src=x onerror=alert(1)>", "href": "javascript:alert(1)"},
+                {"available": True, "label": "traversal", "href": "%2e%2e/private.json"},
+            ],
+        }
+        html = render_dashboard(value)
+        self.assertIn('href="artifacts/package%20report.json"', html)
+        self.assertIn("package &amp; report.json", html)
+        self.assertNotIn('href="javascript:', html)
+        self.assertNotIn('href="%2e%2e/private.json"', html)
+        self.assertNotIn("<img src=x onerror=alert(1)>", html)
+        self.assertNotIn("onerror=alert(1)", html)
+        for unsafe in (
+            "javascript:alert(1)", "data:text/html,hi", "//host/file",
+            "/etc/passwd", "../outside.json", "%2e%2e/outside.json",
+            "folder/%5c%5cserver", "folder/%0aheader",
+        ):
+            self.assertIsNone(_safe_local_href(unsafe), unsafe)
+        for safe in ("evidence/check.json", "Reports/run/file%20name.json"):
+            self.assertEqual(safe, _safe_local_href(safe))
 
 
 if __name__ == "__main__":

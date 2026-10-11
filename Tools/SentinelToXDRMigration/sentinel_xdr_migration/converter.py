@@ -37,6 +37,11 @@ PREFIXED_SOURCE_ID_PATTERN = rf"xdr-{SOURCE_ID_PATTERN}"
 GRAPH_DETECTION_ID_PATTERN = r"[A-Za-z][A-Za-z0-9_-]{0,99}"
 DETECTION_API_VERSION = "2026-06-01-preview"
 ENTITY_CONFIRMATION_PREFIX = "Entity confirmation required:"
+BEST_EFFORT_ENTITY_REVIEW_PREFIX = "Best-effort entity mapping requires review:"
+NONBLOCKING_ENTITY_REVIEW_PREFIXES = (
+    ENTITY_CONFIRMATION_PREFIX,
+    BEST_EFFORT_ENTITY_REVIEW_PREFIX,
+)
 REQUIRED_ASSET_COLLECTIONS = frozenset({"hosts", "accounts", "mailboxes", "ips"})
 SUPPORTED_SEVERITIES = frozenset({"informational", "low", "medium", "high"})
 MITRE_CATALOG_PATH = (
@@ -1051,6 +1056,24 @@ def convert_entities(
                     f"nameColumn `{fields['nameColumn']}` and dnsDomainColumn `{fields['dnsDomainColumn']}`; "
                     "the query explicitly decomposes that same full name. No fullNameColumn is emitted"
                 )
+            elif (
+                entity_type == "Host"
+                and identifier == "FullName"
+                and source_fields.get(identifier)
+                and (columns is None or source_fields[identifier] in columns)
+            ):
+                full_name_column = source_fields[identifier]
+                candidate = fields.get("nameColumn")
+                if not candidate:
+                    candidate = full_name_column
+                    fields["nameColumn"] = candidate
+                warnings.append(
+                    f"{BEST_EFFORT_ENTITY_REVIEW_PREFIX} source Host.FullName column "
+                    f"`{full_name_column}` is provisionally represented by hosts.nameColumn "
+                    f"`{candidate}`; confirm that this column is the intended host identifier. "
+                    "The original value is also retained in customDetails when the query output "
+                    "binding is available; this assumption does not prove entity parity"
+                )
             elif entity_type == "Account" and identifier == "FullName" and source_fields.get(identifier) in (
                 fields.get("upnColumn"), fields.get("nameColumn") if _valid_account(fields) else None,
             ):
@@ -1302,6 +1325,12 @@ def _supplemental_custom_details(
                     f"{entity_type}.{identifier} value is not preserved: column `{column}` "
                     "is missing or unproven after projection. No invalid customDetails binding was added and KQL was not rewritten"
                 )
+                if entity_type == "Host" and identifier == "FullName":
+                    warnings.append(
+                        f"{BEST_EFFORT_ENTITY_REVIEW_PREFIX} Host.FullName column `{column}` "
+                        "is not available in the query output, so no supported host-name "
+                        "mapping or supplemental customDetails binding can be made"
+                    )
                 continue
             key = next((key for key, value in details.items() if value == column and isinstance(key, str)), None)
             if key is None:
@@ -1434,14 +1463,28 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
             mapping_warnings.append(
                 "entity mappings were resolved by the configured per-rule override"
             )
+            if any(
+                warning.startswith(BEST_EFFORT_ENTITY_REVIEW_PREFIX)
+                for warning in mapping_warnings
+            ):
+                mapping_warnings = [
+                    warning for warning in mapping_warnings
+                    if not warning.startswith(BEST_EFFORT_ENTITY_REVIEW_PREFIX)
+                ]
+                mapping_warnings.append(
+                    f"{BEST_EFFORT_ENTITY_REVIEW_PREFIX} the configured per-rule "
+                    "entityMappings override is retained; confirm its Host mapping "
+                    "against the source Host.FullName value, which is preserved in "
+                    "customDetails when its query output binding is available"
+                )
     else:
         informational.extend(entity_information)
     entity_review_reasons = [
         warning
         for warning in mapping_warnings
-        if warning.startswith(ENTITY_CONFIRMATION_PREFIX)
+        if warning.startswith(NONBLOCKING_ENTITY_REVIEW_PREFIXES)
     ]
-    if entity_review_reasons and REQUIRED_ASSET_COLLECTIONS.intersection(
+    if any(reason.startswith(ENTITY_CONFIRMATION_PREFIX) for reason in entity_review_reasons) and REQUIRED_ASSET_COLLECTIONS.intersection(
         mappings
     ) - {"accounts"}:
         mappings.pop("accounts", None)
@@ -1454,7 +1497,10 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
             "Unconfirmed generic Account.Name mapping was omitted because another "
             "required Host, Mailbox, or IP asset is available"
         )
-        entity_review_reasons = []
+        entity_review_reasons = [
+            reason for reason in entity_review_reasons
+            if not reason.startswith(ENTITY_CONFIRMATION_PREFIX)
+        ]
     warnings.extend(mapping_warnings)
     review_reasons.extend(entity_review_reasons)
     custom_details, supplemental_evidence, detail_warnings, detail_information, detail_errors = _supplemental_custom_details(
@@ -1463,6 +1509,10 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
     warnings.extend(detail_warnings)
     informational.extend(detail_information)
     errors.extend(detail_errors)
+    review_reasons.extend(
+        warning for warning in detail_warnings
+        if warning.startswith(BEST_EFFORT_ENTITY_REVIEW_PREFIX)
+    )
 
     source_tactics = deepcopy(doc.get("tactics", []))
     source_relevant = deepcopy(doc.get("relevantTechniques", []))
@@ -1559,7 +1609,7 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
     blocking_review_reasons = [
         reason
         for reason in review_reasons
-        if not reason.startswith(ENTITY_CONFIRMATION_PREFIX)
+        if not reason.startswith(NONBLOCKING_ENTITY_REVIEW_PREFIXES)
     ]
     status = "needsReview" if errors or blocking_review_reasons else "converted"
     relative_source = source.relative_to(solution_root).as_posix()

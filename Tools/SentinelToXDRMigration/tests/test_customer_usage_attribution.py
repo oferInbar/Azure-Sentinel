@@ -8,6 +8,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
+from sentinel_xdr_migration.packaging import V31_TOOLKIT_PATHS
+
 
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGER = ROOT / "Tools" / "Create-Azure-Sentinel-Solution"
@@ -121,13 +123,13 @@ class AttributionTests(unittest.TestCase):
         self.assertIn("Duplicate customer usage", result.stderr)
 
     def prepare_integration(self) -> Path:
+        for relative in V31_TOOLKIT_PATHS:
+            source = ROOT / relative
+            destination = self.repository / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
         tools = self.repository / "Tools" / "Create-Azure-Sentinel-Solution"
-        (tools / "V3").mkdir(parents=True)
-        (tools / "common").mkdir()
         entry = tools / "V3" / "createSolutionV3_1.ps1"
-        shutil.copyfile(PACKAGER / "V3/createSolutionV3_1.ps1", entry)
-        for name in ("createSolutionLocal.ps1", "get-ccp-details.ps1", "LogAppInsights.ps1"):
-            shutil.copyfile(PACKAGER / "common" / name, tools / "common" / name)
         # Run real packaging, but isolate output and exclude the unrelated full validators.
         (tools / "common/commonFunctions.ps1").write_text(
             f". {ps_literal(PACKAGER / 'common/commonFunctions.ps1')}\n"

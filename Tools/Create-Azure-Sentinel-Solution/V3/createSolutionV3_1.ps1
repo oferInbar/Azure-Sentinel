@@ -33,11 +33,24 @@ param (
     [ValidateSet("none", "patch", "minor", "major")]
     [string]$VersionBump = "patch",
     [Parameter(ParameterSetName = "Local")]
+    [string]$ToolkitRootPath = $null,
+    [Parameter(ParameterSetName = "Local")]
     [Parameter(ParameterSetName = "Pipeline")]
     [switch]$SkipAttributionLookup
 )
 
 if ($PSCmdlet.ParameterSetName -eq "Local") {
+    if (-not [string]::IsNullOrWhiteSpace($ToolkitRootPath)) {
+        $selectedToolkitRoot = (Resolve-Path -LiteralPath $ToolkitRootPath -ErrorAction Stop).Path
+        $entryPointToolkitRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..\..") -ErrorAction Stop).Path
+        if (-not [string]::Equals(
+            [System.IO.Path]::GetFullPath($selectedToolkitRoot).TrimEnd('\', '/'),
+            [System.IO.Path]::GetFullPath($entryPointToolkitRoot).TrimEnd('\', '/'),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw "ToolkitRootPath must match the repository containing this V3.1 entry point."
+        }
+    }
     $localImplementation = Join-Path $PSScriptRoot "..\common\createSolutionLocal.ps1"
     & $localImplementation `
         -SolutionDataFolderPath $SolutionDataFolderPath `
@@ -45,6 +58,7 @@ if ($PSCmdlet.ParameterSetName -eq "Local") {
         -VersionBump $VersionBump `
         -EntryPointName "V3.1" `
         -DefaultInputPath (Join-Path $PSScriptRoot "input") `
+        -ToolkitRootPath $ToolkitRootPath `
         -IncludeXdrDetections $true `
         -EnforceV31Versions $true `
         -SkipAttributionLookup:$SkipAttributionLookup

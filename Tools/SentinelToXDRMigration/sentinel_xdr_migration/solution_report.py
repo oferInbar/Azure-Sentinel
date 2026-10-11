@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
+import re
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import quote, unquote, urlsplit
 
 import yaml
 
@@ -12,9 +15,1037 @@ from .artifacts import existing_artifact_path, existing_artifacts, report_direct
 from .converter import analytic_rule_files, solution_paths, validate_document
 from .content_paths import content_path
 from .report_dashboard import render_dashboard
+from .workflow import _package_freshness
 
 JSON_NAME = "migration-report.json"
 HTML_NAME = "migration-report.html"
+FLOW_STAGE_NAMES = (
+    "setup", "discovery", "conversion", "validation", "packaging", "preflight",
+    "validationSuite", "deployment", "mockIngestion", "queryValidation",
+    "alertParity", "packageAcceptance", "report",
+)
+
+
+def _local_flow_evidence_link(root: Path, reports: Path, reference: Any) -> dict[str, Any]:
+    unavailable = {"available": False, "label": "Evidence reference unavailable or non-portable"}
+    if not isinstance(reference, str) or not reference:
+        return unavailable
+    try:
+        candidate = resolve_artifact_reference(root, reference)
+        if candidate.is_symlink():
+            return unavailable
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return unavailable
+    try:
+        run_root = reports.resolve(strict=True)
+        relative = resolved.relative_to(run_root)
+        lexical = Path(os.path.abspath(candidate))
+        lexical_relative = lexical.relative_to(run_root)
+    except (OSError, RuntimeError, ValueError):
+        return unavailable
+    current = run_root
+    for part in lexical_relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return unavailable
+    if not resolved.is_file():
+        return unavailable
+    href = quote(relative.as_posix(), safe="/-._~")
+    parsed = urlsplit(href)
+    decoded = unquote(href)
+    if (
+        parsed.scheme or parsed.netloc or parsed.query or parsed.fragment
+        or href.startswith(("/", "\\")) or "\\" in href
+        or any(part in {"", ".", ".."} for part in PurePosixPath(href).parts)
+        or any(":" in part for part in PurePosixPath(decoded).parts)
+    ):
+        return unavailable
+    return {"available": True, "label": resolved.name, "href": href}
+
+
+def _build_flow_evidence(root: Path, reports: Path, workflow: dict[str, Any], artifacts: dict[str, Any], package: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    result = {name: [] for name in FLOW_STAGE_NAMES}
+
+    def add(stage: str, reference: Any) -> None:
+        link = _local_flow_evidence_link(root, reports, reference)
+        if link not in result[stage]:
+            result[stage].append(link)
+        if stage == "deployment" and isinstance(reference, str) and "preflight" in Path(reference.replace("\\", "/")).name.casefold():
+            preflight_link = _local_flow_evidence_link(root, reports, reference)
+            if preflight_link not in result["preflight"]:
+                result["preflight"].append(preflight_link)
+
+    for name, stage in (workflow.get("stages") or {}).items():
+        if name in result and isinstance(stage, dict):
+            for reference in stage.get("evidence") or []:
+                add(name, reference)
+                if isinstance(reference, str):
+                    base = Path(reference.replace("\\", "/")).name.casefold()
+                    if "preflight" in base:
+                        add("preflight", reference)
+                    if (
+                        ("full" in base or "official" in base or "local" in base)
+                        and ("validation" in base or "suite" in base)
+                    ):
+                        add("validationSuite", reference)
+    for reference in (artifacts.get("transformationReport"),):
+        if reference:
+            add("conversion", reference)
+    for runtime in artifacts.get("runtimeReports") or []:
+        if isinstance(runtime, dict):
+            for field in ("jsonReport", "htmlReport"):
+                if runtime.get(field):
+                    add("validation", runtime[field])
+    for field in ("deploymentReport", "analyticDeploymentReport"):
+        if artifacts.get(field):
+            add("deployment", artifacts[field])
+    for field in ("queryParityReport",):
+        if artifacts.get(field):
+            add("queryValidation", artifacts[field])
+    if artifacts.get("alertParityReport"):
+        add("alertParity", artifacts["alertParityReport"])
+    if artifacts.get("packagingReport"):
+        add("packaging", artifacts["packagingReport"])
+    for reference in artifacts.get("ingestionReports") or []:
+        add("mockIngestion", reference)
+    if artifacts.get("qualificationDcrPreflight"):
+        add("preflight", artifacts["qualificationDcrPreflight"])
+    if artifacts.get("qualificationTarget"):
+        add("setup", artifacts["qualificationTarget"])
+    for field in ("mainTemplate", "createUiDefinition", "testParameters", "zip"):
+        if package.get(field):
+            add("packaging", package[field])
+    return result
+
+
+def _package_resource_inventory(template: Any) -> list[dict[str, Any]]:
+    records: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def scan_document(node: Any, *, extension_resource: bool = False) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "resources":
+                    scan_collection(value, extension_resource=False)
+                elif key == "extensionResources":
+                    scan_collection(value, extension_resource=True)
+                else:
+                    scan_document(value, extension_resource=extension_resource)
+        elif isinstance(node, list):
+            for value in node:
+                scan_document(value, extension_resource=extension_resource)
+
+    def scan_resource(resource: Any, container: str, *, extension_resource: bool = False) -> None:
+        if not isinstance(resource, dict):
+            return
+        original_type = resource.get("type")
+        if isinstance(original_type, str):
+            resource_type, separator, embedded_version = original_type.partition("@")
+            if "/" in resource_type:
+                api_version = resource.get("apiVersion")
+                if not isinstance(api_version, str) or not api_version:
+                    api_version = embedded_version if separator else ""
+                key = (resource_type, api_version)
+                record = records.setdefault(key, {
+                    "type": resource_type,
+                    "originalType": original_type,
+                    "apiVersion": api_version,
+                    "count": 0,
+                    "sourceForms": set(),
+                    "extensionResource": False,
+                })
+                record["count"] += 1
+                record["sourceForms"].add(container)
+                record["extensionResource"] = (
+                    record["extensionResource"]
+                    or extension_resource
+                    or resource.get("extensionResource") is True
+                )
+        for key, value in resource.items():
+            if key == "resources":
+                scan_collection(value, extension_resource=False)
+            elif key == "extensionResources":
+                scan_collection(value, extension_resource=True)
+            else:
+                scan_document(value, extension_resource=extension_resource)
+
+    def scan_collection(resources: Any, *, extension_resource: bool = False) -> None:
+        if isinstance(resources, list):
+            for resource in resources:
+                scan_resource(
+                    resource,
+                    "extension resources collection" if extension_resource else "nested ARM resources array",
+                    extension_resource=extension_resource,
+                )
+        elif isinstance(resources, dict):
+            if isinstance(resources.get("type"), str):
+                scan_resource(
+                    resources,
+                    "extension resource object" if extension_resource else "ARM resource object",
+                    extension_resource=extension_resource,
+                )
+            else:
+                for resource in resources.values():
+                    scan_resource(
+                        resource,
+                        "languageVersion 2 extension resource dictionary"
+                        if extension_resource else "languageVersion 2 resource dictionary",
+                        extension_resource=extension_resource,
+                    )
+
+    scan_document(template)
+    return [
+        {
+            **record,
+            "sourceForms": sorted(record["sourceForms"]),
+        }
+        for _, record in sorted(records.items())
+    ]
+
+
+def _read_local_package_template(root: Path, package: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    reference = package.get("mainTemplate")
+    if not isinstance(reference, str) or not reference:
+        return {}, None
+    try:
+        candidate = resolve_artifact_reference(root, reference)
+        if candidate.is_symlink():
+            return {}, None
+        path = candidate.resolve(strict=True)
+        package_candidate = root / "Package"
+        if package_candidate.is_symlink():
+            return {}, None
+        package_root = package_candidate.resolve(strict=True)
+        path.relative_to(package_root)
+        lexical = Path(os.path.abspath(candidate))
+        lexical_relative = lexical.relative_to(package_candidate.absolute())
+        current = package_candidate.absolute()
+        for part in lexical_relative.parts:
+            current = current / part
+            if current.is_symlink():
+                return {}, None
+        if not path.is_file() or path.stat().st_size > 10_000_000:
+            return {}, None
+        content = path.read_bytes()
+        document = json.loads(content.decode("utf-8-sig"))
+    except (OSError, RuntimeError, UnicodeError, ValueError, json.JSONDecodeError):
+        return {}, None
+    return (
+        document if isinstance(document, dict) else {},
+        hashlib.sha256(content).hexdigest(),
+    )
+
+
+def _safe_plan_value(value: Any, depth: int = 0) -> Any:
+    if depth > 5:
+        return None
+    if isinstance(value, dict):
+        result = {}
+        for key, item in list(value.items())[:100]:
+            if not isinstance(key, str):
+                continue
+            lowered = key.casefold()
+            if any(term in lowered for term in (
+                "path", "token", "secret", "password", "authorization",
+            )):
+                continue
+            cleaned = _safe_plan_value(item, depth + 1)
+            if cleaned is not None:
+                result[key[:120]] = cleaned
+        return result
+    if isinstance(value, list):
+        return [
+            cleaned for item in value[:200]
+            if (cleaned := _safe_plan_value(item, depth + 1)) is not None
+        ]
+    if isinstance(value, str):
+        return value[:2000]
+    if isinstance(value, (bool, int, float)):
+        return value
+    return None
+
+
+def _deployment_planning_input(root: Path, raw_workflow: dict[str, Any]) -> dict[str, Any]:
+    stages = raw_workflow.get("stages")
+    stages = stages if isinstance(stages, dict) else {}
+    context = raw_workflow.get("context")
+    context = context if isinstance(context, dict) else {}
+    for candidate in (
+        raw_workflow.get("deploymentPlanning"),
+        context.get("deploymentPlanning"),
+        (stages.get("preflight") or {}).get("artifacts", {}).get("deploymentPlanning")
+        if isinstance(stages.get("preflight"), dict)
+        and isinstance(stages.get("preflight", {}).get("artifacts"), dict)
+        else None,
+        (stages.get("deployment") or {}).get("artifacts", {}).get("deploymentPlanning")
+        if isinstance(stages.get("deployment"), dict)
+        and isinstance(stages.get("deployment", {}).get("artifacts"), dict)
+        else None,
+    ):
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+
+    reports = report_directory(root)
+    persisted = _read_run_json(root, reports, reports / "deployment-scope-plan.json")
+    if persisted:
+        return persisted
+
+    for stage_name in ("preflight", "deployment"):
+        stage = stages.get(stage_name)
+        if not isinstance(stage, dict):
+            continue
+        for reference in stage.get("evidence") or []:
+            if not isinstance(reference, str):
+                continue
+            if stage_name == "preflight" or "preflight" in Path(reference.replace("\\", "/")).name.casefold():
+                document = _read_run_json(root, reports, reference)
+                candidate = document.get("deploymentPlanning")
+                if isinstance(candidate, dict) and candidate:
+                    return candidate
+    return {}
+
+
+def _planning_summary(
+    root: Path,
+    package: dict[str, Any],
+    workflow: dict[str, Any],
+    raw_workflow: dict[str, Any],
+) -> dict[str, Any]:
+    template, template_sha256 = _read_local_package_template(root, package)
+    hashes = package.get("packageArtifactHashes")
+    recorded_template_hash = hashes.get("mainTemplate") if isinstance(hashes, dict) else None
+    hash_matches = (
+        isinstance(template_sha256, str)
+        and isinstance(recorded_template_hash, str)
+        and template_sha256 == recorded_template_hash
+    )
+    freshness = workflow.get("packageFreshness")
+    freshness_status = (
+        freshness.get("status")
+        if isinstance(freshness, dict) and isinstance(freshness.get("status"), str)
+        else "unverified"
+    )
+    freshness_current_input_hash = (
+        freshness.get("currentPackageInputSha256")
+        if isinstance(freshness, dict)
+        and isinstance(freshness.get("currentPackageInputSha256"), str)
+        else None
+    )
+    if freshness_status == "stale" or (
+        isinstance(template_sha256, str)
+        and isinstance(recorded_template_hash, str)
+        and not hash_matches
+    ):
+        identity_status = "stale"
+    elif hash_matches and freshness_status == "current":
+        identity_status = "verified current"
+    elif template_sha256:
+        identity_status = "unverified"
+    else:
+        identity_status = "unavailable"
+    context_profile = workflow.get("profile")
+    mode = (
+        context_profile
+        if context_profile in {"authoring", "qualification"}
+        and workflow.get("profileSelectionConfirmed") is True
+        else "unknown"
+    )
+    parameters = package.get("deploymentParameters")
+    safe_defaults = (
+        [
+            {"name": str(name), "value": value}
+            for name, value in parameters.items()
+            if isinstance(name, str) and isinstance(value, (str, bool, int, float))
+        ]
+        if isinstance(parameters, dict)
+        else []
+    )
+    raw_stages = raw_workflow.get("stages")
+    deployment_stage = raw_stages.get("deployment") if isinstance(raw_stages, dict) else None
+    stage_artifacts = deployment_stage.get("artifacts") if isinstance(deployment_stage, dict) else None
+    plan = _deployment_planning_input(root, raw_workflow)
+    raw_package_plan = (
+        plan.get("packageAcceptancePlan")
+        if isinstance(plan.get("packageAcceptancePlan"), dict)
+        else stage_artifacts.get("packageAcceptancePlan") if isinstance(stage_artifacts, dict) else None
+    )
+    package_plan = raw_package_plan if isinstance(raw_package_plan, dict) else {}
+    resource_types = package_plan.get("resourceTypes")
+    safe_types = sorted({
+        str(item).split("@", 1)[0]
+        for item in resource_types
+        if isinstance(item, str) and "/" in item.split("@", 1)[0]
+    }) if isinstance(resource_types, list) else []
+    plan_identity = package_plan.get("packageIdentity")
+    safe_plan_identity = (
+        {
+            key: plan_identity[key]
+            for key in ("status", "sha256", "packageArtifactsSha256")
+            if isinstance(plan_identity.get(key), (str, bool, int))
+        }
+        if isinstance(plan_identity, dict)
+        else {}
+    )
+    plan_sha = plan.get("planSha256") if isinstance(plan.get("planSha256"), str) else None
+    raw_consent = plan.get("planningConsent")
+    raw_consent = raw_consent if isinstance(raw_consent, dict) else {}
+    consent_status = raw_consent.get("status")
+    consent_plan_sha = raw_consent.get("planSha256")
+    consent_components = raw_consent.get("approvedComponents")
+    if not isinstance(consent_components, list):
+        consent_components = raw_consent.get("componentKeys")
+    consent_types = raw_consent.get("resourceTypes")
+    selected_flags = raw_consent.get("packageFlags")
+    if not isinstance(selected_flags, dict):
+        selected_flags = raw_consent.get("selectedFlags")
+    consent_component_keys = (
+        [
+            value for value in consent_components
+            if isinstance(value, str) and value
+        ]
+        if isinstance(consent_components, list)
+        else []
+    )
+    consent_resource_types = (
+        [
+            value for value in consent_types
+            if isinstance(value, str) and "/" in value.split("@", 1)[0]
+        ]
+        if isinstance(consent_types, list)
+        else []
+    )
+    raw_components = plan.get("components")
+    raw_components = raw_components if isinstance(raw_components, dict) else {}
+    current_component_keys = {
+        key for key, value in raw_components.items()
+        if isinstance(key, str) and isinstance(value, dict)
+    }
+    expected_consent_types = sorted({
+        resource_type
+        for component_key in consent_component_keys
+        for resource_type in (
+            raw_components.get(component_key, {}).get("resourceTypes") or []
+            if isinstance(raw_components.get(component_key), dict)
+            else []
+        )
+        if isinstance(resource_type, str)
+    })
+    consent_flags_valid = isinstance(selected_flags, dict) and any(
+        isinstance(key, str) and isinstance(value, (str, bool, int))
+        for key, value in selected_flags.items()
+    )
+    if consent_status == "approved":
+        if not (
+            isinstance(plan_sha, str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", plan_sha)
+            and isinstance(consent_plan_sha, str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", consent_plan_sha)
+            and plan_sha.casefold() == consent_plan_sha.casefold()
+            and bool(consent_component_keys)
+            and set(consent_component_keys).issubset(current_component_keys)
+            and expected_consent_types == sorted(consent_resource_types)
+            and (
+                isinstance(target := plan.get("target"), dict)
+                and all(
+                    isinstance(target.get(key), str) and target.get(key)
+                    for key in (
+                        "tenantId", "subscriptionId", "resourceGroup",
+                        "workspaceResourceId", "solution", "version",
+                    )
+                )
+            )
+            and (bool(consent_resource_types) or consent_flags_valid or consent_component_keys)
+        ):
+            consent_status = "stale"
+    elif consent_status not in {
+        "declined", "stale", "not-recorded", "not-approved", "unknown",
+    }:
+        consent_status = "not-recorded"
+    safe_flags = (
+        {
+            key: value
+            for key, value in selected_flags.items()
+            if isinstance(key, str) and isinstance(value, (str, bool, int))
+        }
+        if isinstance(selected_flags, dict)
+        else {}
+    )
+    components = raw_components
+    target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
+    source_inventory = plan.get("sourceInventory") if isinstance(plan.get("sourceInventory"), dict) else {}
+    detection_scope = plan.get("detectionScope") if isinstance(plan.get("detectionScope"), dict) else {}
+    scope_caps = plan.get("scopeCaps") if isinstance(plan.get("scopeCaps"), dict) else {}
+    planned_resource_inventory = plan.get("packageResourceInventory")
+    planned_resource_inventory = (
+        _safe_plan_value(planned_resource_inventory)
+        if isinstance(planned_resource_inventory, list)
+        else []
+    )
+    package_acceptance = plan.get("packageAcceptancePlan")
+    package_acceptance = (
+        _safe_plan_value(package_acceptance)
+        if isinstance(package_acceptance, dict)
+        else {}
+    )
+    artifact_hashes = plan.get("packageArtifactHashes") if isinstance(plan.get("packageArtifactHashes"), dict) else {}
+    recorded_artifact_hashes = (
+        plan.get("recordedPackageArtifactHashes")
+        if isinstance(plan.get("recordedPackageArtifactHashes"), dict)
+        else {}
+    )
+    contract_input_hash = plan.get("packageInputSha256")
+    current_input_hash = (
+        package.get("packageInputs", {}).get("after", {}).get("sha256")
+        if isinstance(package.get("packageInputs"), dict)
+        and isinstance(package.get("packageInputs", {}).get("after"), dict)
+        else None
+    )
+    input_identity_matches = (
+        isinstance(contract_input_hash, str)
+        and isinstance(current_input_hash, str)
+        and contract_input_hash.casefold() == current_input_hash.casefold()
+    )
+    package_report_hashes = package.get("packageArtifactHashes")
+    required_package_hashes = {"mainTemplate", "createUiDefinition", "testParameters", "zip"}
+    valid_current_hashes = (
+        required_package_hashes.issubset(artifact_hashes)
+        and all(
+            isinstance(artifact_hashes.get(key), str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", artifact_hashes[key])
+            for key in required_package_hashes
+        )
+        and required_package_hashes.issubset(recorded_artifact_hashes)
+        and required_package_hashes.issubset(package_report_hashes or {})
+    ) if isinstance(package_report_hashes, dict) else False
+    artifact_identity_matches = bool(
+        valid_current_hashes
+        and all(
+            artifact_hashes.get(key) == recorded_artifact_hashes.get(key)
+            == package_report_hashes.get(key)
+            for key in required_package_hashes
+        )
+        and isinstance(template_sha256, str)
+        and template_sha256 == artifact_hashes.get("mainTemplate")
+    )
+    contract_status = plan.get("status") if isinstance(plan.get("status"), str) else "not-recorded"
+    if contract_status not in {
+        "current", "provisional", "stale", "unavailable", "not-applicable", "unknown",
+    }:
+        contract_status = "unknown"
+    if contract_status == "current" and (
+        not input_identity_matches
+        or not artifact_identity_matches
+        or not isinstance(contract_input_hash, str)
+        or not re.fullmatch(r"[0-9a-fA-F]{64}", contract_input_hash)
+    ):
+        contract_status = "stale"
+    recorded_profile = plan.get("selectedProfile")
+    if (
+        mode in {"authoring", "qualification"}
+        and isinstance(recorded_profile, str)
+        and recorded_profile != mode
+    ):
+        contract_status = "stale"
+    if consent_status == "approved" and contract_status != "current":
+        consent_status = "stale" if contract_status == "stale" else "unknown"
+    planning_contract = {
+        "schemaVersion": plan.get("schemaVersion") if isinstance(plan.get("schemaVersion"), str) else None,
+        "status": contract_status,
+        "selectedProfile": plan.get("selectedProfile") if isinstance(plan.get("selectedProfile"), str) else mode,
+        "executionMode": plan.get("executionMode") if isinstance(plan.get("executionMode"), str) and plan.get("executionMode") in {"pairs", "package", "both", "ingestion-or-provisioning", "not-selected"} else "not-selected",
+        "target": {
+            key: target.get(key)
+            for key in (
+                "tenantId", "subscriptionId", "resourceGroup", "workspaceResourceId",
+                "workspaceCustomerId", "solution", "version",
+            )
+            if isinstance(target.get(key), str)
+        },
+        "planSha256": plan_sha,
+        "packageInputSha256": contract_input_hash if isinstance(contract_input_hash, str) else None,
+        "packageArtifactHashes": {
+            key: artifact_hashes.get(key)
+            for key in ("mainTemplate", "createUiDefinition", "testParameters", "zip")
+            if isinstance(artifact_hashes.get(key), str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", artifact_hashes[key])
+        },
+        "recordedPackageArtifactHashes": {
+            key: recorded_artifact_hashes.get(key)
+            for key in ("mainTemplate", "createUiDefinition", "testParameters", "zip")
+            if isinstance(recorded_artifact_hashes.get(key), str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", recorded_artifact_hashes[key])
+        },
+        "packageContentSha256": (
+            plan.get("packageContentSha256")
+            if isinstance(plan.get("packageContentSha256"), str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", plan["packageContentSha256"])
+            else None
+        ),
+        "packageIdentity": {
+            key: plan.get("packageIdentity", {}).get(key)
+            for key in ("version", "status")
+            if isinstance(plan.get("packageIdentity"), dict)
+            and isinstance(plan["packageIdentity"].get(key), str)
+        },
+        "sourceInventory": {
+            key: value for key, value in source_inventory.items()
+            if isinstance(key, str) and isinstance(value, (str, int, bool))
+        },
+        "sourceInventorySha256": (
+            plan.get("sourceInventorySha256")
+            if isinstance(plan.get("sourceInventorySha256"), str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", plan["sourceInventorySha256"])
+            else None
+        ),
+        "detectionScope": _safe_plan_value(detection_scope),
+        "scopeCaps": {
+            key: value for key, value in scope_caps.items()
+            if isinstance(key, str) and isinstance(value, (str, bool, int))
+        },
+        "packageResourceInventory": planned_resource_inventory,
+        "bicepExtensibilityImports": _safe_plan_value(plan.get("bicepExtensibilityImports") or []),
+        "whatIfSupport": (
+            plan.get("whatIfSupport")
+            if isinstance(plan.get("whatIfSupport"), str)
+            else "not-evaluated"
+        ),
+        "components": safe_components,
+        "planningConsent": {
+            "status": consent_status or "not-recorded",
+            "approvedAt": raw_consent.get("approvedAt") if isinstance(raw_consent.get("approvedAt"), str) else None,
+            "actor": raw_consent.get("actor") if isinstance(raw_consent.get("actor"), str) else None,
+            "planSha256": consent_plan_sha if isinstance(consent_plan_sha, str) else None,
+            "componentKeys": [
+                key for key in consent_component_keys
+            ],
+            "resourceTypes": consent_resource_types,
+            "selectedFlags": safe_flags,
+            "maxAdditionalCustomDetections": (
+                raw_consent.get("maxAdditionalCustomDetections")
+                if type(raw_consent.get("maxAdditionalCustomDetections")) is int
+                else None
+            ),
+            "conditionalSelections": _safe_plan_value(
+                raw_consent.get("conditionalSelections")
+                if isinstance(raw_consent.get("conditionalSelections"), dict)
+                else {}
+            ),
+        },
+        "exactScopeWriteApproval": "not-recorded",
+        "readiness": plan.get("readiness") if isinstance(plan.get("readiness"), str) else "not-evaluated",
+        "deploymentEvidence": plan.get("deploymentEvidence") if isinstance(plan.get("deploymentEvidence"), str) else "not-recorded",
+        "dcrEvidence": _safe_plan_value(plan.get("dcrEvidence") or {}),
+        "dcrResolver": _safe_plan_value(plan.get("dcrResolver") or {}),
+        "separateApprovals": _safe_plan_value(plan.get("separateApprovals") or {}),
+        "packageAcceptancePlan": package_acceptance,
+    }
+    return {
+        "profile": mode,
+        "executionMode": planning_contract["executionMode"],
+        "planningConsent": planning_contract["planningConsent"]["status"],
+        "exactScopeWriteApproval": planning_contract["exactScopeWriteApproval"],
+        "deploymentPlan": planning_contract,
+        "packageFreshness": freshness_status,
+        "packageIdentity": (
+            plan.get("packageIdentity", {}).get("status")
+            if isinstance(plan.get("packageIdentity"), dict)
+            and isinstance(plan["packageIdentity"].get("status"), str)
+            else identity_status
+        ),
+        "packageVersion": (
+            plan.get("packageIdentity", {}).get("version")
+            if isinstance(plan.get("packageIdentity"), dict)
+            and isinstance(plan["packageIdentity"].get("version"), str)
+            else package.get("version") if isinstance(package.get("version"), str) else None
+        ),
+        "selectedPackageReport": package.get("packageReport") if isinstance(package.get("packageReport"), str) else None,
+        "selectedPackageReportStatus": package.get("status") if isinstance(package.get("status"), str) else "not-recorded",
+        "templateSha256": template_sha256,
+        "recordedTemplateSha256": recorded_template_hash,
+        "packageArtifactsSha256": package.get("packageArtifactsSha256"),
+        "packageInputSha256": (
+            current_input_hash if isinstance(current_input_hash, str) else None
+        ),
+        "resourceInventory": _package_resource_inventory(template),
+        "resourceInventoryAvailable": bool(template_sha256 and template),
+        "deploymentDefaults": safe_defaults,
+        "packageAcceptancePlan": {
+            "recorded": bool(package_plan),
+            **(
+                package_acceptance
+                if package_acceptance
+                else {
+            "status": (
+                package_plan.get("status")
+                if isinstance(package_plan.get("status"), str)
+                else "proposed-not-approved" if package_plan else "not-recorded"
+            ),
+            "resourceTypes": safe_types,
+            "packageIdentity": safe_plan_identity,
+            "executionStatus": (
+                package_plan.get("executionStatus")
+                if isinstance(package_plan.get("executionStatus"), str)
+                else "not-recorded"
+            ),
+            "approvalStatus": (
+                package_plan.get("approvalStatus")
+                if isinstance(package_plan.get("approvalStatus"), str)
+                else "not-recorded"
+            ),
+            "planningConsent": (
+                package_plan.get("planningConsent")
+                if isinstance(package_plan.get("planningConsent"), str)
+                else "not-recorded"
+            ),
+            "executionMode": (
+                package_plan.get("executionMode")
+                if isinstance(package_plan.get("executionMode"), str)
+                else "not-recorded"
+            ),
+                }
+            ),
+        },
+        "additionalQualificationResources": [],
+        "additionalQualificationPlanStatus": "recorded in component plan" if safe_components else "not-recorded",
+    }
+
+
+def _preflight_projection(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    authentication = value.get("authentication")
+    permissions = value.get("permissions")
+    read_checks = value.get("readChecks")
+    dcr = value.get("dcrPermissionPreflight")
+    if not isinstance(dcr, dict) and "workspaceQueryPermission" in value:
+        dcr = value
+    dcr = dcr if isinstance(dcr, dict) else {}
+    dcr_auth = dcr.get("authentication")
+    contracts = dcr.get("contracts")
+    return {
+        "status": value.get("status") if isinstance(value.get("status"), str) else "unknown",
+        "graphRecorded": isinstance(authentication, dict) and isinstance(read_checks, list),
+        "dcrRecorded": isinstance(value.get("dcrPermissionPreflight"), dict)
+        or isinstance(value.get("workspaceQueryPermission"), dict),
+        "checkedAt": value.get("checkedAt") if isinstance(value.get("checkedAt"), str) else value.get("generatedAt") if isinstance(value.get("generatedAt"), str) else None,
+        "authentication": {
+            key: authentication.get(key)
+            for key in (
+                "status", "method", "selectedMethod", "requestedScope",
+                "tenantMatch", "graphAudience",
+            )
+            if isinstance(authentication, dict) and isinstance(authentication.get(key), (str, int, bool))
+        },
+        "permissions": {
+            key: permissions.get(key)
+            for key in ("readAccess", "writeScopeInToken", "consent", "writeAuthorization")
+            if isinstance(permissions, dict) and isinstance(permissions.get(key), (str, int, bool))
+        },
+        "requiredManagementPermission": (
+            value.get("requiredManagementPermission")
+            if isinstance(value.get("requiredManagementPermission"), str)
+            else None
+        ),
+        "tokenPermissionClaims": {
+            key: value.get("authentication", {}).get("tokenPermissionClaims", {}).get(key)
+            for key in ("status", "claimType")
+            if isinstance(value.get("authentication"), dict)
+            and isinstance(value["authentication"].get("tokenPermissionClaims"), dict)
+            and isinstance(value["authentication"]["tokenPermissionClaims"].get(key), (str, int, bool))
+        },
+        "managementPermissionGrant": {
+            key: grant.get(key)
+            for key in ("status", "grantType", "claimType", "permission", "credentialRequestScope", "reason")
+            if isinstance(grant, dict) and isinstance(grant.get(key), (str, int, bool))
+        } if isinstance((grant := value.get("managementPermissionGrant")), dict) else {},
+        "deploymentReadiness": (
+            value.get("deploymentReadiness")
+            if isinstance(value.get("deploymentReadiness"), str)
+            else "unknown"
+        ),
+        "effectiveRoleStatus": (
+            permissions.get("effectiveRole", {}).get("status")
+            if isinstance(permissions, dict)
+            and isinstance(permissions.get("effectiveRole"), dict)
+            and isinstance(permissions["effectiveRole"].get("status"), str)
+            else "unknown"
+        ),
+        "readChecks": [
+            {
+                key: check.get(key)
+                for key in ("status", "httpStatus")
+                if isinstance(check, dict) and isinstance(check.get(key), (str, int, bool))
+            }
+            for check in read_checks if isinstance(check, dict)
+        ] if isinstance(read_checks, list) else [],
+        "dcr": {
+            "status": dcr.get("status") if isinstance(dcr.get("status"), str) else "unknown",
+            "authenticationStatus": (
+                dcr_auth.get("status") if isinstance(dcr_auth, dict) and isinstance(dcr_auth.get("status"), str) else "unknown"
+            ),
+            "targetVerificationStatus": (
+                dcr.get("targetVerification", {}).get("status")
+                if isinstance(dcr.get("targetVerification"), dict)
+                and isinstance(dcr["targetVerification"].get("status"), str)
+                else "unknown"
+            ),
+            "localReadinessStatus": (
+                dcr.get("localReadiness", {}).get("status")
+                if isinstance(dcr.get("localReadiness"), dict)
+                and isinstance(dcr["localReadiness"].get("status"), str)
+                else "unknown"
+            ),
+            "workspaceQueryPermissionStatus": (
+                dcr.get("workspaceQueryPermission", {}).get("status")
+                if isinstance(dcr.get("workspaceQueryPermission"), dict)
+                and isinstance(dcr["workspaceQueryPermission"].get("status"), str)
+                else "unknown"
+            ),
+            "resourcePlanStatus": "not-recorded",
+            "resourceTypes": [],
+            "contractCount": len(contracts) if isinstance(contracts, list) else 0,
+            "contractStatuses": [
+                item.get("status") for item in contracts
+                if isinstance(item, dict) and isinstance(item.get("status"), str)
+            ] if isinstance(contracts, list) else [],
+        },
+    }
+
+
+def _read_run_json(root: Path, reports: Path, reference: Any) -> dict[str, Any]:
+    link = _local_flow_evidence_link(root, reports, str(reference) if isinstance(reference, Path) else reference)
+    if link.get("available") is not True or not str(link.get("label", "")).lower().endswith(".json"):
+        return {}
+    try:
+        path = reports / PurePosixPath(unquote(link["href"]))
+        if path.stat().st_size > 2_000_000:
+            return {}
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _selected_packaging_report(
+    root: Path,
+    workflow: dict[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    reports = report_directory(root)
+    stages = workflow.get("stages")
+    stages = stages if isinstance(stages, dict) else {}
+    packaging_stage = stages.get("packaging")
+    packaging_stage = packaging_stage if isinstance(packaging_stage, dict) else {}
+    artifacts = packaging_stage.get("artifacts")
+    artifacts = artifacts if isinstance(artifacts, dict) else {}
+
+    selected_reference = artifacts.get("packageReport")
+    if "packaging" in stages:
+        package_state = workflow.get("packaging")
+        successful = (
+            package_state.get("lastSuccessful")
+            if isinstance(package_state, dict)
+            else None
+        )
+        if not (
+            packaging_stage.get("status") == "passed"
+            and isinstance(successful, dict)
+            and successful.get("packageSucceeded") is True
+            and isinstance(successful.get("attemptId"), str)
+            and artifacts.get("packageAttemptId") == successful.get("attemptId")
+            and isinstance(selected_reference, str)
+            and selected_reference
+            and selected_reference == successful.get("packageReport")
+        ):
+            return {}, None
+        try:
+            selected_path = resolve_artifact_reference(root, selected_reference)
+            successful_path = resolve_artifact_reference(
+                root, successful["packageReport"]
+            )
+            if selected_path.resolve() != successful_path.resolve():
+                return {}, None
+            document = _read_run_json(root, reports, selected_reference)
+            report_sha256 = hashlib.sha256(selected_path.read_bytes()).hexdigest()
+        except (OSError, RuntimeError, ValueError, KeyError):
+            return {}, None
+        report_inputs = document.get("packageInputs")
+        report_after = (
+            report_inputs.get("after")
+            if isinstance(report_inputs, dict)
+            else None
+        )
+        recorded_hashes = document.get("packageArtifactHashes")
+        if not (
+            document.get("packager") == "V3.1"
+            and document.get("packageAttemptId") == successful.get("attemptId")
+            and document.get("workflowRunId") == workflow.get("runId")
+            and report_sha256 == successful.get("packageReportSha256")
+            and report_sha256 == artifacts.get("packageReportSha256")
+            and document.get("packageArtifactsSha256")
+            == successful.get("packageArtifactsSha256")
+            and isinstance(report_after, dict)
+            and report_after.get("sha256") == successful.get("packageInputSha256")
+            and isinstance(recorded_hashes, dict)
+            and all(
+                isinstance(recorded_hashes.get(name), str)
+                and re.fullmatch(r"[0-9a-fA-F]{64}", recorded_hashes[name])
+                for name in (
+                    "mainTemplate", "createUiDefinition",
+                    "testParameters", "zip",
+                )
+            )
+        ):
+            return {}, None
+        return document, selected_reference
+
+    if isinstance(selected_reference, str) and selected_reference:
+        return _read_run_json(root, reports, selected_reference), selected_reference
+
+    for reference in packaging_stage.get("evidence") or []:
+        if (
+            isinstance(reference, str)
+            and Path(reference.replace("\\", "/")).name.casefold().startswith("packaging.v3_1.")
+        ):
+            document = _read_run_json(root, reports, reference)
+            if document:
+                return document, reference
+
+    if "packaging" in stages:
+        return {}, None
+
+    legacy_path = existing_artifact_path(root, "packaging.v3_1.json")
+    document = _read_run_json(root, reports, legacy_path)
+    if document:
+        return document, str(legacy_path)
+    return {}, None
+
+
+def _qualification_preflight(
+    root: Path,
+    reports: Path,
+    workflow: dict[str, Any],
+) -> dict[str, Any]:
+    dcr_reference = "qualification-dcr-preflight.json"
+    dcr_file = reports / dcr_reference
+    dcr_document = _read_run_json(root, reports, dcr_reference)
+    graph = {}
+    for stage in (workflow.get("stages") or {}).values():
+        if not isinstance(stage, dict):
+            continue
+        for reference in stage.get("evidence") or []:
+            if isinstance(reference, str) and "preflight" in Path(reference.replace("\\", "/")).name.casefold():
+                candidate = _read_run_json(root, reports, reference)
+                if isinstance(candidate.get("authentication"), dict) and isinstance(candidate.get("readChecks"), list):
+                    graph = candidate
+                    break
+        if graph:
+            break
+    dcr = dcr_document.get("dcrPermissionPreflight") if isinstance(dcr_document.get("dcrPermissionPreflight"), dict) else dcr_document
+    projected = _preflight_projection(graph) if graph else {}
+    if dcr:
+        projected["dcr"] = _preflight_projection(
+            {"dcrPermissionPreflight": dcr}
+        )["dcr"]
+    if not projected:
+        projected = _preflight_projection({})
+    projected["graphRecorded"] = bool(graph)
+    projected["dcrRecorded"] = bool(dcr)
+    return projected
+
+
+def _startup_setup_summary(
+    root: Path,
+    reports: Path,
+    workflow: dict[str, Any],
+    preflight: dict[str, Any],
+    planning: dict[str, Any],
+) -> dict[str, Any]:
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    target_document = _read_run_json(
+        root, reports, reports / "qualification-target.json"
+    )
+    context_target = context.get("target") if isinstance(context.get("target"), dict) else context
+    recorded_target = target_document if target_document else context_target
+    target = {
+        key: recorded_target.get(key)
+        for key in (
+            "tenantId", "subscriptionId", "resourceGroup", "workspaceResourceId",
+            "workspaceCustomerId", "workspaceName",
+        )
+        if isinstance(recorded_target.get(key), str)
+    }
+    target_locked = (
+        target_document.get("locked") is True
+        or context.get("targetContextLocked") is True
+        or context.get("lockedTargetConfirmed") is True
+    )
+    profile = context.get("workflowProfile")
+    profile_confirmed = (
+        profile in {"authoring", "qualification"}
+        and context.get("profileSelectionConfirmed") is True
+    )
+    consent = (
+        planning.get("deploymentPlan", {}).get("planningConsent", {})
+        if isinstance(planning.get("deploymentPlan"), dict)
+        else {}
+    )
+    preflight_auth = (
+        preflight.get("authentication")
+        if isinstance(preflight.get("authentication"), dict)
+        else {}
+    )
+    preflight_at = preflight.get("checkedAt")
+    if preflight.get("graphRecorded") is True:
+        auth_state = "Recorded from a scoped preflight; not rechecked by report generation"
+    else:
+        auth_state = "Not checked in this selected-run snapshot"
+    checks = []
+    if not target:
+        checks.append("No locked target details are recorded in workflow metadata or qualification-target.json.")
+    elif not target_locked:
+        checks.append("Target identifiers are recorded, but a locked-target confirmation is not recorded.")
+    if not profile_confirmed:
+        checks.append("Workflow profile selection is not confirmed in persisted run state.")
+    if not preflight.get("graphRecorded"):
+        checks.append("Cached authentication, scoped read access, and management permissions were not checked by this report.")
+    return {
+        "state": "unknown",
+        "display": (
+            "Target/profile recorded; runtime checks unknown"
+            if target and profile_confirmed
+            else "Setup evidence incomplete"
+        ),
+        "runId": workflow.get("runId") if isinstance(workflow.get("runId"), str) else None,
+        "profile": profile if profile_confirmed else "not-recorded",
+        "profileConfirmed": profile_confirmed,
+        "target": target,
+        "targetSource": (
+            "qualification-target.json"
+            if target_document
+            else "workflow-state metadata"
+            if target
+            else "not-recorded"
+        ),
+        "targetLocked": target_locked,
+        "localToolChecks": "not-recorded",
+        "authentication": {
+            "status": auth_state,
+            "method": preflight_auth.get("method") or preflight_auth.get("selectedMethod"),
+            "checkedAt": preflight_at,
+        },
+        "planningConsentStatus": (
+            consent.get("status")
+            if isinstance(consent, dict) and isinstance(consent.get("status"), str)
+            else "not-recorded"
+        ),
+        "planningConsentPlanSha256": (
+            consent.get("planSha256")
+            if isinstance(consent, dict) and isinstance(consent.get("planSha256"), str)
+            else None
+        ),
+        "exactScopeWriteApproval": "not-recorded",
+        "notes": checks,
+    }
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -90,7 +1121,7 @@ def build_solution_report(
     )
     parity = _read_json(existing_artifact_path(root, "alert-parity-report.json"))
     query_parity = _read_json(existing_artifact_path(root, "mock-query-parity.json"))
-    packaging = _read_json(existing_artifact_path(root, "packaging.v3_1.json"))
+    packaging, selected_package_reference = _selected_packaging_report(root, workflow)
     deployment_by_id = {
         str(item.get("id")): item for item in deployment.get("results") or []
     }
@@ -380,6 +1411,7 @@ def build_solution_report(
         "workflow": {
             "runId": workflow.get("runId"),
             "profile": (workflow.get("context") or {}).get("workflowProfile"),
+            "profileSelectionConfirmed": (workflow.get("context") or {}).get("profileSelectionConfirmed"),
             "status": workflow.get("workflowStatus"),
             "workspaceConfigured": bool(
                 (workflow.get("context") or {}).get("workspaceResourceId")
@@ -387,11 +1419,15 @@ def build_solution_report(
             "stages": {
                 name: {
                     key: stage.get(key)
-                    for key in ("status", "attempts", "message", "evidence", "updatedAt")
+                    for key in (
+                        "status", "attempts", "message", "evidence", "updatedAt",
+                        "startedAt", "completedAt",
+                    )
                     if stage.get(key) is not None
                 }
                 for name, stage in (workflow.get("stages") or {}).items()
             },
+            "packageFreshness": _package_freshness(root, workflow),
         },
         "summary": {
             "conversionScope": manifest.get("scope") or {},
@@ -467,6 +1503,12 @@ def build_solution_report(
             "queryParityReport": query_parity.get("reportPath"),
             "alertParityReport": parity.get("reportPath"),
             "packagingReport": packaging.get("packageReport"),
+            "selectedPackagingEvidence": selected_package_reference,
+            "qualificationDcrPreflight": (
+                str(reports / "qualification-dcr-preflight.json")
+                if (reports / "qualification-dcr-preflight.json").is_file()
+                else None
+            ),
             "ingestionReports": [
                 item.get("reportPath") for item in ingestion if item.get("reportPath")
             ],
@@ -476,6 +1518,28 @@ def build_solution_report(
     html_path = reports / HTML_NAME
     report["jsonReport"] = str(json_path)
     report["htmlReport"] = str(html_path)
+    report["deploymentPlanning"] = _planning_summary(
+        root, packaging, report["workflow"], workflow
+    )
+    report["qualificationPreflight"] = _qualification_preflight(
+        root, reports, workflow
+    )
+    report["startupSetup"] = _startup_setup_summary(
+        root, reports, workflow, report["qualificationPreflight"],
+        report["deploymentPlanning"],
+    )
+    target_reference = reports / "qualification-target.json"
+    target_link = _local_flow_evidence_link(root, reports, str(target_reference))
+    report["artifacts"]["qualificationTarget"] = (
+        str(target_reference) if target_link.get("available") is True else None
+    )
+    report["flowEvidence"] = _build_flow_evidence(
+        root, reports, report["workflow"], report["artifacts"], packaging
+    )
+    write_json_artifact(root, json_path, report)
+    report["flowEvidence"]["report"].append(
+        _local_flow_evidence_link(root, reports, json_path)
+    )
     write_json_artifact(root, json_path, report)
     html_path.write_text(render_solution_report(portable_artifact(root, report)), encoding="utf-8", newline="\n")
     return report

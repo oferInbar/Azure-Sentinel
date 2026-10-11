@@ -11,7 +11,11 @@ validation, fallback execution, and reporting. Runtime query execution prefers:
 - Microsoft Sentinel Triage MCP for every query operation supported by the
   connected server:
   `https://sentinel.microsoft.com/mcp/triage`.
-- Log Analytics CLI/API as the original Sentinel-query fallback.
+- Native Azure Monitor Query SDK for complete original Sentinel-query
+  execution after a Triage provider failure, or when the CLI path is explicitly
+  selected.
+- Log Analytics CLI/API results remain importable as a legacy original
+  Sentinel-query fallback.
 - Microsoft Graph Advanced Hunting through the CLI as the Advanced Hunting
   fallback.
 
@@ -27,8 +31,9 @@ including:
 - the request times out or the MCP service returns a transient/provider error;
 - a provider failure prevents completion of the full solution batch.
 
-Original Sentinel queries fall back to Log Analytics. Advanced Hunting queries
-fall back to Graph. Do not fall back when Triage successfully executes the
+Original Sentinel queries fall back to the Azure Monitor Query SDK (or imported
+legacy Log Analytics CLI/API results). Advanced Hunting queries fall back to
+Graph. Do not fall back when Triage successfully executes the
 request and returns a real KQL semantic/runtime error. That is a detection
 failure, not an MCP failure. Do not combine providers within one query-family
 report; if Triage fails mid-batch, rerun that complete batch through its direct
@@ -66,9 +71,29 @@ fallback or successful query never marks a rule validated or proves parity.
 
    Use advertised official Triage MCP tools first for every supported
    `sentinelQuery` and `advancedHuntingQuery`. For Advanced Hunting, invoke
-   `RunAdvancedHuntingQuery`. If the connected MCP does not advertise a
-   suitable original Sentinel workspace-query tool, use the Log Analytics
-   CLI/API path without treating that capability gap as a KQL failure.
+   `RunAdvancedHuntingQuery`.    If the connected MCP does not advertise a suitable original Sentinel
+   workspace-query tool, either run the toolkit's native SDK provider for the
+   full family or use the legacy Log Analytics CLI/API import path without
+   treating that capability gap as a KQL failure.
+
+   The native source-query runner requires an existing Qualification run and
+   its locked target. It verifies the active Azure CLI tenant and subscription
+   without signing in, sends each exact persisted source KQL string directly to
+   `LogsQueryClient.query_workspace(timespan=None)`, and records full returned
+   schemas and rows in the ignored run-local SDK report:
+
+   ```powershell
+   sentinel-xdr-migration validate-sentinel-sdk `
+     --solution "<solution-path>" `
+     --run-id "<qualification-run-id>"
+   ```
+
+   Defaults bound each request to 90 seconds and the complete source family to
+   30 minutes, with at most two transient retries per query. The complete
+   recursive source inventory must map one-to-one to current generated
+   detections. Authentication, authorization, query, transport and partial
+   result failures are retained distinctly. Zero returned rows indicate query
+   execution only, not parity.
 
    Normalize Advanced Hunting results into a JSON file containing exactly one
    entry per detection and the returned target-query output `schema` array when
@@ -113,9 +138,19 @@ fallback or successful query never marks a rule validated or proves parity.
    or unscoped fallback evidence.
 
    For original Sentinel queries, rerun that **complete family** against the
-   exact locked Log Analytics workspace, normalize one result per detection,
-   and include `querySha256` from that rule's `sentinelQuerySha256` plan entry,
-   then record it with the gap evidence:
+   exact locked workspace. Prefer the native SDK command above; pass the
+   run-local provider-gap evidence if Triage failed:
+
+   ```powershell
+   sentinel-xdr-migration validate-sentinel-sdk `
+     --solution "<solution-path>" `
+     --run-id "<qualification-run-id>" `
+     --provider-gap-evidence "<run-local-provider-gap-sentinel.json>"
+   ```
+
+   For externally imported provider results, normalize one result per
+   detection and include `querySha256` from that rule's
+   `sentinelQuerySha256` plan entry, then record it with the gap evidence:
 
    ```powershell
    sentinel-xdr-migration record-runtime-validation `
@@ -135,7 +170,7 @@ fallback or successful query never marks a rule validated or proves parity.
      --provider-gap-evidence "<run-local-provider-gap-advanced-hunting.json>"
    ```
 
-8. Both providers create normalized JSON and self-contained HTML reports under
+8. Runtime providers create JSON and self-contained HTML reports under
    `Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>`. Treat `blocked` as an
    environment gap, not a conversion failure.
 9. For every rule:
@@ -182,6 +217,14 @@ do not claim the detection is runtime-qualified. For a
 selected lab environment satisfies the required query surfaces.
 
 Return a per-rule result and an overall pass/needs-review summary.
+
+Best-effort entity-mapping assumptions recorded by conversion do not prevent
+read-only Sentinel/Advanced Hunting execution or output-schema binding tests.
+Run and report those tests against the exact hash-bound queries, retaining the
+assumption as pending human review. A successful query or custom-detail schema
+binding is not approval, entity correlation, or alert parity. Keep technical
+failures and other unresolved review findings blocking as applicable; do not
+package or deploy while an entity-mapping review remains pending.
 
 For unresolved table/schema or conversion assumptions, use provider-owned
 evidence: standard-table and schema documentation, live query schema from the

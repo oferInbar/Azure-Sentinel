@@ -3,6 +3,60 @@
 This toolkit converts the analytic rules in a Microsoft Sentinel solution into
 versioned Defender XDR Custom Detection YAML files.
 
+## Product goal and operator flow
+
+**Product goal:** Allow autonomous migration of Sentinel solutions to Defender
+XDR solutions at scale and with quality. Once a user defines the solution, the
+toolkit should prepare the best-supported migration candidate, run the
+applicable automated checks, and clearly surface assumptions and evidence for
+human review. For optional Qualification, the user must also define an approved
+non-production test environment and provide the required permissions. Offline
+Authoring does not require a test environment.
+
+The intended operator flow is:
+
+1. **Define scope and mode.** Supply the solution definition and account for
+   every source object. Explicitly select `authoring` or `qualification`;
+   environment configuration does not implicitly select Qualification.
+2. **Prepare candidates in a batch.** Prefer stable, evidence-supported
+   mappings. When semantics are uncertain but a defensible target candidate
+   exists, generate that candidate without pausing for a per-rule decision,
+   preserve the original available values in details where the target mapping
+   cannot carry them, and record the assumption, evidence, and source/query
+   hashes for review. Do not invent logic, fields, or equivalence.
+3. **Check and classify results.** Run structural validation and only the
+   read-only query or schema checks supported by the selected mode and
+   available authorization. Distinguish reviewable mapping uncertainty from
+   malformed input, unsupported structure, missing prerequisites, and actual
+   execution or validation errors; the latter remain errors, not assumptions.
+   If a source rule cannot be represented as a valid deployable XDR detection,
+   retain an explicit diagnostic candidate and disposition outside deployable
+   detection YAML rather than fabricate a runnable rule.
+4. **Review the batch.** Present complete inventory coverage and per-object
+   outcomes, including unresolved, unsupported, unprocessed, and explicitly
+   excluded objects. At a later human-review stage, the operator can accept the
+   reviewed candidate bundle for packaging, request a scoped change, or exclude
+   an object with a reason. Acceptance resolves only the reviewed assumptions
+   in scope; it cannot waive technical, input, or query failures. Preserve
+   exclusions in the inventory and provenance; a change must regenerate
+   affected output and rerun checks against current input hashes. Acceptance is
+   a review decision, not proof of runtime correctness or alert parity.
+5. **Package and, only if approved, qualify.** Build the package from the
+   reviewed, current candidate inputs through the V3.1 route. Packaging,
+   deployment readiness, and runtime qualification remain separate. Deployment
+   and ingestion are Qualification-only writes requiring explicit,
+   exact-scope approval immediately before the operation; candidate acceptance
+   does not authorize them.
+
+**Implementation status:** This is the desired product direction, not a claim
+that end-to-end autonomous semantic mapping, general uncertainty handling,
+batch accept/change/exclude decisions, or candidate diagnostics are already
+implemented. Current conversion supports only specific deterministic
+best-effort entity mappings with hash-bound `reviewRequired` findings.
+Unresolved review and technical gates still block packaging. Existing commands
+do not yet provide the general batch-review decisions described above; see
+the capability matrix below for implemented behavior and pending work.
+
 ## Requirements
 
 - Python 3.11 or 3.12
@@ -242,6 +296,18 @@ not invent those mappings. These are converter limitations, not claims that
 Defender lacks the entity type. The required Host/Account/Mailbox/IP asset gate
 is unchanged.
 
+When an unsupported source identifier has an available output value, conversion
+uses the best supported target identifier available from the source mapping
+and query projection, then retains the original query output column in
+`customDetails` and records a hash-bound `reviewRequired` assumption. For
+example, `Host.FullName` can provisionally map to the supported
+`hosts.nameColumn` when no stronger supported Host identifier is available.
+Supported host fields are defined by the Microsoft Graph
+[`hostEntityMapping` contract](https://learn.microsoft.com/en-us/graph/api/resources/security-hostentitymapping?view=graph-rest-beta).
+Existing supported host identifiers take precedence; unsupported target fields
+and columns not emitted by the query are never invented. The review is not
+auto-accepted and does not establish identity equivalence or parity.
+
 ### Supplemental entity evidence in custom details
 
 Whenever source entity information lacks an equivalent final entity mapping,
@@ -249,15 +315,21 @@ the converter also binds the original output value under
 `properties.detectionAction.alertTemplate.customDetails`. This applies to every
 entity family, unsupported identifiers, ambiguous repairs, conflicting mappings,
 and identifiers omitted by an explicit `ruleOverrides.<id>.entityMappings`.
-For example, a reviewed `hosts.nameColumn: HostName` plus IP mapping can retain
-the original Host.FullName value as `customDetails.HostFullName: DeviceName`.
-It does **not** map arbitrary FullName values to `nameColumn`, replace valid
-entities, or claim restored identity, correlation, semantic equivalence, or
-alert parity. When the bound output column is statically proven available, the
-unmapped identifier is reported as nonblocking information; unknown output
-schema, missing columns, conflicts, and custom-detail limits remain warnings or
-errors. Supplemental values never resolve independent identity-confirmation
-reviews.
+For example, a supported `hosts.nameColumn: HostName` plus IP mapping can
+retain the original Host.FullName value as
+`customDetails.HostFullName: DeviceName`; if no supported host-name candidate
+exists, an available Host.FullName output may itself be provisionally bound to
+`hosts.nameColumn`. An unproven choice is explicitly marked for human review.
+This best-effort assumption is nonblocking for conversion, structural
+validation, and read-only runtime query/output-schema testing, allowing a
+large batch to continue without per-rule pauses. It does **not** replace a
+valid supported mapping, establish restored identity/correlation/semantic
+equivalence, or claim alert parity. Missing or unproven output bindings,
+conflicts, malformed content, custom-detail limits, other review reasons, and
+technical/query failures retain their normal warnings, errors, and gates.
+Pending entity review blocks packaging and deployment; only hash-current
+human review can resolve it. Supplemental values never resolve independent
+identity-confirmation reviews.
 
 The [Graph `alertTemplate` contract](https://learn.microsoft.com/en-us/graph/api/resources/security-alerttemplate?view=graph-rest-beta)
 defines each custom-detail value as a **query output column name**, not an event
@@ -307,13 +379,18 @@ the runtime limit is exceeded. Schema success is not proof of value-size safety;
 qualification must check actual values.
 
 `contentProvenance.conversion.informational` and manifest result
-`informational` are optional string lists for nonblocking explanations of
-preserved equivalents. They do not set errors, review reasons, or `needsReview`.
-For example, Host.FullName is informational only when a conservative query proof
-shows that retained HostName and DnsDomain explicitly decompose that same value
-using the `iff`/`substring`/`indexof` pattern. Merely having name/domain columns
-is not proof. Reassignments, branches, conflicting values, and unknown shapes
-retain a warning; no unsupported `fullNameColumn` is emitted.
+`informational` explain preserved equivalents. A best-effort entity choice is
+instead recorded in `reviewReasons` and as `reviewRequired`, even though the
+draft can still have conversion `status: converted` so structural and
+read-only runtime tests can proceed. Host.FullName is informational without
+review only when a conservative query proof shows that retained HostName and
+DnsDomain explicitly decompose that same value using the
+`iff`/`substring`/`indexof` pattern. Merely having name/domain columns is not
+proof. When proof is absent, retain the original value in custom details and
+record the selected supported field as a pending assumption. Reassignments,
+branches, conflicting values, missing output columns, other technical errors,
+and independent review findings retain their own warnings/errors/gates; no
+unsupported `fullNameColumn` is emitted.
 The identity proof also permits `summarize` when the full name survives as a
 bare grouping key; previously derived name/domain columns must likewise survive
 unchanged if reused. Aggregate values and computed grouping keys do not prove
@@ -440,6 +517,9 @@ resolution or copy platform-specific metadata across incompatible contracts.
 | Custom logs | `_CL` recognition identifies names, not a complete schema. | Infer only from actual available connector/DCR/table metadata; report missing/conflicting evidence explicitly. |
 | Runtime validation declined | YAML generation is possible without runtime access; existing structural/review checks and workflow gates remain. No general no-runtime completion/waiver mode is introduced here. | Show the disclosure below and specific checks. Any new optional-validation state/gate behavior requires a separate implementation decision. |
 | Entity equivalence | Documented identifier mappings and conservative proofs exist; unsupported mappings produce diagnostics. | Explain the exact retained identifiers, actual field loss, or proven equivalence; distinguish converter proof limits from target-contract limits. |
+| Best-effort entity assumptions | Available unsupported entity values can use a deterministic supported candidate, remain in custom details, and carry hash-bound pending review while structural/read-only runtime tests continue. | Never auto-accept or claim parity; human review remains required before V3.1 packaging/deployment. Other technical and review gates remain unchanged. |
+| General semantic uncertainty and batch review | Best-effort continuation is limited to specific entity-mapping cases. There is no general assumption-driven candidate workflow or batch accept/change/exclude interface. | For defensible uncertain mappings, generate a documented candidate and hash-bound assumption for later human review without per-rule pauses. Support scoped accept, change-and-regenerate, or reasoned exclusion while retaining every object and disposition in inventory/provenance. Acceptance does not prove runtime correctness or parity. |
+| Non-representable rules and inventory coverage | Conversion diagnostics and full-inventory authoring cover current supported paths; there is no general diagnostic-candidate contract for a source object that cannot become valid deployable detection YAML. | Keep a complete denominator and explicit per-object outcomes. Emit non-deployable diagnostics outside XDR detection YAML rather than fabricate a runnable rule; unsupported, blocked, unprocessed, and excluded objects remain visible and are never silently dropped. |
 | Source connector dependencies | Optional top-level `requiredDataConnectors` is deep-copied unchanged and structurally validated. Graph and inner ARM properties exclude it. | Repair schema-clear inconsistencies in source and draft through the authoring step above, then inform the user; converter source inputs remain read-only. Target-specific dependency translation/registration remains separate pending work; source declarations do not prove deployment readiness. |
 
 When runtime validation is declined, the review UI should say:
@@ -1227,13 +1307,44 @@ sentinel-xdr-migration package-v3-1 `
   --version-bump none
 ```
 
-The command invokes `V3/createSolutionV3_1.ps1` (V3.1) and writes
-`Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\packaging.v3_1.json`. A packaging
-stage cannot pass without that current-run V3.1 evidence and all generated
-package artifacts.
+For separate solution and toolkit worktrees, add `--toolkit-root "<toolkit-worktree>"`.
+The command still uses the gated workflow packaging route: it invokes that
+toolkit's `V3/createSolutionV3_1.ps1` (V3.1), while reading source content and
+writing package files and evidence under the selected solution. The toolkit
+root must contain the complete required V3.1 helper and template set. Without
+the option, the solution's repository remains the toolkit root. The command
+writes `Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\packaging.v3_1.json`.
+A packaging stage cannot pass without that current-run V3.1 evidence and all
+generated package artifacts.
 
 Old V4 reports remain historical evidence; do not relabel them as V3.1.
-Rebuild using `package-v3-1`. Package-version selection is unchanged, but V3.1
+When current solution inputs change after a successful package, `workflow-status`
+shows `packageFreshness: stale` and `workflow-next` reports that an explicit
+release action is required. Select the action against the exact package-input
+hash reported by status, then package with that same action:
+
+```powershell
+sentinel-xdr-migration workflow-plan-package-release `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --version-bump patch `
+  --expected-package-input-sha256 "<current-package-input-sha256>"
+
+sentinel-xdr-migration package-v3-1 `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --version-bump patch
+```
+
+The new action must be explicitly `patch`, `minor`, or `major`; status reads
+never change workflow state. The old V3.1 report and package artifacts are
+preserved under that run's `package-history` evidence before rebuilding. A
+changed input hash invalidates a pending choice. If a build consumes the
+selected version but fails, a retry may use `--version-bump none` only for the
+matching post-build inputs. Existing technical and unresolved entity-review
+gates remain mandatory.
+
+Package-version selection is unchanged, but V3.1
 rejects effective solution and XDR release versions outside `[3.1.0, 4.0.0)`,
 and other content-item release versions `>= 4.0.0`. Explicit bumps that select
 an out-of-range version fail without overwriting package files or persisting
@@ -1390,14 +1501,230 @@ the MCP or fallback provider. Missing/stale hashes are recorded as blocked.
 The public CLI does not implement or host an MCP server; the repository skill
 invokes the configured official MCP.
 
-For original Sentinel queries, the orchestrator falls back to Log Analytics
-CLI/API when the connected MCP does not advertise a suitable workspace-query
-tool or has a provider-level failure. Record those normalized results with
-`--provider log-analytics-cli`; rules intentionally excluded from a targeted
-live scenario can use the `not-run` status. For Advanced Hunting, the
-orchestrator falls back to the Graph CLI. A genuine KQL error returned by
-Triage is preserved as a failed detection and is not retried through another
-provider.
+For a complete original Sentinel query family, the toolkit also provides a
+native Azure Monitor Query SDK runner. It is an explicit Qualification-only
+command: it requires the run's locked tenant, subscription, and workspace,
+verifies the active Azure CLI tenant and subscription without signing in, then
+uses `AzureCliCredential` pinned to the locked tenant and sends the locked
+workspace customer ID to the query API. The credential deliberately does not
+pass a subscription argument: Azure CLI rejects token requests that specify
+both `--tenant` and `--subscription`; the active subscription is independently
+checked before any query and is never changed. It does not use shell commands
+to transport KQL, modify the query text, add a timespan, or discover
+workspaces. Each request passes the exact source query string with
+`timespan=None`. The default request timeout is 90 seconds, the complete
+family budget is 30 minutes, and at most two bounded transient retries are
+attempted per query. Authentication, authorization, transport, partial-result,
+and KQL failures remain distinct; no KQL failure triggers provider fallback.
+
+```powershell
+sentinel-xdr-migration validate-sentinel-sdk `
+  --solution "Solutions\<solution>" `
+  --run-id "<qualification-run-id>"
+```
+
+This executes every recursively inventoried source Analytic Rule exactly once
+per attempt and requires a one-to-one, current-provenance mapping to generated
+detections; empty, scoped, stale, or incomplete families fail closed. Full
+returned table schemas and rows—including typed values in deterministic JSON
+form—are kept in the ignored run-local `runtime-validation.azure-monitor-sdk.json`
+report. A successful zero-row response means only that the query ran; it is not
+parity evidence. An optional `--provider-gap-evidence` binds this complete SDK
+family to an approved Triage MCP provider failure. Query families are never
+combined across providers.
+
+Use the official Sentinel Triage MCP first when it advertises an appropriate
+workspace-query tool. If it fails at the provider level, rerun the entire
+family through the SDK command above or import externally executed results
+under `--provider log-analytics-cli`; imported results still require exact
+`querySha256` values. For Advanced Hunting, use the Graph runtime validator. A
+genuine KQL error returned by Triage is preserved as a failed detection and is
+not retried through another provider.
+
+### Qualification deployment-scope planning and advance consent
+
+During Qualification preflight, review the exact deployment/ingestion plan
+before reaching any environment-write approval step. `preflight-deployment`
+exposes the additive `deploymentPlanning` object. Its target comes only from
+the selected run's locked `qualification-target.json`; this preflight does not
+discover or switch targets, start authentication, or make deployment writes.
+The existing solution-local `.env` is read only through the target
+configuration resolver and is neither authentication nor consent. It is
+excluded from source/package fingerprints and all package/evidence exports.
+
+Persist a current local plan and review the exact scope:
+
+```powershell
+sentinel-xdr-migration plan-deployment `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>"
+
+sentinel-xdr-migration review-deployment-plan `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --expected-plan-sha256 "<planSha256-from-plan-deployment>" `
+  --actor "<reviewer>" `
+  --approve-component sentinelAlertRules `
+  --approve-component xdrCustomDetections `
+  --max-additional-custom-detections <reviewed-cap>
+```
+
+`plan-deployment` and `review-deployment-plan` make no cloud calls; the
+approval command writes only the local `deployment-planning-consent.json`
+artifact. Review the recursive source inventory, unique source-rule IDs,
+current reviewed disabled drafts, eligible maximum additional Custom
+Detections, exclusions, exact target/solution/version, current package/content
+hashes, package resource types, and component-specific count caps. The eligible
+maximum is an upper bound, not a guaranteed conversion count. Without a
+current package or complete reviewed ingestion plan, those scopes are
+provisional. `planSha256` binds the review to the complete current plan;
+changed target/content/package identity, payload, resource family, package
+flags, or cap requires re-planning and renewed consent.
+
+The direct route is disabled Sentinel alert rules plus Graph Custom Detections
+as reviewed AR/CD pairs, with an explicit maximum-additional-CD cap. The
+separate later `fullPackageAcceptance` component requires a current verified
+V3.1 package and an explicit boolean choice for every package-declared
+selection flag. It covers full-package installation and any selected XDR
+installation/Content Hub registration—not package creation alone. Pair-first
+deployment and later package acceptance are distinct routes. Stored playbook,
+workbook, connector, API, and connection definitions are not approvals to
+instantiate or enable those resources.
+
+Optional components are `mockTelemetryIngestion`, `fallbackDcr`,
+`fallbackDce`, and `customTableCreate`. Ingestion scope is not approvable until
+the reviewed, run-bound plan identifies the destination and stream, payload
+hash and record count, batch caps, bytes/cost/retention impact, contract,
+transform and schema hashes, marker/timestamp fields, and one shared
+payload-per-pair execution. Benign controls remain separate. DCR/DCE support
+ingesting reviewed local mock data; neither is needed to generate mock data.
+DCR and DCE provisioning are conditional, distinct scopes, and a DCE must be
+explicitly selected or proven required. The current DCR resolver checks
+registered exact resource-name candidates only; it does not discover
+arbitrary solution-owned DCRs. A fresh exact check is required before
+provisioning, and this limitation must not be described as proof of absence.
+
+Custom-table creation is conditional only for an exact contract-proven absent
+custom-log destination, and its plan includes the table resource, contract and
+schema path/fingerprints, and column count. A present incompatible table is
+blocked rather than altered. When a compatible native table such as
+`CommonSecurityLog` exists, table creation is `not-needed`; do not create a
+custom lookalike. Table creation, DCR/DCE provisioning, telemetry ingestion,
+rule deployment, enablement, cleanup/deletion, retention changes, and role or
+identity changes are separate operations and are not implied by another
+component's consent.
+
+Advance planning consent is distinct from permissions, technical readiness,
+deployment evidence, and immediate exact-scope write approval. Missing,
+false, unknown, stale, or declined consent never counts as approved; do not
+infer it from “Continue,” token scope, environment identity, example counts,
+or mock-generation hypotheses. Keep the existing explicit approval directly
+before every environment write. A denied/missing plan consent must not block
+independent read-only checks or offline Authoring.
+
+For package acceptance, ARM validation/preview applies only where supported.
+Bicep extensibility imports do not support `what-if`
+([Microsoft Learn](https://learn.microsoft.com/en-us/graph/templates/limitations#unsupported-deployment-features));
+do not pass or wait for a `what-if` result for that route. Ordinary ARM
+previews do not prove extension acceptance, and ARM validation must not be
+described as validating extension behavior. Approved deployment and readback
+remain necessary.
+
+### Qualification mock-ingestion DCR selection
+
+The intended policy is to prefer a DCR explicitly listed or referenced by the
+selected solution when it demonstrably supports the exact shared fixture in
+the locked non-production workspace. Compatibility means the deployed DCR is
+available at the intended destination, accepts the fixture's public input
+stream and fields, applies the expected transform, writes the expected table
+and schema, and is usable with the approved endpoint and permissions. For the
+Logs Ingestion API, structured input uses a customer-authored `Custom-*` input
+stream and `transformKql` to project/cast into a supported `Microsoft-*`
+output stream; a public destination schema does not expose a connector's
+internal parser or enrichment logic. The public
+[`/v1/metadata` endpoint](https://api.loganalytics.io/v1/metadata) describes
+schema, not ingestion capability or connector behavior; confirm the route
+against the table feature matrix and never assume reserved or service-managed
+columns are writable. See the
+[Logs Ingestion API overview](https://learn.microsoft.com/en-us/azure/azure-monitor/logs/logs-ingestion-api-overview)
+and [table feature matrix](https://learn.microsoft.com/en-us/azure/azure-monitor/reference/tables-features).
+A packaged ARM-template reference alone does not prove that the DCR exists in
+the target workspace. Do not confuse a DCR's internal ingestion identifier
+with its public input-stream name, and do not enumerate other workspaces to
+find a candidate.
+
+If no solution-listed DCR meets that contract, a supported ingestion contract
+may be used to author a separate, isolated DCR locally and provision it only
+in the explicitly approved Qualification environment. A DCE is needed for
+private-link ingestion or when the DCR has no ingestion endpoint; the current
+contract tool may provision an isolated DCE as part of its supported route,
+but DCE creation is not a universal Logs Ingestion API requirement.
+“Locally” describes authoring the configuration, not a local ingestion
+service. Never alter an existing connector DCR or add a stream to it to force
+fixture compatibility. If the source table does not support the documented
+ingestion path, use a documented native telemetry generator or block the
+qualification step; never redirect the rule to a custom lookalike table.
+Provisioning and ingestion each require the applicable permissions and
+immediate, exact-scope approval. Ingestion acceptance alone is not visibility,
+query matching, or parity evidence.
+
+Before fixture preparation, run the read-only Qualification preflight and
+report telemetry-write, DCR creation, conditional DCE creation, and
+conditional destination-table creation permissions separately. Check DCE
+creation only when the selected route actually includes a DCE. The preflight
+is diagnostic-only and does not provision resources or grant write approval.
+`unknown` or pending review is not a permission grant. A missing permission
+blocks only the corresponding write; it must not suppress independent
+read-only workspace, DCR, schema, or query checks. The command requires no
+fixture. Pass `--run-id` when the solution has multiple runs; omit it only
+when the run is unique.
+
+```powershell
+sentinel-xdr-migration preflight-deployment `
+  --solution "Solutions\<solution>" `
+  --auth-method azure-cli `
+  --run-id "<run-id>"
+```
+
+It adds `dcrPermissionPreflight` to the top-level Graph report and writes
+`qualification-dcr-preflight.json` under the selected run's
+`Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\` directory. The
+subreport records `status`, `workspaceQueryPermission`, and per-contract
+`resourceReadAccess`, `tableSchemaCompatibility`, `ingestionAuthorization`,
+`resourceProvisioningAuthorization`, and `tableCreationAuthorization`, along
+with `reportPath`, `targetFingerprint`, `schemaFingerprint`,
+`transformFingerprint`, `contractFingerprint`, `resourceFingerprint`,
+`candidateProvenance`, and `candidateSelection`. `contractFingerprint` is the
+SHA-256 of the registered serialized contract. `resourceFingerprint` hashes
+the exact target workspace, candidate DCE/DCR/table IDs, returned resource
+configuration/schema, and current resource states. Provenance is
+`registered-contract-resolver`, and candidate selection is
+`exact-contract-resource-names-only`.
+`resourceProvisioningAuthorization` separately
+reports `dcrWrite` and `dceWrite` at the exact resource-group scope; DCE write
+is checked only when the selected missing-pair plan includes DCE provisioning.
+Per-capability authorization statuses are `ready`, `denied`, `unknown`,
+`not-yet-verifiable`, or `not-needed`; table schema status is `compatible`,
+`blocked`, or `unknown`; workspace query permission is `ready`, `denied`,
+`unknown`, or `not-checked`; aggregate report status is `ready`,
+`action-required`, `blocked`, `unknown`, or `not-applicable`.
+`resourceReadAccess` can be `ready`, `denied`, `unknown`, or `unavailable`
+(including HTTP 401); `targetVerification` can be `blocked`, `unavailable`,
+`confirmed`, or `not-checked`.
+A `ready` permission means the effective permission pattern was inspected,
+not that upload, table visibility, or query matching succeeded. Treat all
+results as read-only diagnostics; they do not authorize provisioning or
+ingestion. Unknown or pending-review permissions must not be reported as
+granted.
+
+**Implementation status:** The current registered-contract resolver checks
+contract-specific resources in the locked target workspace; it does not yet
+discover or prefer a DCR referenced by the solution. Treat solution-first
+selection as the intended policy, not an implemented automatic resolver.
+Until that integration exists, report the resolver's actual
+`compatible-existing` or `provisioning-plan` result and do not claim that a
+solution-listed DCR was selected unless its compatibility was explicitly
+established.
 
 ## Strict live alert parity
 
@@ -1477,6 +1804,72 @@ conversion and structural results, runtime providers, deployment, strict alert
 parity, entity recommendations, ingestion artifacts, and complete structured
 errors. The HTML renders detailed errors in expandable sections; the JSON
 retains the complete sanitized provider response rather than only a summary.
+
+### Adaptive migration-flow schematic
+
+The offline HTML report places a keyboard-accessible subway schematic directly
+below the title and snapshot timestamp. Its first informational station is
+**Necessary setup / initial preflight**, before Discovery. That station displays
+only persisted run/profile/target records and any already-recorded, scope-bound
+authentication or planning-consent evidence. It does not run the doctor,
+authenticate, inspect local auth caches, or make network calls. Missing local
+tool checks and authentication remain unknown/not recorded; `.env` target
+configuration is not proof of access or approval. Qualification still requires
+a fresh read-only preflight immediately before deployment.
+
+The added Setup stop is informational, not a canonical workflow stage or gate.
+Authoring runs show it before the compact mandatory route
+**Discovery → Conversion → Validation → Packaging → Report**; Validation
+remains required and the optional lab branch is omitted. Qualification runs
+show a display-only post-build sequence: a distinct official local validation
+rerun, read-only preflight, disabled direct AR/CD testing pairs, reviewed-fixture
+ingestion, semantic/query validation, alert parity, then separately approved
+full-package deployment/read-back before Report. This illustrates the selected
+pair-first test plan; it does not reorder or redefine canonical workflow stages.
+Full-package acceptance is separate from the V3.1 package build, and neither
+package files nor pair results prove full-package acceptance. The full-package
+step is shown as not tracked/not run unless separate execution evidence exists.
+Publication is optional and outside the tracked workflow.
+Legacy reports without confirmed mode remain **Mode not recorded**; attempted
+qualification-stage evidence is still shown rather than hidden.
+
+Every station circle and label is a keyboard-accessible link to its evidence
+section; missing evidence opens an explicit unavailable/not-recorded explanation.
+Safe local artifact links are rendered only for existing files inside the
+selected migration run. Selecting a station shows its recorded stage status,
+remarks, evidence references, timestamps, and elapsed time when available.
+The preflight panel separates the required
+`CustomDetection.ReadWrite.All` grant from read access, exact GET results,
+effective RBAC, and deployment readiness; a successful GET or read grant is not
+a deployment-ready result. The diagram calls out
+an overall blocked/failed workflow independently from individual passed stages;
+a package is shown as passed only when the recorded package-freshness check is
+current. External publication is always marked **Not tracked** by this workflow:
+building a package is not evidence that it was published. This is a generated
+snapshot, not live status, and station selection is informational only.
+
+An upfront package-resource inventory is planning context, not an approved
+deployment scope. It reads resource types from the generated ARM template,
+including nested arrays and language-version 2 resource dictionaries, and
+displays API versions and the current template hash when verifiable. Separate
+DCR/DCE Qualification resources are not inferred from package content. Prior
+planning agreement and exact-scope write approval are distinct; the latter is
+still required immediately before each environment write. The report cannot
+authorize or initiate deployment, ingestion, cleanup, or any other write.
+When a persisted deployment-planning contract exists, the panel also shows its
+selected profile/mode, target and package identity, plan/artifact fingerprints,
+source inventory and scope caps, resource inventory, component plans, selected
+flags, and hash-bound advance-consent scope. Missing, provisional, stale, or
+unknown planning metadata remains explicitly unapproved; planning consent never
+substitutes for immediate exact-scope write approval or readiness evidence.
+Controlled alert-parity and owned-resource-cleanup coverage, when present, is
+displayed as non-consentable planning metadata with its recorded bounds/status;
+it never represents advance consent or write authorization.
+The subway precedes this technical planning panel. Planning status and target
+summary are concise; the full candidate package-resource inventory occupies
+its own readable, horizontally scrollable table, while hashes, raw scope
+identifiers, package defaults, and detailed component evidence are expandable.
+The inventory table alone scrolls horizontally on narrow screens.
 
 The offline HTML dashboard opens in **Needs attention**, with single-select
 status chips, search by name/path/ID/finding, and multi-select issue categories.
@@ -1679,6 +2072,35 @@ sentinel-xdr-migration setup-deployment `
   --tenant-id "<tenant-id>" `
   --auth-method browser
 ```
+
+Before deployment, run the read-only Qualification preflight with an explicitly
+selected cached credential:
+
+```powershell
+sentinel-xdr-migration preflight-deployment `
+  --solution "Solutions\<solution>" `
+  --auth-method azure-cli `
+  --run-id "<run-id>"
+```
+
+The preflight requires the `CustomDetection.ReadWrite.All` management
+permission in the acquired token, reported as a delegated `scp` or an
+application `roles` claim. For Azure CLI it requests a Graph resource token
+with `https://graph.microsoft.com/.default`; that resource request does not
+prove the permission is present, so the token claims are inspected separately.
+Missing permission claims or malformed claim values are reported as unknown.
+A delegated `CustomDetection.Read.All` grant may support the preflight's
+read-only exact-rule check, but does not satisfy deployment's required
+management permission.
+
+The report separates `managementPermissionGrant` from `readAccess`,
+`effectiveRole`, and `writeAuthorization`. A successful exact-rule `GET`
+confirms only read access. Even when the required token permission is present
+and reads succeed, deployment readiness remains unconfirmed until an approved
+deployment verifies the actual write authorization. This command does not
+create or update rules, request consent, start login, or switch credential
+methods. Run `setup-deployment` separately when cached authentication or
+consent must be established.
 
 Deploy every structurally valid, fully converted detection:
 

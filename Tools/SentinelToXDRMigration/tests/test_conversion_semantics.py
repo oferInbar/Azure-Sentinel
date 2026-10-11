@@ -168,7 +168,11 @@ class EntitySemanticsTests(unittest.TestCase):
                 _, warnings, info = self.convert(
                     [entity("Host", FullName="DeviceName", HostName="HostName", DnsDomain="DnsDomain")], query,
                 )
-                self.assertTrue(any("converter cannot map Host.FullName" in value for value in warnings))
+                self.assertTrue(any(
+                    "Best-effort entity mapping requires review:" in value
+                    or "converter cannot map Host.FullName" in value
+                    for value in warnings
+                ))
                 self.assertFalse(info)
 
     def test_fullname_decomposition_after_preserving_aggregation(self):
@@ -203,7 +207,11 @@ class EntitySemanticsTests(unittest.TestCase):
                 _, warnings, info = self.convert(
                     [entity("Host", FullName="DeviceName", HostName="HostName", DnsDomain="DnsDomain")], query,
                 )
-                self.assertTrue(any("converter cannot map Host.FullName" in value for value in warnings))
+                self.assertTrue(any(
+                    "Best-effort entity mapping requires review:" in value
+                    or "converter cannot map Host.FullName" in value
+                    for value in warnings
+                ))
                 self.assertFalse(info)
 
     def test_multiple_source_identifiers_do_not_silently_overwrite(self):
@@ -432,7 +440,11 @@ class InformationContractTests(unittest.TestCase):
         target_query = document["properties"]["queryCondition"]["queryText"]
         self.assertIn("DeviceEvents | where Timestamp >= ago(2h) | summarize", target_query)
         self.assertEqual(conversion["status"], "converted")
-        self.assertFalse(conversion["reviewRequired"])
+        self.assertTrue(conversion["reviewRequired"])
+        self.assertTrue(any(
+            "Best-effort entity mapping requires review:" in reason
+            for reason in conversion["reviewReasons"]
+        ))
         window = conversion["eventTimeWindow"]
         self.assertEqual(window["originalSentinelLookbackSeconds"], 7200)
         self.assertEqual(window["effectiveEventWindowSeconds"], 7200)

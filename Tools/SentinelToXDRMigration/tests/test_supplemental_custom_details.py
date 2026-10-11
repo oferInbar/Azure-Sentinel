@@ -61,7 +61,12 @@ class SupplementalCustomDetailsTests(unittest.TestCase):
         self.assertEqual(alert["entityMappings"]["ips"][0]["addressColumn"], "SourceIP")
         self.assertNotIn("fullNameColumn", alert["entityMappings"]["hosts"][0])
         conversion = self.conversion(document)
-        self.assertFalse(any("Host.FullName" in warning for warning in conversion["warnings"]))
+        self.assertTrue(conversion["reviewRequired"])
+        self.assertTrue(any(
+            "Best-effort entity mapping requires review:" in reason
+            and "hosts.nameColumn `HostName`" in reason
+            for reason in conversion["reviewReasons"]
+        ))
         self.assertTrue(any(
             "Host.FullName" in note and "customDetails.HostFullName" in note
             and "do not restore entity identity" in note for note in conversion["informational"]
@@ -72,9 +77,83 @@ class SupplementalCustomDetailsTests(unittest.TestCase):
             "status": "available", "customDetailKey": "HostFullName",
         }])
         self.assertEqual(validate_document(document), [])
-        payload = graph_detection_payload(document)
-        self.assertEqual(payload["detectionAction"]["alertTemplate"]["customDetails"], alert["customDetails"])
+        with self.assertRaisesRegex(ValueError, "no review required"):
+            graph_detection_payload(document)
+
+        reason = conversion["reviewReasons"][0]
+        accepted = self.build({"reviewDecisions": [{
+            "reason": reason,
+            "decision": "accepted",
+            **conversion["reviewScope"],
+        }]})
+        payload = graph_detection_payload(accepted)
+        self.assertEqual(
+            payload["detectionAction"]["alertTemplate"]["customDetails"],
+            alert["customDetails"],
+        )
         self.assertNotIn("contentProvenance", payload)
+
+    def test_best_effort_fullname_maps_to_supported_host_name_and_keeps_original(self):
+        self.rule["query"] = (
+            "DeviceEvents | where TimeGenerated > ago(1h) "
+            "| project TimeGenerated, DeviceName, SourceIP"
+        )
+        self.rule["entityMappings"] = [
+            entity("Host", FullName="DeviceName"),
+            entity("IP", Address="SourceIP"),
+        ]
+
+        document = self.build()
+        conversion = self.conversion(document)
+        host = self.alert(document)["entityMappings"]["hosts"][0]
+
+        self.assertEqual(host["nameColumn"], "DeviceName")
+        self.assertEqual(self.alert(document)["customDetails"], {"HostFullName": "DeviceName"})
+        self.assertTrue(conversion["reviewRequired"])
+        self.assertEqual(conversion["status"], "converted")
+        self.assertEqual(validate_document(document), [])
+        self.assertEqual(document, self.build())
+        self.assertEqual(
+            conversion["supplementalEntityDetails"][0]["customDetailKey"],
+            "HostFullName",
+        )
+
+    def test_missing_fullname_output_stays_reviewable_without_inventing_mapping(self):
+        self.rule["query"] = "DeviceEvents | project TimeGenerated, SourceIP"
+        self.rule["entityMappings"] = [
+            entity("Host", FullName="DeviceName"),
+            entity("IP", Address="SourceIP"),
+        ]
+
+        document = self.build()
+        conversion = self.conversion(document)
+
+        self.assertNotIn("hosts", self.alert(document)["entityMappings"])
+        self.assertNotIn("customDetails", self.alert(document))
+        self.assertTrue(conversion["reviewRequired"])
+        self.assertEqual(conversion["status"], "converted")
+        self.assertTrue(any("not available in the query output" in reason
+                            for reason in conversion["reviewReasons"]))
+        self.assertTrue(any("not preserved" in warning
+                            for warning in conversion["warnings"]))
+        self.assertEqual(validate_document(document), [])
+
+    def test_best_effort_review_decision_expires_when_query_changes(self):
+        document = self.build()
+        conversion = self.conversion(document)
+        decision = {
+            "reason": conversion["reviewReasons"][0],
+            "decision": "accepted",
+            **conversion["reviewScope"],
+        }
+        self.rule["query"] += " | where SourceIP != ''"
+
+        refreshed = self.build({"reviewDecisions": [decision]})
+        current = self.conversion(refreshed)
+
+        self.assertTrue(current["reviewRequired"])
+        self.assertTrue(any("reviewDecision" in error and "stale" in error
+                            for error in current["errors"]))
 
     def test_explicit_mapping_override_still_preserves_original_values(self):
         override = {"entityMappings": {
@@ -221,7 +300,7 @@ class SupplementalCustomDetailsTests(unittest.TestCase):
         plan = runtime_validation_plan(self.solution)
         self.assertEqual(plan["rules"][0]["customDetailBindings"], {"HostFullName": "DeviceName"})
 
-    def test_external_runtime_result_requires_target_output_schema(self):
+    def test_source_runtime_schema_is_not_mistaken_for_target_output_schema(self):
         self.build()
         convert_solution(self.solution)
         results = self.solution / "provider-results.json"
@@ -232,12 +311,8 @@ class SupplementalCustomDetailsTests(unittest.TestCase):
         }
         results.write_text(json.dumps([entry]))
         result = record_runtime_validation(self.solution, provider="triage-mcp", results_path=results)
-        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(result["valid"], 1)
         entry["schema"] = [{"Name": "Other"}]
-        results.write_text(json.dumps([entry]))
-        result = record_runtime_validation(self.solution, provider="triage-mcp", results_path=results)
-        self.assertEqual(result["invalid"], 1)
-        entry["schema"] = [{"Name": "DeviceName"}]
         results.write_text(json.dumps([entry]))
         result = record_runtime_validation(self.solution, provider="triage-mcp", results_path=results)
         self.assertEqual(result["valid"], 1)

@@ -10,11 +10,29 @@ class UrlDetail {
 
 try {
 	$urlDetailList = New-Object 'System.Collections.Generic.List[PSObject]'
-    $baseFolderPath = $baseFolderPath + "/"
-    $baseFolderPath = $baseFolderPath.replace("//", "/")
+    $contentRoot = if ($baseFolderPath) {
+      [System.IO.Path]::GetFullPath($baseFolderPath)
+    } else {
+      [System.IO.Path]::GetFullPath((Get-Location).Path)
+    }
+
+  function Test-PrivateSolutionContentPath([string]$filePath) {
+    $segments = $filePath -split '[\\/]'
+    if ($segments.Count -lt 3 -or -not $segments[0].Equals("Solutions", [System.StringComparison]::OrdinalIgnoreCase)) {
+      return $false
+    }
+    foreach ($segment in $segments | Select-Object -Skip 2) {
+      if ($segment.Equals("Logs", [System.StringComparison]::OrdinalIgnoreCase) -or
+          $segment.Equals("Reports", [System.StringComparison]::OrdinalIgnoreCase) -or
+          $segment.Equals("Evidence", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+      }
+    }
+    return $false
+  }
 
   if ($SolutionPath) {
-    $solutionsRoot = [System.IO.Path]::GetFullPath((Join-Path $baseFolderPath "Solutions")).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $solutionsRoot = [System.IO.Path]::GetFullPath((Join-Path $contentRoot "Solutions")).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
     $resolvedSolutionPath = [System.IO.Path]::GetFullPath($SolutionPath)
     if ([System.IO.Path]::GetDirectoryName($resolvedSolutionPath) -ne $solutionsRoot -or
         -not (Test-Path $resolvedSolutionPath -PathType Container) -or
@@ -22,7 +40,7 @@ try {
       throw "Invalid solution folder '$SolutionPath'. Expected an existing direct child of '$solutionsRoot'."
     }
     $filesList = @(Get-ChildItem $resolvedSolutionPath -Recurse -File |
-      ForEach-Object { [System.IO.Path]::GetRelativePath($baseFolderPath, $_.FullName).Replace('\', '/') } |
+      ForEach-Object { [System.IO.Path]::GetRelativePath($contentRoot, $_.FullName).Replace('\', '/') } |
       Where-Object {
         $_ -notlike 'Solutions/Images/*' -and
         $_ -notlike 'Solutions/*.md' -and
@@ -44,27 +62,25 @@ try {
     $solutionFolderPath = 'Solutions/' + $solutionName + "/"
     $filesList = $prFiles | Where-Object { $_ -like "$solutionFolderPath*" }
   }
+  $filesList = @($filesList | Where-Object { -not (Test-PrivateSolutionContentPath $_) })
+  function Resolve-ContentFilePath($filePath) {
+    $resolvedPath = if ([System.IO.Path]::IsPathRooted($filePath)) {
+      [System.IO.Path]::GetFullPath($filePath)
+    } else {
+      [System.IO.Path]::GetFullPath((Join-Path $contentRoot $filePath))
+    }
+    $relativePath = [System.IO.Path]::GetRelativePath($contentRoot, $resolvedPath)
+    if ($relativePath -eq ".." -or $relativePath.StartsWith(".." + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::Ordinal)) {
+      throw "Content file path escapes the selected content root: '$filePath'."
+    }
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+      throw "Content file does not exist under the selected content root: '$resolvedPath'."
+    }
+    return $resolvedPath
+  }
   function ReadFileContent($filePath) {
-    try {
-        if (!(Test-Path -Path "$filePath")) {
-            return $null;
-        }
-
-        $stream = New-Object System.IO.StreamReader -Arg "$filePath";
-        $content = $stream.ReadToEnd();
-        $stream.Close();
-
-        if ($null -eq $content) {
-            Write-Host "Error in reading file $filePath"
-            return $null;
-        } else {
-            return $content;
-        }
-    }
-    catch {
-        Write-Host "Error occurred in ReadFileContent. Error details : $_"
-        return $null;
-    }
+    $resolvedPath = Resolve-ContentFilePath $filePath
+    return [System.IO.File]::ReadAllText($resolvedPath)
 }
 
 function validateLink($urlList,$filePath)
@@ -118,7 +134,8 @@ $finalFilteredFiles = @()
 # Remove the files which does not contain url
 foreach($item in $filteredFiles)
 {
-	$temp = Select-String -Path $item -Pattern '(http|https):\/\/([\w\-_]+(?:(?:\.[\w\-_]+)+))([\w\-\.,@?^=%&amp;:/~\+#]*[\w\-\@?^=%&amp;/~\+#])?'-AllMatches
+	$resolvedItem = Resolve-ContentFilePath $item
+	$temp = Select-String -LiteralPath $resolvedItem -Pattern '(http|https):\/\/([\w\-_]+(?:(?:\.[\w\-_]+)+))([\w\-\.,@?^=%&amp;:/~\+#]*[\w\-\@?^=%&amp;/~\+#])?'-AllMatches -ErrorAction Stop
 	if ($null -ne $temp) {
 		$finalFilteredFiles += $item
 	}

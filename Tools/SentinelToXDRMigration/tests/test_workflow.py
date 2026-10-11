@@ -16,6 +16,7 @@ from sentinel_xdr_migration.workflow import (
     initialize_workflow,
     next_workflow_stage,
     package_workflow_v3_1,
+    plan_new_package_release,
     _yolo_package_readiness,
     read_authoring_contract,
     refresh_yolo_authoring,
@@ -519,17 +520,122 @@ class WorkflowTests(unittest.TestCase):
             changed_input.parent.mkdir(parents=True, exist_ok=True)
             changed_input.write_text("kind: CustomDetection\n", encoding="utf-8")
 
-            with self.assertRaisesRegex(ValueError, "inputs changed.*explicit new version bump"):
+            with self.assertRaisesRegex(ValueError, "select an explicit new release action"):
                 package_workflow_v3_1(self.solution, requested_version_bump="none")
             package.assert_called_once()
 
-            package_workflow_v3_1(self.solution, requested_version_bump="minor")
+            identity = package_input_identity(self.solution)["sha256"]
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=identity,
+            )
+            package_workflow_v3_1(self.solution, requested_version_bump="patch")
             self.assertEqual(2, package.call_count)
             state = workflow_status(self.solution)
             self.assertEqual(
-                "minor",
+                "patch",
                 state["packaging"]["lastConsumedAction"]["effectiveVersionBump"],
             )
+
+    def test_stale_package_status_is_read_only_and_new_release_preserves_history(self) -> None:
+        run_id = self._prepare_workflow_for_package("none")
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ):
+            first = package_workflow_v3_1(self.solution, requested_version_bump="none")
+            original_report = Path(first["packageReport"]).read_bytes()
+            original_zip = Path(first["zip"]).read_bytes()
+            changed_input = self.solution / "XDR Detections" / "Detection.yaml"
+            changed_input.parent.mkdir(parents=True, exist_ok=True)
+            changed_input.write_text("kind: CustomDetection\n", encoding="utf-8")
+
+            state_path = Path(workflow_status(self.solution)["statePath"])
+            state_before = state_path.read_bytes()
+            freshness = workflow_status(self.solution)["packageFreshness"]
+            self.assertEqual("stale", freshness["status"])
+            self.assertEqual(state_before, state_path.read_bytes())
+            next_stage = next_workflow_stage(self.solution)
+            self.assertEqual("packaging", next_stage["next"])
+            self.assertTrue(next_stage["releaseActionRequired"])
+
+            changed_identity = package_input_identity(self.solution)["sha256"]
+            with self.assertRaisesRegex(ValueError, "changed after release action selection"):
+                plan_new_package_release(
+                    self.solution,
+                    version_bump="patch",
+                    expected_package_input_sha256="0" * 64,
+                )
+            planned = plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=changed_identity,
+            )
+            state = workflow_status(self.solution)
+            self.assertEqual("blocked", state["stages"]["packaging"]["status"])
+            self.assertEqual("blocked", state["stages"]["report"]["status"])
+            self.assertEqual("selected", state["packaging"]["releaseActions"][-1]["status"])
+            evidence = state["packaging"]["releaseActions"][-1]["historicalEvidence"]
+            self.assertEqual(original_report, (self.solution / evidence["packageReport"]).read_bytes())
+            self.assertEqual(original_zip, (self.solution / evidence["zip"]).read_bytes())
+
+            rebuilt = package_workflow_v3_1(self.solution, requested_version_bump="patch")
+            self.assertEqual("patch", rebuilt["effectiveVersionBump"])
+            self.assertIsNone(workflow_status(self.solution)["packaging"]["pendingReleaseAction"])
+            self.assertEqual("consumed", workflow_status(self.solution)["packaging"]["releaseActions"][-1]["status"])
+            self.assertEqual("current", workflow_status(self.solution)["packageFreshness"]["status"])
+            self.assertEqual(changed_identity, planned["packageInputSha256"])
+
+    def test_failed_new_release_consumption_retries_without_second_bump(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir()
+        data.write_text(json.dumps({"Name": "Sample", "Version": "1.2.3"}), encoding="utf-8")
+        run_id = self._prepare_workflow_for_package("none")
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ):
+            package_workflow_v3_1(self.solution, requested_version_bump="none")
+            changed_input = self.solution / "XDR Detections" / "Detection.yaml"
+            changed_input.parent.mkdir(parents=True, exist_ok=True)
+            changed_input.write_text(
+                "kind: CustomDetection\n", encoding="utf-8"
+            )
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+
+        def fail_after_consuming_release(solution: Path, **kwargs: str) -> dict:
+            document = json.loads(data.read_text(encoding="utf-8"))
+            document["Version"] = "1.2.4"
+            data.write_text(json.dumps(document), encoding="utf-8")
+            raise RuntimeError("synthetic failed release after version update")
+
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=fail_after_consuming_release,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "failed release"):
+                package_workflow_v3_1(self.solution, requested_version_bump="patch")
+            state = workflow_status(self.solution)
+            self.assertIsNone(state["packaging"]["pendingReleaseAction"])
+            self.assertEqual("consumed", state["packaging"]["releaseActions"][-1]["status"])
+            self.assertFalse(state["packaging"]["lastConsumedAction"]["packageSucceeded"])
+
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ) as package:
+            retry = package_workflow_v3_1(self.solution, requested_version_bump="none")
+            self.assertEqual("none", retry["effectiveVersionBump"])
+            package.assert_called_once()
 
     def test_failed_packager_consuming_bump_allows_only_hash_matching_none_retry(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
@@ -617,6 +723,7 @@ class WorkflowTests(unittest.TestCase):
             result = cli_module.main([
                 "package-v3-1",
                 "--solution", str(self.solution),
+                "--toolkit-root", str(self.solution.parent),
                 "--run-id", initialized["runId"],
                 "--version-bump", "patch",
             ])
@@ -625,6 +732,33 @@ class WorkflowTests(unittest.TestCase):
         workflow_package.assert_called_once_with(
             str(self.solution),
             requested_version_bump="patch",
+            toolkit_root=str(self.solution.parent),
+        )
+
+    def test_release_plan_cli_requires_run_and_routes_exact_action_identity(self) -> None:
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+        )
+        expected_hash = "a" * 64
+        with mock.patch.object(cli_module, "configure_logging"), mock.patch.object(
+            cli_module,
+            "plan_new_package_release",
+            return_value={"versionBump": "patch", "packageInputSha256": expected_hash},
+        ) as plan:
+            result = cli_module.main([
+                "workflow-plan-package-release",
+                "--solution", str(self.solution),
+                "--run-id", initialized["runId"],
+                "--version-bump", "patch",
+                "--expected-package-input-sha256", expected_hash,
+            ])
+
+        self.assertEqual(0, result)
+        plan.assert_called_once_with(
+            str(self.solution),
+            version_bump="patch",
+            expected_package_input_sha256=expected_hash,
         )
 
     def test_yolo_review_required_rule_blocks_package_without_clearing_it(self) -> None:
@@ -661,6 +795,71 @@ class WorkflowTests(unittest.TestCase):
                     state,
                 )
         self.assertTrue(record["results"][0]["reviewRequired"])
+
+        detection_path = self.solution / "XDR Detections" / "Pending.yaml"
+        detection_path.parent.mkdir(parents=True)
+        detection_path.write_text(yaml.safe_dump({
+            "contentProvenance": {
+                "conversion": {
+                    "status": "converted",
+                    "reviewRequired": True,
+                },
+            },
+        }), encoding="utf-8")
+        state.pop("authoring")
+        with self.assertRaisesRegex(ValueError, "unresolved detection review flags"):
+            _yolo_package_readiness(
+                self.solution,
+                Path(initialized["statePath"]),
+                state,
+            )
+
+    def test_yolo_best_effort_entity_mapping_remains_reviewed_but_runtime_testable(self) -> None:
+        source_path = self._create_source_rules()[0]
+        source = yaml.safe_load(source_path.read_text())
+        source["query"] = (
+            "DeviceEvents | where TimeGenerated > ago(1h) "
+            "| project TimeGenerated, DeviceName, IPAddress"
+        )
+        source["entityMappings"] = [
+            {
+                "entityType": "Host",
+                "fieldMappings": [
+                    {"identifier": "FullName", "columnName": "DeviceName"},
+                ],
+            },
+            {
+                "entityType": "IP",
+                "fieldMappings": [
+                    {"identifier": "Address", "columnName": "IPAddress"},
+                ],
+            },
+        ]
+        source_path.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+            yolo=True,
+            campaign_id="test-campaign",
+        )
+        with using_run(self.solution, initialized["runId"]):
+            run_yolo_authoring(self.solution)
+            contract = read_authoring_contract(self.solution)
+
+        result = contract["results"][0]
+        self.assertEqual(result["status"], "migrated")
+        self.assertEqual(result["conversionStatus"], "converted")
+        self.assertEqual(result["validationStatus"], "passed")
+        self.assertTrue(result["reviewRequired"])
+        self.assertTrue(result["mappingAssumptions"])
+        self.assertTrue(any(
+            finding["findingId"].startswith("review-pending-")
+            for finding in result["findings"]
+        ))
+        runtime_status, _, _ = workflow_module._current_runtime_status(
+            self.solution, "authoring", contract
+        )
+        self.assertEqual(runtime_status, "not-run")
 
     def test_blocked_stage_requires_explanation(self) -> None:
         initialize_workflow(self.solution, workflow_profile="authoring")
@@ -1018,6 +1217,49 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(0, stored["coverage"]["E"])
         self.assertEqual(2, stored["coverage"]["N"])
         self.assertEqual(1, len(stored["environmentErrors"]))
+
+    def test_yolo_refresh_uses_complete_sdk_source_family(self) -> None:
+        _, record = self._run_yolo(count=1)
+        run = self.solution / "Logs" / "sentinel-xdr-migration" / record["runId"]
+        self._runtime_reports(record)
+        triage_path = run / "runtime-validation.triage-mcp.json"
+        sdk_report = json.loads(triage_path.read_text(encoding="utf-8"))
+        triage_path.unlink()
+        sdk_report.update({
+            "provider": "azure-monitor-sdk",
+            "platform": "Microsoft Sentinel Log Analytics (Azure Monitor Query SDK)",
+            "familyComplete": True,
+        })
+        (run / "runtime-validation.azure-monitor-sdk.json").write_text(
+            json.dumps(sdk_report),
+            encoding="utf-8",
+        )
+        with using_run(self.solution, record["runId"]):
+            refreshed = refresh_yolo_authoring(self.solution)
+            stored = read_authoring_contract(self.solution)
+        self.assertEqual("active", refreshed["status"])
+        self.assertEqual(0, refreshed["environmentErrorCount"])
+        self.assertEqual("passed", stored["results"][0]["validationStatus"])
+
+    def test_yolo_sdk_source_family_rejects_stale_query_hash(self) -> None:
+        _, record = self._run_yolo(count=1)
+        run = self.solution / "Logs" / "sentinel-xdr-migration" / record["runId"]
+        self._runtime_reports(record)
+        triage_path = run / "runtime-validation.triage-mcp.json"
+        sdk_report = json.loads(triage_path.read_text(encoding="utf-8"))
+        triage_path.unlink()
+        sdk_report.update({
+            "provider": "azure-monitor-sdk",
+            "familyComplete": True,
+        })
+        sdk_report["results"][0]["querySha256"] = "0" * 64
+        (run / "runtime-validation.azure-monitor-sdk.json").write_text(
+            json.dumps(sdk_report),
+            encoding="utf-8",
+        )
+        with using_run(self.solution, record["runId"]):
+            with self.assertRaisesRegex(ValueError, "stale azure-monitor-sdk query hash"):
+                refresh_yolo_authoring(self.solution)
 
     def test_concurrent_refresh_serializes_contract_writers(self) -> None:
         _, record = self._run_yolo(count=1)

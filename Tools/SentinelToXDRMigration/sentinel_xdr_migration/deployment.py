@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,13 +14,11 @@ from typing import Any
 import yaml
 
 from .artifacts import artifact_path, write_json_artifact
-from .converter import (
-    PREFIXED_SOURCE_ID_PATTERN,
-    SOURCE_ID_PATTERN,
-    is_sentinel_derived,
-    validate_document,
-    xdr_detection_files,
+from .converter import xdr_detection_files
+from .graph_readiness import (
+    graph_detection_payload_with_projection,
 )
+from .graph_auth import credential_token_scope
 from .onboarding import (
     GRAPH_CLIENT_ID,
     _load_auth_record,
@@ -148,7 +144,7 @@ def _deployment_token(
 
         try:
             return AzureCliCredential(tenant_id=tenant_id).get_token(
-                DEPLOYMENT_SCOPE
+                credential_token_scope("azure-cli", DEPLOYMENT_SCOPE)
             ).token
         except Exception:
             pass
@@ -189,43 +185,8 @@ def _graph_request(
 
 
 def graph_detection_payload(document: dict[str, Any]) -> dict[str, Any]:
-    prepared = deepcopy(document)
-    properties = prepared.get("properties") or {}
-    detection_id = properties.get("id")
-    source_id = ((prepared.get("contentProvenance") or {}).get("source") or {}).get("id")
-    if isinstance(detection_id, str) and re.fullmatch(SOURCE_ID_PATTERN, detection_id):
-        if is_sentinel_derived(prepared) and (
-            not isinstance(source_id, str) or detection_id.casefold() != source_id.casefold()
-        ):
-            pass
-        else:
-            properties["id"] = f"xdr-{source_id if is_sentinel_derived(prepared) else detection_id}"
-    elif isinstance(detection_id, str):
-        match = re.fullmatch(PREFIXED_SOURCE_ID_PATTERN, detection_id)
-        if match:
-            guid = detection_id[4:]
-            if is_sentinel_derived(prepared) and (
-                not isinstance(source_id, str) or guid.casefold() != source_id.casefold()
-            ):
-                pass
-            else:
-                properties["id"] = f"xdr-{source_id if is_sentinel_derived(prepared) else guid}"
-    errors = validate_document(prepared)
-    alert = ((properties.get("detectionAction") or {}).get("alertTemplate") or {})
-    if len(alert.get("tactics") or []) > 1:
-        errors.append(
-            "Direct Graph deployment supports at most one tactic; authored YAML may preserve "
-            "multiple tactics, but this deployment path never truncates them"
-        )
-    conversion = (document.get("contentProvenance") or {}).get("conversion") or {}
-    if conversion.get("status") != "converted" or conversion.get("reviewRequired"):
-        errors.append("detection must be converted with no review required")
-    if errors:
-        raise ValueError("; ".join(errors))
-    properties = deepcopy(prepared["properties"])
-    properties["@odata.type"] = "#microsoft.graph.security.detectionRule"
-    properties["status"] = "disabled"
-    return properties
+    payload, _projection = graph_detection_payload_with_projection(document)
+    return payload
 
 
 def deploy_solution(
@@ -245,7 +206,9 @@ def deploy_solution(
     for path in files:
         try:
             document = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
-            payload = graph_detection_payload(document)
+            payload, tactic_projection = graph_detection_payload_with_projection(
+                document
+            )
             rule_id = urllib.parse.quote(payload["id"], safe="")
             item_url = f"{DEPLOYMENT_ENDPOINT}/{rule_id}"
             status, current = _graph_request("GET", item_url, token)
@@ -268,6 +231,7 @@ def deploy_solution(
                 success = False
             error = response.get("error") if isinstance(response, dict) else None
             deployed_status = None
+            tactic_projection_verified = None
             if success:
                 verify_status, verified = _graph_request("GET", item_url, token)
                 deployed_status = (
@@ -275,14 +239,36 @@ def deploy_solution(
                     if isinstance(verified, dict)
                     else ""
                 )
-                if verify_status != 200 or deployed_status != "disabled":
+                projected_tactics = (
+                    ((payload.get("detectionAction") or {}).get("alertTemplate") or {}).get(
+                        "tactics"
+                    )
+                    or []
+                )
+                verified_tactics = (
+                    (
+                        ((verified.get("detectionAction") or {}).get("alertTemplate") or {})
+                    ).get("tactics")
+                    or []
+                    if isinstance(verified, dict)
+                    else []
+                )
+                tactic_projection_verified = verified_tactics == projected_tactics
+                if (
+                    verify_status != 200
+                    or deployed_status != "disabled"
+                    or not tactic_projection_verified
+                ):
                     success = False
                     operation = "failed"
                     error = {
                         "code": "DeploymentVerificationFailed",
-                        "message": "deployed Custom Detection was not verified as disabled",
+                        "message": (
+                            "deployed Custom Detection did not match its disabled "
+                            "status and projected tactic payload"
+                        ),
                         "statusCode": verify_status,
-                        "response": verified,
+                        "tacticProjectionVerified": tactic_projection_verified,
                     }
             results.append(
                 {
@@ -292,6 +278,8 @@ def deploy_solution(
                     "statusCode": response_status,
                     "success": success,
                     "deployedStatus": deployed_status,
+                    "tacticProjection": tactic_projection,
+                    "tacticProjectionVerified": tactic_projection_verified,
                     "error": error,
                 }
             )

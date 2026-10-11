@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import re
+import shutil
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -39,12 +40,14 @@ from .authoring_contract import (
 )
 from .content_paths import content_path
 from .converter import (
+    BEST_EFFORT_ENTITY_REVIEW_PREFIX,
     SOURCE_ID_PATTERN,
     analytic_rule_files,
     inspect_solution,
     convert_solution,
     validate_solution,
     solution_paths,
+    xdr_detection_files,
 )
 from .target_context import build_target, write_target
 from .packaging import (
@@ -55,7 +58,7 @@ from .packaging import (
 )
 
 STATE_FILE_NAME = "workflow-state.json"
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 WORKFLOW_PROFILES = ("authoring", "qualification")
 STAGES = (
     "discovery",
@@ -179,6 +182,15 @@ def _validate(state: dict[str, Any]) -> None:
         raise ValueError(f"invalid workflow state: {details}")
 
 
+def _migrate_workflow_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Add additive packaging lifecycle fields when reading pre-1.2 workflow state."""
+    packaging = state.get("packaging")
+    if isinstance(packaging, dict):
+        packaging.setdefault("releaseActions", [])
+        packaging.setdefault("pendingReleaseAction", None)
+    return state
+
+
 def _write_unlocked(path: Path, state: dict[str, Any]) -> None:
     root = solution_for_artifact(path)
     destination = artifact_path(root, STATE_FILE_NAME, create_parent=True)
@@ -212,6 +224,11 @@ def _load(solution: str | Path) -> tuple[Path, dict[str, Any]]:
     state = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(state, dict):
         raise ValueError(f"workflow state must be a JSON object: {path}")
+    if state.get("schemaVersion") == "1.1.0":
+        state["schemaVersion"] = SCHEMA_VERSION
+        _migrate_workflow_state(state)
+    elif state.get("schemaVersion") == SCHEMA_VERSION:
+        _migrate_workflow_state(state)
     context = state.get("context")
     if isinstance(context, dict):
         context.setdefault("profileSelectionConfirmed", False)
@@ -571,6 +588,7 @@ def _runtime_observations(
         detection_to_rule[detection] = rule["ruleId"]
         expected_hashes[detection] = {
             "triage-mcp": rule["querySha256"],
+            "azure-monitor-sdk": rule["querySha256"],
             "log-analytics-cli": rule["querySha256"],
             "graph": target.get("querySha256") or "",
         }
@@ -580,9 +598,49 @@ def _runtime_observations(
     }
     environment_errors: list[dict[str, Any]] = []
     environment_keys: set[tuple[str, str]] = set()
-    all_reports_passed = True
-    for provider in ("triage-mcp", "log-analytics-cli", "graph"):
-        report_path = run_directory / f"runtime-validation.{provider}.json"
+    all_reports_passed = bool(expected_hashes)
+    source_reports = [
+        ("triage-mcp", run_directory / "runtime-validation.triage-mcp.json"),
+        ("azure-monitor-sdk", run_directory / "runtime-validation.azure-monitor-sdk.json"),
+        ("log-analytics-cli", run_directory / "runtime-validation.log-analytics-cli.json"),
+    ]
+    available_source_reports = [
+        (provider, path) for provider, path in source_reports if path.is_file()
+    ]
+    selected_reports: list[tuple[str, Path]] = []
+    if available_source_reports:
+        selected = available_source_reports[0]
+        if selected[0] == "triage-mcp":
+            try:
+                candidate = json.loads(selected[1].read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"existing {selected[0]} runtime report is invalid: {exc}") from exc
+            if isinstance(candidate, dict) and isinstance(candidate.get("providerFailure"), dict):
+                for fallback in available_source_reports[1:]:
+                    fallback_document = json.loads(
+                        fallback[1].read_text(encoding="utf-8-sig")
+                    )
+                    proof = (
+                        fallback_document.get("providerFallback")
+                        if isinstance(fallback_document, dict) else None
+                    ) or {}
+                    if (
+                        proof.get("mcpProvider") == "triage-mcp"
+                        and proof.get("fallbackProvider") == fallback[0]
+                        and proof.get("batchComplete") is True
+                        and proof.get("scopeVerified") is True
+                        and proof.get("permissionsVerified") is True
+                        and proof.get("kqlError") is False
+                    ):
+                        selected = fallback
+                        break
+        selected_reports.append(selected)
+    if not selected_reports:
+        all_reports_passed = False
+    selected_reports.append(
+        ("graph", run_directory / "runtime-validation.graph.json")
+    )
+    for provider, report_path in selected_reports:
         if not report_path.is_file():
             all_reports_passed = False
             continue
@@ -633,7 +691,7 @@ def _runtime_observations(
             names.add(detection)
             rule_id = detection_to_rule.get(detection)
             if rule_id is None:
-                continue
+                raise ValueError(f"existing {provider} runtime report contains unknown detection {detection}")
             expected = expected_hashes[detection][provider]
             query_hash = entry.get("querySha256")
             if not expected or query_hash != expected:
@@ -658,6 +716,10 @@ def _runtime_observations(
                 "unresolved": True,
                 "evidenceReferences": [reference],
             })
+        if names != set(detection_to_rule):
+            all_reports_passed = False
+        if report.get("familyComplete") is False:
+            all_reports_passed = False
     if not expected_hashes:
         all_reports_passed = False
     return runtime_findings, environment_errors, all_reports_passed
@@ -736,6 +798,12 @@ def _conversion_contract_results(
         warning_messages = [
             str(value) for value in item.get("warnings") or [] if str(value).strip()
         ]
+        mapping_assumptions = list(prior.get("mappingAssumptions") or [])
+        mapping_assumptions.extend(
+            reason for reason in review_messages
+            if reason.startswith(BEST_EFFORT_ENTITY_REVIEW_PREFIX)
+            and reason not in mapping_assumptions
+        )
         if conversion_status == "needsReview" and not error_messages:
             error_messages.extend(review_messages or ["Conversion is blocked pending technical review"])
         elif conversion_status == "conflict" and not error_messages:
@@ -848,7 +916,7 @@ def _conversion_contract_results(
             "deploymentDisposition": disposition,
             "target": target,
             "reviewRequired": bool(item.get("reviewRequired")),
-            "mappingAssumptions": list(prior.get("mappingAssumptions") or []),
+            "mappingAssumptions": mapping_assumptions,
             "findings": finding_records,
             "qualificationStatus": "untested",
             "qualificationEvidenceReferences": [],
@@ -1919,6 +1987,29 @@ def _yolo_package_readiness(
     if state["stages"]["validation"]["status"] != "passed":
         raise ValueError("YOLO packaging requires the existing validation stage to pass")
     if not state.get("authoring"):
+        output = Path(solution).expanduser().resolve() / "XDR Detections"
+        pending: list[str] = []
+        for path in xdr_detection_files(output):
+            try:
+                document = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+            except (OSError, UnicodeError, yaml.YAMLError) as exc:
+                raise ValueError(f"cannot verify XDR review state in {path}: {exc}") from exc
+            if not isinstance(document, dict):
+                raise ValueError(f"cannot verify XDR review state in {path}: document is not an object")
+            conversion = ((document.get("contentProvenance") or {}).get("conversion") or {})
+            if (
+                isinstance(conversion, dict)
+                and (
+                    conversion.get("reviewRequired") is True
+                    or conversion.get("status") == "needsReview"
+                )
+            ):
+                pending.append(path.relative_to(solution).as_posix())
+        if pending:
+            raise ValueError(
+                "V3.1 packaging is blocked by unresolved detection review flags: "
+                + ", ".join(sorted(pending))
+            )
         return
     record, _ = _current_yolo_record(solution, state_path, state)
     results = record.get("results") or []
@@ -1984,10 +2075,198 @@ def _verify_current_package_state(solution: Path, state: dict[str, Any]) -> None
             raise ValueError(f"current V3.1 package artifact is stale: {name}")
 
 
+def _package_freshness(solution: str | Path, state: dict[str, Any]) -> dict[str, Any] | None:
+    successful = (state.get("packaging") or {}).get("lastSuccessful")
+    if not successful:
+        return None
+    try:
+        current_identity = package_input_identity(solution)["sha256"]
+    except (OSError, ValueError) as exc:
+        return {
+            "status": "unverifiable",
+            "currentPackageInputSha256": None,
+            "packagedInputSha256": successful.get("packageInputSha256"),
+            "reason": str(exc),
+        }
+    packaged_identity = successful.get("packageInputSha256")
+    if current_identity != packaged_identity:
+        return {
+            "status": "stale",
+            "currentPackageInputSha256": current_identity,
+            "packagedInputSha256": packaged_identity,
+            "reason": "solution package inputs changed after the successful V3.1 build",
+        }
+    try:
+        _verify_current_package_state(Path(solution).expanduser().resolve(), state)
+    except (OSError, ValueError, json.JSONDecodeError, TypeError, AttributeError) as exc:
+        return {
+            "status": "stale",
+            "currentPackageInputSha256": current_identity,
+            "packagedInputSha256": packaged_identity,
+            "reason": str(exc),
+        }
+    return {
+        "status": "current",
+        "currentPackageInputSha256": current_identity,
+        "packagedInputSha256": packaged_identity,
+        "reason": None,
+    }
+
+
+def _archive_package_evidence(
+    solution: Path,
+    successful: dict[str, Any],
+) -> dict[str, str]:
+    report_reference = successful.get("packageReport")
+    if not isinstance(report_reference, str) or not report_reference:
+        raise ValueError("prior V3.1 package report reference is missing")
+    report_path = resolve_artifact_reference(solution, report_reference)
+    if not report_path.is_file():
+        raise ValueError("prior V3.1 package report is missing")
+    report_bytes = report_path.read_bytes()
+    if hashlib.sha256(report_bytes).hexdigest() != successful.get("packageReportSha256"):
+        raise ValueError("prior V3.1 package report is stale or modified")
+    report = json.loads(report_bytes)
+    if report.get("packager") != "V3.1":
+        raise ValueError("prior package evidence is not from V3.1")
+    attempt_id = str(successful.get("attemptId") or uuid.uuid4())
+    archive = report_path.parent / "package-history" / attempt_id
+    files = {"packageReport": report_path}
+    files.update({
+        name: resolve_artifact_reference(solution, report[name])
+        for name in ("mainTemplate", "createUiDefinition", "testParameters", "zip")
+        if isinstance(report.get(name), str) and report[name]
+    })
+    if set(files) != {
+        "packageReport", "mainTemplate", "createUiDefinition", "testParameters", "zip",
+    }:
+        raise ValueError("prior V3.1 package report is missing artifact references")
+    recorded_hashes = report.get("packageArtifactHashes") or {}
+    archived: dict[str, str] = {}
+    for name, source in files.items():
+        if not source.is_file():
+            raise ValueError(f"prior V3.1 package artifact is missing: {name}")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        expected = (
+            successful.get("packageReportSha256")
+            if name == "packageReport" else recorded_hashes.get(name)
+        )
+        if digest != expected:
+            raise ValueError(f"prior V3.1 package artifact is stale: {name}")
+    archive.mkdir(parents=True, exist_ok=False)
+    for name, source in files.items():
+        destination = archive / f"{name}-{source.name}"
+        shutil.copy2(source, destination)
+        archived[name] = destination.relative_to(solution).as_posix()
+    return archived
+
+
+def plan_new_package_release(
+    solution: str | Path,
+    *,
+    version_bump: str,
+    expected_package_input_sha256: str,
+) -> dict[str, Any]:
+    """Explicitly reopen a stale package stage for one versioned V3.1 release action."""
+    if version_bump not in {"patch", "minor", "major"}:
+        raise ValueError("new package release action must be patch, minor, or major")
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_package_input_sha256 or ""):
+        raise ValueError("expected package input identity must be a lowercase SHA-256")
+
+    root = Path(solution).expanduser().resolve()
+    with _state_writer_lock(root) as path:
+        loaded_path, state = _load(root)
+        if loaded_path != path:
+            raise ValueError("workflow state selection changed while acquiring its writer lock")
+        if state.get("context", {}).get("profileSelectionConfirmed") is not True:
+            raise ValueError("release planning requires explicit profile selection")
+        if state.get("authoring") and state["authoring"]["status"] != "active":
+            raise ValueError("stopped or conflicted YOLO runs cannot plan a package release")
+        _yolo_package_readiness(root, path, state)
+        if any(
+            state["stages"][dependency]["status"] != "passed"
+            for dependency in _dependencies(state, "packaging")
+        ):
+            raise ValueError("package release planning is blocked by unfinished prerequisites")
+
+        current_identity = package_input_identity(root)["sha256"]
+        if current_identity != expected_package_input_sha256:
+            raise ValueError(
+                "package inputs changed after release action selection; refresh status "
+                "and explicitly select an action for the current input identity"
+            )
+
+        package_state = state.get("packaging")
+        if not isinstance(package_state, dict) or not package_state.get("lastSuccessful"):
+            raise ValueError("new release planning requires a prior successful V3.1 package")
+        if (package_state.get("currentAttempt") or {}).get("status") == "running":
+            raise ValueError("cannot plan a new release while V3.1 packaging is running")
+        prior = package_state["lastSuccessful"]
+        if current_identity == prior.get("packageInputSha256"):
+            raise ValueError(
+                "package inputs still match the successful V3.1 package; "
+                "a new release action is not warranted"
+            )
+        pending = package_state.get("pendingReleaseAction")
+        if pending:
+            if pending.get("packageInputSha256") == current_identity:
+                raise ValueError(
+                    "a release action is already selected for these package inputs; "
+                    "continue package-v3-1 with that exact action"
+                )
+            raise ValueError(
+                "package inputs changed after the pending release action was selected"
+            )
+        if any(
+            item.get("packageInputSha256") == current_identity
+            and item.get("versionBump") == version_bump
+            for item in package_state["releaseActions"]
+        ):
+            raise ValueError("this explicit release action was already consumed for these inputs")
+
+        selected_at = _utc_now()
+        historical_evidence = _archive_package_evidence(root, prior)
+        package_state["releaseActions"].append({
+            "versionBump": version_bump,
+            "packageInputSha256": current_identity,
+            "selectedAt": selected_at,
+            "status": "selected",
+            "historicalEvidence": historical_evidence,
+        })
+        package_state["pendingReleaseAction"] = {
+            "versionBump": version_bump,
+            "packageInputSha256": current_identity,
+            "selectedAt": selected_at,
+        }
+        for name in ("packaging", "deployment", "mockIngestion", "alertParity", "report"):
+            stage = state["stages"][name]
+            if stage["status"] != "notRequired":
+                stage.update({
+                    "status": "blocked",
+                    "completedAt": None,
+                    "message": (
+                        "Package inputs changed after the prior V3.1 release. "
+                        "Prior artifacts and evidence are historical; an explicit "
+                        "new release action was selected."
+                    ),
+                })
+        state["workflowStatus"] = "blocked"
+        _write_unlocked(path, state)
+        return {
+            "runId": state["runId"],
+            "versionBump": version_bump,
+            "packageInputSha256": current_identity,
+            "selectedAt": selected_at,
+            "next": _next_stage_name(state),
+            "workflowStatus": state["workflowStatus"],
+        }
+
+
 def package_workflow_v3_1(
     solution: str | Path,
     *,
     requested_version_bump: str,
+    toolkit_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Package one current workflow attempt and persist fresh, hash-bound evidence."""
     if requested_version_bump not in {"none", "patch", "minor", "major"}:
@@ -2065,10 +2344,52 @@ def package_workflow_v3_1(
             "lastSuccessful": None,
             "lastConsumedAction": None,
             "currentAttempt": None,
+            "releaseActions": [],
+            "pendingReleaseAction": None,
         }
+        package_state.setdefault("releaseActions", [])
+        package_state.setdefault("pendingReleaseAction", None)
         previous = package_state.get("lastSuccessful")
         previous_successful = previous
         last_consumed = package_state.get("lastConsumedAction") or {}
+        pending_release = package_state.get("pendingReleaseAction")
+        failed_consumed_retry = (
+            last_consumed.get("bumpConsumed") is True
+            and last_consumed.get("packageSucceeded") is False
+            and last_consumed.get("packageInputSha256") == inputs["sha256"]
+        )
+        if previous is not None and inputs["sha256"] != previous.get("packageInputSha256"):
+            if not pending_release and not failed_consumed_retry:
+                raise ValueError(
+                    "package inputs changed after V3.1 packaging; select an explicit "
+                    "new release action before rebuilding"
+                )
+            if pending_release and (
+                pending_release.get("packageInputSha256") != inputs["sha256"]
+                or pending_release.get("versionBump") != requested_version_bump
+            ):
+                raise ValueError(
+                    "package input identity or version action differs from the explicitly "
+                    "selected new release action"
+                )
+        elif pending_release:
+            raise ValueError(
+                "pending release action no longer matches changed package inputs"
+            )
+        if (
+            previous is not None
+            and inputs["sha256"] == previous.get("packageInputSha256")
+            and requested_version_bump != "none"
+        ):
+            raise ValueError(
+                "a V3.1 package already exists for unchanged inputs; use "
+                "--version-bump none for a repeat build"
+            )
+        if failed_consumed_retry and requested_version_bump != "none":
+            raise ValueError(
+                "the selected release action was consumed by a failed build; retry "
+                "with --version-bump none for the matching package inputs"
+            )
         if (
             requested_version_bump == "none"
             and last_consumed.get("bumpConsumed") is True
@@ -2089,6 +2410,8 @@ def package_workflow_v3_1(
             if selected_bump is None:
                 state["context"]["versionBump"] = requested_version_bump
             effective_bump = requested_version_bump
+        elif pending_release:
+            effective_bump = pending_release["versionBump"]
         elif requested_version_bump == "none":
             raise ValueError(
                 "retry with version bump none is allowed only after the original "
@@ -2155,6 +2478,7 @@ def package_workflow_v3_1(
                     result = package_solution_v3_1(
                         root,
                         version_bump=effective_bump,
+                        toolkit_root=toolkit_root,
                         requested_version_bump=requested_version_bump,
                         package_attempt_id=attempt_id,
                         workflow_run_id=state["runId"],
@@ -2212,6 +2536,15 @@ def package_workflow_v3_1(
                 "attemptId": attempt_id,
                 "packageSucceeded": True,
             }
+            if pending_release:
+                for release_action in reversed(package_state["releaseActions"]):
+                    if (
+                        release_action["status"] == "selected"
+                        and release_action["packageInputSha256"] == inputs["sha256"]
+                    ):
+                        release_action["status"] = "consumed"
+                        break
+                package_state["pendingReleaseAction"] = None
             artifacts = dict(result["workflowArtifacts"])
             artifacts.update({
                 "requestedVersionBump": requested_version_bump,
@@ -2267,6 +2600,15 @@ def package_workflow_v3_1(
                         }
                         current_attempt["bumpConsumed"] = True
                         current_attempt["packageInputSha256"] = input_after_failure
+                        if pending_release:
+                            package_state["pendingReleaseAction"] = None
+                            for release_action in reversed(package_state["releaseActions"]):
+                                if (
+                                    release_action["status"] == "selected"
+                                    and release_action["packageInputSha256"] == inputs["sha256"]
+                                ):
+                                    release_action["status"] = "consumed"
+                                    break
                 current_attempt.update({
                     "status": "failed",
                     "completedAt": _utc_now(),
@@ -2321,6 +2663,15 @@ def package_workflow_v3_1(
                     }
                     current_attempt["bumpConsumed"] = True
                     current_attempt["packageInputSha256"] = input_after_failure
+                    if pending_release:
+                        package_state["pendingReleaseAction"] = None
+                        for release_action in reversed(package_state["releaseActions"]):
+                            if (
+                                release_action["status"] == "selected"
+                                and release_action["packageInputSha256"] == inputs["sha256"]
+                            ):
+                                release_action["status"] = "consumed"
+                                break
             current_attempt.update({
                 "status": "failed",
                 "completedAt": _utc_now(),
@@ -2351,6 +2702,7 @@ def workflow_status(solution: str | Path) -> dict[str, Any]:
         }
     return {
         **state,
+        "packageFreshness": _package_freshness(solution, state),
         "authoringSummary": authoring_summary,
         "budgetSummary": (
             budget_summary(solution, state["budget"]["campaignId"])
@@ -2476,6 +2828,10 @@ def _next_stage_name(state: dict[str, Any]) -> str | None:
 def next_workflow_stage(solution: str | Path) -> dict[str, Any]:
     path, state = _load(solution)
     name = _next_stage_name(state)
+    freshness = _package_freshness(solution, state)
+    release_action_required = bool(freshness and freshness["status"] != "current")
+    if release_action_required:
+        name = "packaging"
     blocked_by = []
     if name is None and state["workflowStatus"] != "completed":
         for candidate in STAGES:
@@ -2496,6 +2852,8 @@ def next_workflow_stage(solution: str | Path) -> dict[str, Any]:
         "workflowStatus": state["workflowStatus"],
         "next": name,
         "blockedBy": blocked_by,
+        "packageFreshness": freshness,
+        "releaseActionRequired": release_action_required,
     }
 
 
