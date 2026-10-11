@@ -13,6 +13,7 @@ from sentinel_xdr_migration.converter import (
     assess_schedule,
     build_xdr_document,
     convert_entities,
+    convert_query,
     constrain_event_window,
     validate_document,
 )
@@ -456,6 +457,38 @@ class InformationContractTests(unittest.TestCase):
         self.assertIn(query, document["properties"]["queryCondition"]["queryText"])
         self.assertTrue(any("source and target table inputs cannot be proven equivalent" in reason
                             for reason in conversion["reviewReasons"]))
+
+    def test_configured_column_and_table_mappings_do_not_cross_join_scopes(self):
+        query = (
+            "DeviceEvents as d | join kind=inner (SecurityEvent as s) on d.DeviceId == s.DeviceId "
+            "| where d.TimeGenerated > ago(2h) | project d.TimeGenerated, s.AccountUPN"
+        )
+        converted, warnings, errors = convert_query(query, {
+            "tableMappings": {"DeviceEvents": "AlertEvidence"},
+            "columnMappings": {
+                "DeviceEvents": {"TimeGenerated": "Timestamp"},
+                "SecurityEvent": {"AccountUPN": "AccountUpn"},
+            },
+        })
+        self.assertEqual(query, converted)
+        self.assertFalse(errors)
+        self.assertTrue(any("table/alias scope is ambiguous" in warning for warning in warnings))
+
+    def test_table_mapping_rewrites_only_the_table_token(self):
+        query = (
+            'CiscoASA_CL | extend Label = "CiscoASA_CL" '
+            "// CiscoASA_CL is source documentation\n"
+            "| where TimeGenerated > ago(1h)"
+        )
+        converted, warnings, errors = convert_query(
+            query, {"tableMappings": {"CiscoASA_CL": "DeviceNetworkEvents"}}
+        )
+        self.assertTrue(converted.startswith("DeviceNetworkEvents"))
+        self.assertIn('"CiscoASA_CL"', converted)
+        self.assertIn("// CiscoASA_CL is source documentation", converted)
+        self.assertIn("Timestamp > ago(1h)", converted)
+        self.assertFalse(warnings)
+        self.assertFalse(errors)
 
     def test_result_serializes_information_without_breaking_positional_callers(self):
         result = ConversionResult(Path("source"), Path("target"), "Example", "converted", False, (), (), ())

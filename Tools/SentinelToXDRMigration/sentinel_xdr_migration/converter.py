@@ -17,8 +17,11 @@ from jsonschema import Draft202012Validator
 from . import __version__
 from .catalog import (
     NATIVE_XDR_TABLES,
+    configured_column_renames,
     query_column_renames,
+    query_has_ambiguous_table_scope,
     query_has_mixed_time_semantics,
+    query_table_references,
 )
 from .columns import projected_columns
 from .content_paths import content_path, yaml_files
@@ -322,16 +325,35 @@ def _token_replace(query: str, mappings: dict[str, str]) -> str:
     return "".join(output)
 
 
-def _configured_column_mappings(config: dict[str, Any]) -> dict[str, str]:
-    mappings: dict[str, str] = {}
-    configured = config.get("columnMappings") or {}
-    if configured and all(isinstance(value, str) for value in configured.values()):
-        mappings.update({str(key): str(value) for key, value in configured.items()})
-    else:
-        for value in configured.values():
-            if isinstance(value, dict):
-                mappings.update({str(key): str(target) for key, target in value.items()})
-    return mappings
+def _rewrite_single_table_reference(query: str, mappings: dict[str, str]) -> tuple[str, bool]:
+    if not mappings:
+        return query, False
+    references = query_table_references(query)
+    if not references:
+        return query, False
+    table = str(references[0]["table"])
+    target = next(
+        (value for name, value in mappings.items() if str(name).casefold() == table.casefold()),
+        None,
+    )
+    if target is None:
+        return query, False
+    if query_has_ambiguous_table_scope(query):
+        return query, True
+
+    token_pattern = re.compile(
+        r"//[^\n]*|/\*[\s\S]*?\*/|@'(?:''|[^'])*'|@\"(?:\"\"|[^\"])*\""
+        r"|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|[A-Za-z_][A-Za-z0-9_]*|[^\s]"
+    )
+    for match in token_pattern.finditer(query):
+        token = match.group(0)
+        if token.startswith(("//", "/*", "'", '"', "@'", '@"')):
+            continue
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
+            if token.casefold() != table.casefold():
+                return query, True
+            return query[:match.start()] + str(target) + query[match.end():], False
+    return query, True
 
 
 def convert_query(query: str, config: dict[str, Any]) -> tuple[str, list[str], list[str]]:
@@ -339,17 +361,20 @@ def convert_query(query: str, config: dict[str, Any]) -> tuple[str, list[str], l
     errors: list[str] = []
     converted = query.strip()
 
-    source_mappings: dict[str, str] = {}
-    source_mappings.update(
-        {str(k): str(v) for k, v in (config.get("functionMappings") or {}).items()}
+    converted, table_mapping_deferred = _rewrite_single_table_reference(
+        converted,
+        {str(k): str(v) for k, v in (config.get("tableMappings") or {}).items()},
     )
-    source_mappings.update(
-        {str(k): str(v) for k, v in (config.get("tableMappings") or {}).items()}
-    )
-    converted = _token_replace(converted, source_mappings)
+    function_mappings = {
+        str(k): str(v) for k, v in (config.get("functionMappings") or {}).items()
+    }
+    converted = _token_replace(converted, function_mappings)
 
-    column_mappings: dict[str, str] = query_column_renames(converted)
-    column_mappings.update(_configured_column_mappings(config))
+    catalog_mappings = query_column_renames(converted)
+    ambiguous_scope = query_has_ambiguous_table_scope(query)
+    column_mappings: dict[str, str] = {} if ambiguous_scope else catalog_mappings
+    configured_mappings, ambiguous_scope = configured_column_renames(query, config)
+    column_mappings.update(configured_mappings)
     converted = _token_replace(converted, column_mappings)
     converted = "\n".join(line.rstrip() for line in converted.splitlines())
     converted = re.sub(r";\s*\Z", "", converted)
@@ -367,8 +392,43 @@ def convert_query(query: str, config: dict[str, Any]) -> tuple[str, list[str], l
             "query mixes native Defender and Sentinel workload tables; "
             "time columns were preserved and require runtime validation"
         )
+    if ambiguous_scope:
+        warnings.append(
+            "configured column mappings were not applied because table/alias scope is ambiguous"
+        )
+    elif query_has_ambiguous_table_scope(query) and catalog_mappings:
+        warnings.append(
+            "catalog column mappings were not applied because table/alias scope is ambiguous"
+        )
+    if table_mapping_deferred:
+        warnings.append(
+            "configured table mapping was not applied because table/alias scope is ambiguous"
+        )
 
     return converted, warnings, errors
+
+
+def convert_query_with_mapping_evidence(
+    query: str,
+    config: dict[str, Any],
+    *,
+    source_metadata: dict[str, Any] | None = None,
+    target_metadata: dict[str, Any] | None = None,
+    runtime_evidence: dict[str, Any] | None = None,
+) -> tuple[str, list[str], list[str], dict[str, Any]]:
+    """Convert with the existing engine and return separate hash-bound evidence."""
+    from .mapping_evidence import build_mapping_evidence
+
+    target_query, warnings, errors = convert_query(query, config)
+    evidence = build_mapping_evidence(
+        query,
+        target_query,
+        source_metadata=source_metadata,
+        target_metadata=target_metadata,
+        config=config,
+        runtime_evidence=runtime_evidence,
+    )
+    return target_query, warnings, errors, evidence
 
 
 def _valid_account(fields: dict[str, str]) -> bool:
@@ -1351,8 +1411,11 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
     rule_override = (config.get("ruleOverrides") or {}).get(source_id) or {}
 
     entity_information: list[str] = []
-    column_mappings = query_column_renames(converted_query)
-    column_mappings.update(_configured_column_mappings(config))
+    column_mappings = (
+        {} if query_has_ambiguous_table_scope(source_query) else query_column_renames(converted_query)
+    )
+    configured_mappings, _ = configured_column_renames(source_query, config)
+    column_mappings.update(configured_mappings)
     mappings, mapping_warnings = convert_entities(
         doc,
         converted_query,
