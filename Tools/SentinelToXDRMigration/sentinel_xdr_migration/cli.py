@@ -37,6 +37,7 @@ from .workflow import (
     initialize_workflow,
     next_workflow_stage,
     read_authoring_contract,
+    package_workflow_v3_1,
     refresh_yolo_authoring,
     run_yolo_authoring,
     start_workflow_stage,
@@ -245,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     package_v3_1 = subparsers.add_parser(
         "package-v3-1",
-        help="Package V3.1 with independent Deploy* content selections (Sentinel true, XDR false).",
+        help="Package with V3.1; initialized YOLO runs enforce workflow and fresh-evidence gates.",
     )
     package_v3_1.add_argument("--solution", required=True)
     package_v3_1.add_argument(
@@ -438,10 +439,22 @@ def main(argv: list[str] | None = None) -> int:
                 ingestion_reports=args.ingestion_reports,
             )
         elif args.command == "package-v3-1":
-            result = package_solution_v3_1(
-                args.solution,
-                version_bump=args.version_bump,
-            )
+            try:
+                current_workflow = workflow_status(args.solution)
+            except ValueError as exc:
+                if "workflow state does not exist" not in str(exc):
+                    raise
+                current_workflow = None
+            if current_workflow and (current_workflow.get("authoring") or {}).get("mode") == "yolo":
+                result = package_workflow_v3_1(
+                    args.solution,
+                    requested_version_bump=args.version_bump,
+                )
+            else:
+                result = package_solution_v3_1(
+                    args.solution,
+                    version_bump=args.version_bump,
+                )
         elif args.command == "inspect":
             result = inspect_solution(args.solution)
         elif args.command == "convert":

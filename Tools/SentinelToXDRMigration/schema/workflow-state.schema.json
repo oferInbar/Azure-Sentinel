@@ -184,12 +184,158 @@
           "type": ["string", "null"]
         }
       }
+    },
+    "packaging": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "lastSuccessful",
+        "lastConsumedAction",
+        "currentAttempt"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "1.0.0"
+        },
+        "lastSuccessful": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/packageAction"
+            }
+          ]
+        },
+        "lastConsumedAction": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/packageAction"
+            }
+          ]
+        },
+        "currentAttempt": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "attemptId",
+                "attempt",
+                "status",
+                "requestedVersionBump",
+                "effectiveVersionBump",
+                "bumpConsumed",
+                "packageInputSha256",
+                "packageReportSha256",
+                "startedAt"
+              ],
+              "properties": {
+                "attemptId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "attempt": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "status": {
+                  "enum": ["running", "passed", "failed"]
+                },
+                "requestedVersionBump": {
+                  "enum": ["none", "patch", "minor", "major"]
+                },
+                "effectiveVersionBump": {
+                  "enum": ["none", "patch", "minor", "major"]
+                },
+                "bumpConsumed": {
+                  "type": "boolean"
+                },
+                "packageInputSha256": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "packageReportSha256": {
+                  "type": ["string", "null"],
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "startedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "completedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "failure": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        }
+      }
     }
   },
   "$defs": {
     "sha256": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
+    },
+    "packageAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestedVersionBump",
+        "effectiveVersionBump",
+        "bumpConsumed",
+        "packageInputSha256",
+        "attemptId",
+        "packageSucceeded"
+      ],
+      "properties": {
+        "requestedVersionBump": {
+          "enum": ["none", "patch", "minor", "major"]
+        },
+        "effectiveVersionBump": {
+          "enum": ["none", "patch", "minor", "major"]
+        },
+        "bumpConsumed": {
+          "type": "boolean"
+        },
+        "packageInputSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "attemptId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "packageSucceeded": {
+          "type": "boolean"
+        },
+        "packageReport": {
+          "type": "string",
+          "minLength": 1
+        },
+        "packageReportSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "packageArtifactsSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     },
     "stage": {
       "type": "object",

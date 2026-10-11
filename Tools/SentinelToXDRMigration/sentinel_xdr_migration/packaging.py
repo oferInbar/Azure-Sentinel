@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
+import uuid
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .artifacts import report_directory, repository_root, write_json_artifact, require_solution_conversion_scope
+from .artifacts import (
+    report_directory,
+    repository_root,
+    write_json_artifact,
+    require_solution_conversion_scope,
+)
 from .content_paths import content_path
 
 
@@ -21,6 +30,86 @@ DATA_EXCLUSIONS = {
     "system_generated_metadata.json",
     "testparameters.json",
 }
+PACKAGE_OUTPUT_DIRECTORIES = {
+    "package",
+    "logs",
+    "evidence",
+    ".git",
+    ".venv",
+    "__pycache__",
+}
+
+
+def package_input_identity(solution: str | Path) -> dict[str, Any]:
+    """Hash the complete local solution input tree, excluding generated/runtime output."""
+    root = Path(solution).expanduser().resolve()
+    files: list[dict[str, str]] = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        parts = relative.parts
+        if any(part.lower() in PACKAGE_OUTPUT_DIRECTORIES for part in parts):
+            continue
+        if any(part.lower() == ".env" or part.lower().startswith(".env.") for part in parts):
+            continue
+        if path.is_symlink():
+            raise ValueError(f"package input contains an unsafe symlink: {relative.as_posix()}")
+        if not path.is_file():
+            continue
+        files.append({
+            "path": relative.as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        })
+    canonical = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "sha256": hashlib.sha256(canonical).hexdigest(),
+        "fileCount": len(files),
+    }
+
+
+def solution_data_version(solution: str | Path) -> str | None:
+    root = Path(solution).expanduser().resolve()
+    data_directory = root / "Data"
+    if not data_directory.is_dir():
+        return None
+    try:
+        value = _value(_read_json(_solution_data_file(data_directory)), "Version")
+        return str(value or "").strip() or None
+    except (OSError, ValueError):
+        return None
+
+
+def version_bump_was_consumed(
+    before: str | None,
+    after: str | None,
+    version_bump: str,
+) -> bool:
+    if not before or not after or before == after:
+        return False
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", before)
+    if not match:
+        return False
+    major, minor, patch = (int(value) for value in match.groups())
+    if version_bump == "patch":
+        expected = f"{major}.{minor}.{patch + 1}"
+    elif version_bump == "minor":
+        expected = f"{major}.{minor + 1}.0"
+    elif version_bump == "major":
+        expected = f"{major + 1}.0.0"
+    else:
+        return False
+    return after == expected
+
+
+def _package_artifact_hashes(paths: dict[str, Path]) -> dict[str, str]:
+    return {
+        name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for name, path in sorted(paths.items())
+    }
+
+
+def _canonical_digest(value: dict[str, Any]) -> str:
+    content = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(content).hexdigest()
 
 
 def _deployment_parameters(
@@ -122,6 +211,9 @@ def package_solution_v3_1(
     solution: str | Path,
     *,
     version_bump: str,
+    requested_version_bump: str | None = None,
+    package_attempt_id: str | None = None,
+    workflow_run_id: str | None = None,
 ) -> dict[str, Any]:
     if version_bump not in {"none", "patch", "minor", "major"}:
         raise ValueError("version bump must be none, patch, minor, or major")
@@ -184,6 +276,8 @@ def package_solution_v3_1(
         "-VersionBump",
         version_bump,
     ]
+    input_before = package_input_identity(root)
+    package_attempt_id = package_attempt_id or str(uuid.uuid4())
     completed = subprocess.run(
         command,
         cwd=repository,
@@ -305,6 +399,14 @@ def package_solution_v3_1(
             "generated package ZIP is missing: " + ", ".join(sorted(missing_entries))
         )
 
+    artifact_paths = {
+        "mainTemplate": main_template,
+        "createUiDefinition": create_ui,
+        "testParameters": test_parameters,
+        "zip": zip_path,
+    }
+    artifact_hashes = _package_artifact_hashes(artifact_paths)
+    input_after = package_input_identity(root)
     reports = report_directory(root, create=True)
     report_path = reports / "packaging.v3_1.json"
     result = {
@@ -318,6 +420,17 @@ def package_solution_v3_1(
         "solution": str(root),
         "version": version,
         "versionBump": version_bump,
+        "requestedVersionBump": requested_version_bump or version_bump,
+        "effectiveVersionBump": version_bump,
+        "packageAttemptId": package_attempt_id,
+        "workflowRunId": workflow_run_id,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "packageInputs": {
+            "before": input_before,
+            "after": input_after,
+        },
+        "packageArtifactHashes": artifact_hashes,
+        "packageArtifactsSha256": _canonical_digest(artifact_hashes),
         "solutionData": str(data_file),
         "xdrDetectionCount": len(xdr_files),
         "deploymentParameters": deployment_parameters,

@@ -78,6 +78,11 @@ sentinel-xdr-migration workflow-yolo `
 sentinel-xdr-migration workflow-yolo-refresh `
   --solution "Solutions\<solution>" `
   --run-id "<run-id>"
+
+sentinel-xdr-migration package-v3-1 `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --version-bump none
 ```
 
 Refresh imports only existing provider reports with matching persisted query
@@ -91,6 +96,17 @@ packaging, PR, or Qualification authorization. Stale source/target hashes or
 changed inventory stop processing rather than overwriting user content. See the toolkit README's
 [YOLO authoring guide](../README.md#opt-in-full-inventory-yolo-authoring) for
 the contract, exact coverage definitions, and evidence-export option.
+
+For a YOLO run, `package-v3-1` uses the existing workflow state: validation
+must pass and every rule in the complete inventory must clear technical and
+explicit-review gates. It records fresh V3.1 report and artifact hashes; the
+advisory coverage threshold never bypasses these gates. The initialization-
+selected version action is consumed once. A retry may use `--version-bump none`
+only after that action was consumed and the current package-input hash matches
+the post-build identity recorded by the run. Changed inputs make the previous
+package stale and require an explicit new bump choice. Every retry runs V3.1
+again; an old report, package artifact, or V4 report is never relabeled as
+current V3.1 evidence.
 
 ### Qualification — explicit opt-in
 

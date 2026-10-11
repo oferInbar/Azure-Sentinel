@@ -842,7 +842,7 @@ sentinel-xdr-migration package-v3-1 `
 ```
 
 Use the one version-bump action explicitly selected at workflow initialization
-for the packaging command as well; do not apply a second, additional version
+for the first packaging command; do not apply a second, additional version
 bump. V3.1 packaging is the current repository entry point for hybrid/XDR
 content. The package command does not validate KQL, deploy content, enable
 detections, or prove registration support or alert parity.
@@ -892,6 +892,11 @@ sentinel-xdr-migration workflow-yolo `
 sentinel-xdr-migration workflow-status `
   --solution "Solutions\<solution>" `
   --run-id "<run-id>"
+
+sentinel-xdr-migration package-v3-1 `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --version-bump none
 ```
 
 The contract freezes every recursive `Analytic Rules` source path, identity,
@@ -913,6 +918,15 @@ The run stops when
 `100 * M >= 80 * N` is advisory only and does not authorize packaging, PR
 creation, qualification, deployment, ingestion, or any other write. The normal
 review, validation, explicit approval, and packaging gates remain in force.
+
+For YOLO runs, `package-v3-1` requires the passed workflow validation stage and
+complete inventory to clear all technical and explicit-review gates. It
+persists requested/effective/consumed version-action state and hashes the
+package inputs, report, and artifacts. Retry with `--version-bump none` only
+after the original action was consumed and when current inputs match the
+recorded post-build hash; changed inputs require an explicit new bump choice.
+Retries execute V3.1 again and must produce fresh evidence. Stale reports or
+artifacts, including historical V4 evidence, cannot pass the packaging stage.
 
 YOLO cannot be enabled by resuming a legacy run. Use `--new-run` with an
 explicit profile and `--yolo` to start a separate run. Always select the exact

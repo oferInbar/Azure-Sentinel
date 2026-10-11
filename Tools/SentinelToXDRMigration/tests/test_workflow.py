@@ -15,6 +15,8 @@ from sentinel_xdr_migration.workflow import (
     complete_workflow_stage,
     initialize_workflow,
     next_workflow_stage,
+    package_workflow_v3_1,
+    _yolo_package_readiness,
     read_authoring_contract,
     refresh_yolo_authoring,
     run_yolo_authoring,
@@ -23,6 +25,8 @@ from sentinel_xdr_migration.workflow import (
 )
 from sentinel_xdr_migration.artifacts import artifact_path, migrate_reports, using_run
 from sentinel_xdr_migration.converter import convert_solution
+from sentinel_xdr_migration.packaging import package_input_identity
+from sentinel_xdr_migration import cli as cli_module
 from sentinel_xdr_migration.solution_report import build_solution_report
 from test_converter import RULE
 from sentinel_xdr_migration import workflow as workflow_module
@@ -62,6 +66,60 @@ class WorkflowTests(unittest.TestCase):
             "packageReport": str(report),
             **{name: str(path) for name, path in paths.items()},
         }
+
+    def _mock_v3_1_package(self, solution: Path, **kwargs: str) -> dict:
+        artifacts = self._packaging_artifacts(kwargs["version_bump"])
+        package_hashes = {
+            name: hashlib.sha256(Path(artifacts[name]).read_bytes()).hexdigest()
+            for name in ("mainTemplate", "createUiDefinition", "testParameters", "zip")
+        }
+        inputs = package_input_identity(solution)
+        attempt_id = kwargs["package_attempt_id"]
+        report = {
+            "status": "passed",
+            "packager": "V3.1",
+            "version": "1.0.0",
+            "versionBump": kwargs["version_bump"],
+            "requestedVersionBump": kwargs["requested_version_bump"],
+            "effectiveVersionBump": kwargs["version_bump"],
+            "packageAttemptId": attempt_id,
+            "workflowRunId": kwargs["workflow_run_id"],
+            "packageInputs": {"before": inputs, "after": inputs},
+            "packageArtifactHashes": package_hashes,
+            "packageArtifactsSha256": hashlib.sha256(
+                json.dumps(package_hashes, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            **{
+                name: artifacts[name]
+                for name in ("mainTemplate", "createUiDefinition", "testParameters", "zip")
+            },
+        }
+        report_path = Path(artifacts["packageReport"])
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        artifacts["packageReport"] = str(report_path)
+        return {
+            **report,
+            "solution": str(solution),
+            "packageReport": str(report_path),
+            "workflowArtifacts": {
+                "packager": "V3.1",
+                "packageReport": str(report_path),
+                **{
+                    name: artifacts[name]
+                    for name in ("mainTemplate", "createUiDefinition", "testParameters", "zip")
+                },
+            },
+        }
+
+    def _prepare_workflow_for_package(self, version_bump: str = "patch") -> str:
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump=version_bump,
+            workflow_profile="authoring",
+        )
+        for stage in ("discovery", "conversion", "validation"):
+            self._complete_passed_stage(stage)
+        return initialized["runId"]
 
     def _qualification_args(self) -> dict[str, str]:
         return {
@@ -371,6 +429,193 @@ class WorkflowTests(unittest.TestCase):
                 self.solution, "packaging", status="passed", artifacts=artifacts
             )
         self.assertEqual(before, report.read_bytes())
+
+    def test_consumed_bump_retries_with_none_and_fresh_v3_1_evidence(self) -> None:
+        run_id = self._prepare_workflow_for_package("patch")
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ) as package:
+            first = package_workflow_v3_1(
+                self.solution,
+                requested_version_bump="patch",
+            )
+            first_report = json.loads(Path(first["packageReport"]).read_text())
+            retry = package_workflow_v3_1(
+                self.solution,
+                requested_version_bump="none",
+            )
+            retry_report = json.loads(Path(retry["packageReport"]).read_text())
+
+            self.assertEqual(["patch", "none"], [
+                call.kwargs["version_bump"] for call in package.call_args_list
+            ])
+            self.assertEqual("patch", first_report["effectiveVersionBump"])
+            self.assertEqual("none", retry_report["requestedVersionBump"])
+            self.assertEqual("none", retry_report["effectiveVersionBump"])
+            self.assertNotEqual(
+                first_report["packageAttemptId"],
+                retry_report["packageAttemptId"],
+            )
+            state = workflow_status(self.solution)
+            self.assertEqual(2, state["stages"]["packaging"]["attempts"])
+            self.assertTrue(state["packaging"]["lastConsumedAction"]["bumpConsumed"])
+            self.assertEqual("none", state["packaging"]["lastConsumedAction"]["requestedVersionBump"])
+            self.assertEqual("passed", state["stages"]["packaging"]["status"])
+
+    def test_changed_package_inputs_reject_none_and_require_a_new_bump(self) -> None:
+        run_id = self._prepare_workflow_for_package("patch")
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ) as package:
+            package_workflow_v3_1(self.solution, requested_version_bump="patch")
+            changed_input = self.solution / "XDR Detections" / "Detection.yaml"
+            changed_input.parent.mkdir(parents=True, exist_ok=True)
+            changed_input.write_text("kind: CustomDetection\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "inputs changed.*explicit new version bump"):
+                package_workflow_v3_1(self.solution, requested_version_bump="none")
+            package.assert_called_once()
+
+            package_workflow_v3_1(self.solution, requested_version_bump="minor")
+            self.assertEqual(2, package.call_count)
+            state = workflow_status(self.solution)
+            self.assertEqual(
+                "minor",
+                state["packaging"]["lastConsumedAction"]["effectiveVersionBump"],
+            )
+
+    def test_failed_packager_consuming_bump_allows_only_hash_matching_none_retry(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir()
+        data.write_text(json.dumps({"Name": "Sample", "Version": "1.2.3"}), encoding="utf-8")
+        run_id = self._prepare_workflow_for_package("patch")
+
+        def fail_after_bumping(solution: Path, **kwargs: str) -> dict:
+            document = json.loads(data.read_text(encoding="utf-8"))
+            document["Version"] = "1.2.4"
+            data.write_text(json.dumps(document), encoding="utf-8")
+            raise RuntimeError("synthetic package failure after version update")
+
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=fail_after_bumping,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "synthetic package failure"):
+                package_workflow_v3_1(self.solution, requested_version_bump="patch")
+            state = workflow_status(self.solution)
+            self.assertTrue(state["packaging"]["lastConsumedAction"]["bumpConsumed"])
+            self.assertFalse(state["packaging"]["lastConsumedAction"]["packageSucceeded"])
+
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ) as package:
+            result = package_workflow_v3_1(self.solution, requested_version_bump="none")
+            self.assertEqual("none", result["effectiveVersionBump"])
+            package.assert_called_once()
+
+    def test_stale_package_artifact_blocks_next_workflow_stage(self) -> None:
+        run_id = self._prepare_workflow_for_package("none")
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ):
+            result = package_workflow_v3_1(self.solution, requested_version_bump="none")
+            Path(result["zip"]).write_text("stale package", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "package artifact is stale: zip"):
+                start_workflow_stage(self.solution, "report")
+
+    def test_v4_package_report_cannot_pass_current_v3_1_attempt(self) -> None:
+        run_id = self._prepare_workflow_for_package("patch")
+
+        def old_v4_report(solution: Path, **kwargs: str) -> dict:
+            result = self._mock_v3_1_package(solution, **kwargs)
+            report_path = Path(result["packageReport"])
+            report = json.loads(report_path.read_text())
+            report["packager"] = "V4"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            return result
+
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=old_v4_report,
+        ):
+            with self.assertRaisesRegex(ValueError, "does not prove V3.1"):
+                package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="patch",
+                )
+            state = workflow_status(self.solution)
+            self.assertEqual("failed", state["stages"]["packaging"]["status"])
+            self.assertIsNone(state["packaging"]["lastSuccessful"])
+
+    def test_yolo_package_cli_routes_through_workflow_gates(self) -> None:
+        self._create_source_rules()
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+            yolo=True,
+        )
+        with mock.patch.object(cli_module, "configure_logging"), mock.patch.object(
+            cli_module,
+            "package_workflow_v3_1",
+            return_value={"packager": "V3.1"},
+        ) as workflow_package:
+            result = cli_module.main([
+                "package-v3-1",
+                "--solution", str(self.solution),
+                "--run-id", initialized["runId"],
+                "--version-bump", "patch",
+            ])
+
+        self.assertEqual(0, result)
+        workflow_package.assert_called_once_with(
+            str(self.solution),
+            requested_version_bump="patch",
+        )
+
+    def test_yolo_review_required_rule_blocks_package_without_clearing_it(self) -> None:
+        self._create_source_rules()
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+            yolo=True,
+        )
+        state = workflow_status(self.solution)
+        state["stages"]["validation"]["status"] = "passed"
+        record = {
+            "inventory": {"rules": [{"ruleId": "source-rule"}]},
+            "results": [{
+                "ruleId": "source-rule",
+                "status": "migrated",
+                "conversionStatus": "converted",
+                "validationStatus": "passed",
+                "reviewRequired": True,
+                "target": {"structurallyValid": True},
+                "findings": [],
+            }],
+        }
+        with mock.patch.object(
+            workflow_module,
+            "_current_yolo_record",
+            return_value=(record, b""),
+        ):
+            with self.assertRaisesRegex(ValueError, "explicit-review"):
+                _yolo_package_readiness(
+                    self.solution,
+                    Path(initialized["statePath"]),
+                    state,
+                )
+        self.assertTrue(record["results"][0]["reviewRequired"])
 
     def test_blocked_stage_requires_explanation(self) -> None:
         initialize_workflow(self.solution, workflow_profile="authoring")

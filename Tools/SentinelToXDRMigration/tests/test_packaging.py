@@ -8,7 +8,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from unittest import mock
 
-from sentinel_xdr_migration.packaging import package_solution_v3_1
+from sentinel_xdr_migration.packaging import package_input_identity, package_solution_v3_1
 
 
 class PackagingTests(unittest.TestCase):
@@ -98,6 +98,18 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual("V3.1", result["workflowArtifacts"]["packager"])
         self.assertTrue(Path(result["packageReport"]).is_file())
         self.assertEqual("packaging.v3_1.json", Path(result["packageReport"]).name)
+        report = json.loads(Path(result["packageReport"]).read_text(encoding="utf-8"))
+        self.assertEqual("none", report["requestedVersionBump"])
+        self.assertEqual("none", report["effectiveVersionBump"])
+        self.assertEqual(report["packageInputs"]["before"], report["packageInputs"]["after"])
+        self.assertEqual(
+            package_input_identity(self.solution)["sha256"],
+            report["packageInputs"]["after"]["sha256"],
+        )
+        self.assertEqual(
+            {"mainTemplate", "createUiDefinition", "testParameters", "zip"},
+            set(report["packageArtifactHashes"]),
+        )
         command = run.call_args.args[0]
         self.assertIn("createSolutionV3_1.ps1", command[3])
         self.assertEqual("none", command[-1])
@@ -106,6 +118,17 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual("unverified", result["customDetectionRegistrationSupport"])
         self.assertEqual(self.repository, run.call_args.kwargs["cwd"])
         which.assert_called_once_with("pwsh")
+
+    def test_input_identity_excludes_generated_outputs_and_tracks_content(self) -> None:
+        before = package_input_identity(self.solution)["sha256"]
+        (self.solution / "Logs").mkdir()
+        (self.solution / "Logs" / "runtime.json").write_text("{}", encoding="utf-8")
+        (self.solution / "Package" / "stale.zip").write_text("old", encoding="utf-8")
+        self.assertEqual(before, package_input_identity(self.solution)["sha256"])
+
+        detection = self.solution / "XDR Detections" / "Detection.yaml"
+        detection.write_text("kind: CustomDetection\nname: changed\n", encoding="utf-8")
+        self.assertNotEqual(before, package_input_identity(self.solution)["sha256"])
 
     def test_rejects_missing_xdr_reference_before_packaging(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
