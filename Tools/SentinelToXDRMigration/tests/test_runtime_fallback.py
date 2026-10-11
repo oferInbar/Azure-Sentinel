@@ -17,6 +17,7 @@ import yaml
 
 import sentinel_xdr_migration.runtime as runtime_module
 from sentinel_xdr_migration.runtime import (
+    _advanced_hunting_token,
     _load_provider_fallback,
     record_runtime_validation,
     run_advanced_hunting_query,
@@ -109,6 +110,50 @@ class RuntimeFallbackEvidenceTests(unittest.TestCase):
             "permissionsVerified": True,
             "kqlError": False,
         }), encoding="utf-8")
+
+    def test_runtime_hunting_token_accepts_required_scope_superset(self):
+        tenant_id = "39768270-33ce-4b90-a1a6-e0caeb3ba0ab"
+        claims = {
+            "tid": tenant_id,
+            "aud": "https://graph.microsoft.com",
+            "scp": "ThreatHunting.Read.All User.Read email openid profile",
+        }
+        credential = mock.Mock()
+        credential.get_token.return_value.token = "synthetic-access-token"
+        record = mock.Mock(tenant_id=tenant_id)
+        state_root = Path(self.temp.name) / "private-state"
+        with (
+            mock.patch("azure.identity.DeviceCodeCredential", return_value=credential),
+            mock.patch("azure.identity.TokenCachePersistenceOptions"),
+            mock.patch(
+                "sentinel_xdr_migration.runtime.resolve_graph_client_id",
+                return_value="11111111-2222-3333-4444-555555555555",
+            ),
+            mock.patch(
+                "sentinel_xdr_migration.runtime.graph_auth_record_path",
+                return_value=state_root / "auth-record.json",
+            ),
+            mock.patch(
+                "sentinel_xdr_migration.runtime._load_auth_record",
+                return_value=record,
+            ),
+            mock.patch(
+                "sentinel_xdr_migration.runtime._read_json",
+                return_value={"tenantId": tenant_id},
+            ),
+            mock.patch(
+                "sentinel_xdr_migration.runtime.verify_graph_auth_binding"
+            ),
+            mock.patch(
+                "sentinel_xdr_migration.graph_readiness._token_claims",
+                return_value=claims,
+            ),
+        ):
+            token = _advanced_hunting_token(state_root, tenant_id=tenant_id)
+        self.assertEqual("synthetic-access-token", token)
+        credential.get_token.assert_called_once_with(
+            "https://graph.microsoft.com/ThreatHunting.Read.All"
+        )
 
     def test_complete_fallback_evidence_is_persisted_without_promoting_status(self):
         result = record_runtime_validation(

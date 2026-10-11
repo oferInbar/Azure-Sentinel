@@ -11,9 +11,13 @@ from azure.core.exceptions import ClientAuthenticationError
 
 from azure.identity._credentials import azure_cli
 
+from sentinel_xdr_migration.graph_auth import (
+    GRAPH_RESOURCE,
+    delegated_scope_diagnostics,
+    validate_delegated_graph_claims,
+)
 from sentinel_xdr_migration.graph_readiness import (
     AZURE_CLI_GRAPH_SCOPE,
-    GRAPH_RESOURCE,
     preflight_deployment,
 )
 from sentinel_xdr_migration.deployment import (
@@ -103,6 +107,64 @@ def access_token() -> str:
 
 
 class AzureCliGraphScopeTests(unittest.TestCase):
+    def test_required_scope_policy_normalizes_names_allows_extras_and_blocks_invalid_claims(
+        self,
+    ) -> None:
+        diagnostics = delegated_scope_diagnostics(
+            "CustomDetection.ReadWrite.All User.Read email openid profile",
+            ("https://graph.microsoft.com/CustomDetection.ReadWrite.All",),
+        )
+        self.assertEqual("satisfied", diagnostics["status"])
+        self.assertEqual(
+            ["CustomDetection.ReadWrite.All"],
+            diagnostics["requiredScopeNames"],
+        )
+        self.assertEqual(
+            ["email", "openid", "profile", "User.Read"],
+            diagnostics["extraScopeNames"],
+        )
+        base_claims = {
+            "tid": TENANT_ID,
+            "aud": GRAPH_RESOURCE,
+            "scp": "CustomDetection.ReadWrite.All User.Read",
+        }
+        self.assertEqual(
+            "satisfied",
+            validate_delegated_graph_claims(
+                base_claims,
+                tenant_id=TENANT_ID,
+                required_scopes=(
+                    "https://graph.microsoft.com/CustomDetection.ReadWrite.All",
+                ),
+                purpose="test",
+            )["delegatedScopes"]["status"],
+        )
+        for claims, reason in (
+            ({**base_claims, "tid": "wrong-tenant"}, "tenant"),
+            ({**base_claims, "aud": "https://other.example"}, "Microsoft Graph"),
+            ({**base_claims, "scp": "User.Read"}, "required delegated"),
+            ({**base_claims, "scp": ["CustomDetection.ReadWrite.All"]}, "required delegated"),
+            (
+                {
+                    "tid": TENANT_ID,
+                    "aud": GRAPH_RESOURCE,
+                    "roles": ["CustomDetection.ReadWrite.All"],
+                },
+                "required delegated",
+            ),
+        ):
+            with self.subTest(claims=claims), self.assertRaisesRegex(
+                RuntimeError, reason
+            ):
+                validate_delegated_graph_claims(
+                    claims,
+                    tenant_id=TENANT_ID,
+                    required_scopes=(
+                        "https://graph.microsoft.com/CustomDetection.ReadWrite.All",
+                    ),
+                    purpose="test",
+                )
+
     def _preflight_patches(self, cli_backend: mock.Mock):
         root = Path("preflight-fixture").resolve()
         return (
@@ -149,22 +211,32 @@ class AzureCliGraphScopeTests(unittest.TestCase):
     def test_deployment_token_uses_graph_resource_with_cached_azure_cli(
         self, cli_command: mock.Mock
     ) -> None:
+        claims = {
+            "tid": TENANT_ID,
+            "aud": "https://graph.microsoft.com",
+            "scp": "CustomDetection.ReadWrite.All User.Read email openid profile",
+        }
+        encoded_claims = base64.urlsafe_b64encode(
+            json.dumps(claims).encode("utf-8")
+        ).decode("ascii").rstrip("=")
         cli_command.return_value = json.dumps(
             {
-                "accessToken": "controlled-deployment-token",
+                "accessToken": f"header.{encoded_claims}.signature",
                 "expires_on": 2_000_000_000,
             }
         )
         state_root = mock.MagicMock()
         state_root.__truediv__.return_value.exists.return_value = False
 
-        with mock.patch(
-            "sentinel_xdr_migration.deployment._state_dir",
-            return_value=state_root,
+        with (
+            mock.patch(
+                "sentinel_xdr_migration.deployment._state_dir",
+                return_value=state_root,
+            ),
         ):
             token = _deployment_token(tenant_id=TENANT_ID)
 
-        self.assertEqual(token, "controlled-deployment-token")
+        self.assertEqual(token, f"header.{encoded_claims}.signature")
         cli_command.assert_called_once()
         command = cli_command.call_args.args[0]
         self.assertEqual(

@@ -156,6 +156,14 @@ def main(argv: list[str] | None = None) -> int:
     setup_parser.add_argument("--tenant-id")
     setup_parser.add_argument("--workspace-id")
     setup_parser.add_argument(
+        "--hunting-client-id",
+        help="Public delegated Graph client ID for Advanced Hunting; the built-in client remains the default.",
+    )
+    setup_parser.add_argument(
+        "--azure-config-dir",
+        help="Explicitly select and persist an isolated Azure CLI profile for this target.",
+    )
+    setup_parser.add_argument(
         "--hunting-auth-method",
         choices=["device-code", "browser"],
         default="device-code",
@@ -195,6 +203,72 @@ def main(argv: list[str] | None = None) -> int:
     )
     deployment_setup.add_argument("--tenant-id")
     deployment_setup.add_argument("--solution", required=True)
+    deployment_setup.add_argument(
+        "--custom-detection-client-id",
+        help="Public delegated Graph client ID for Custom Detection; the built-in client remains the default.",
+    )
+    deployment_setup.add_argument(
+        "--azure-config-dir",
+        help="Explicitly select and persist an isolated Azure CLI profile for this target.",
+    )
+    app_registration_auth = subparsers.add_parser(
+        "setup-app-registration-auth",
+        help="Explicitly authenticate with the least-privilege app-registration bootstrap scope.",
+    )
+    app_registration_auth.add_argument("--solution", required=True)
+    app_registration_auth.add_argument(
+        "--auth-method",
+        choices=["device-code", "browser"],
+        default="device-code",
+    )
+    app_registration_auth.add_argument(
+        "--bootstrap-client-id",
+        help="Existing public Graph client ID already able to request the bootstrap scopes; defaults to the built-in client.",
+    )
+    app_readback_auth = subparsers.add_parser(
+        "setup-app-readback-auth",
+        help="Set up the separate browser-only, GET-only delegated app verification credential.",
+    )
+    app_readback_auth.add_argument("--solution", required=True)
+    app_readback_auth.add_argument(
+        "--readback-client-id",
+        required=True,
+        help="Existing separately approved public Graph client ID; never reuses bootstrap or Custom Detection auth.",
+    )
+    app_readback = subparsers.add_parser(
+        "verify-delegated-app-readback",
+        help="Read-only reconciliation for the exact approved owned application; performs GET requests only.",
+    )
+    app_readback.add_argument("--solution", required=True)
+    app_readback_scope_diagnostic = subparsers.add_parser(
+        "diagnose-app-readback-scopes",
+        help="Report required and extra cached readback-token scope names; makes no Microsoft Graph resource requests.",
+    )
+    app_readback_scope_diagnostic.add_argument("--solution", required=True)
+    app_registration_plan = subparsers.add_parser(
+        "plan-delegated-app-registration",
+        help="Show the exact single-tenant delegated desktop-app plan; performs no cloud calls.",
+    )
+    app_registration_plan.add_argument("--solution", required=True)
+    app_registration_plan.add_argument(
+        "--app-display-name",
+        help="Exact application display name to bind into the reviewed plan; defaults to the legacy name.",
+    )
+    app_registration = subparsers.add_parser(
+        "register-delegated-app",
+        help="Create at most one explicitly approved delegated Graph desktop app; grants no consent.",
+    )
+    app_registration.add_argument("--solution", required=True)
+    app_registration.add_argument(
+        "--app-display-name",
+        help="Exact application display name bound into the reviewed plan; defaults to the legacy name.",
+    )
+    app_registration.add_argument("--expected-plan-sha256", required=True)
+    app_registration.add_argument(
+        "--approve-exact-app-registration",
+        action="store_true",
+        help="Approve only the application registration bound to the supplied plan hash.",
+    )
     deployment_setup.add_argument(
         "--auth-method",
         choices=["azure-cli", "device-code", "browser"],
@@ -503,6 +577,11 @@ def main(argv: list[str] | None = None) -> int:
             action.required = True
             action.help = "Select the exact existing workflow run to update."
             break
+    for action in subparsers.choices["diagnose-app-readback-scopes"]._actions:
+        if action.dest == "run_id":
+            action.required = True
+            action.help = "Select the exact approved Cisco qualification run."
+            break
     subparsers.choices["workflow-init"].add_argument(
         "--new-run", action="store_true", help="Create an isolated new workflow instead of resuming."
     )
@@ -543,6 +622,8 @@ def main(argv: list[str] | None = None) -> int:
                 skip_sentinel_auth=args.skip_sentinel_auth,
                 skip_hunting_auth=args.skip_hunting_auth,
                 hunting_auth_method=args.hunting_auth_method,
+                hunting_client_id=args.hunting_client_id,
+                azure_config_dir=args.azure_config_dir,
             )
         elif args.command == "doctor":
             result = doctor(solution=args.solution)
@@ -568,6 +649,56 @@ def main(argv: list[str] | None = None) -> int:
             result = setup_deployment_authentication(
                 tenant_id=target["tenantId"],
                 auth_method=args.auth_method,
+                graph_client_id=args.custom_detection_client_id,
+                azure_config_dir=args.azure_config_dir,
+            )
+        elif args.command == "setup-app-registration-auth":
+            target = require_locked_target(args.solution, materialize_missing=False)
+            from .delegated_app_registration import (
+                setup_app_registration_authentication,
+            )
+
+            result = setup_app_registration_authentication(
+                tenant_id=target["tenantId"],
+                auth_method=args.auth_method,
+                bootstrap_client_id=args.bootstrap_client_id,
+            )
+        elif args.command == "setup-app-readback-auth":
+            target = require_locked_target(args.solution, materialize_missing=False)
+            from .delegated_app_registration import (
+                setup_app_readback_authentication,
+            )
+
+            result = setup_app_readback_authentication(
+                tenant_id=target["tenantId"],
+                readback_client_id=args.readback_client_id,
+            )
+        elif args.command == "verify-delegated-app-readback":
+            from .delegated_app_registration import verify_delegated_app_readback
+
+            result = verify_delegated_app_readback(args.solution)
+        elif args.command == "diagnose-app-readback-scopes":
+            from .delegated_app_registration import diagnose_app_readback_scopes
+
+            result = diagnose_app_readback_scopes(
+                args.solution,
+                run_id=args.run_id,
+            )
+        elif args.command == "plan-delegated-app-registration":
+            from .delegated_app_registration import plan_delegated_app_registration
+
+            result = plan_delegated_app_registration(
+                args.solution,
+                app_display_name=args.app_display_name,
+            )
+        elif args.command == "register-delegated-app":
+            from .delegated_app_registration import register_delegated_app
+
+            result = register_delegated_app(
+                args.solution,
+                expected_plan_sha256=args.expected_plan_sha256,
+                approve_exact_app_registration=args.approve_exact_app_registration,
+                app_display_name=args.app_display_name,
             )
         elif args.command == "deploy":
             result = deploy_solution(args.solution)
@@ -848,6 +979,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "complete-alert-parity" and result["status"] != "passed":
         return 1
     if args.command == "abort-alert-parity" and result["status"] != "aborted":
+        return 1
+    if (
+        args.command == "verify-delegated-app-readback"
+        and result.get("status") != "readback-verified-private-config-completed"
+    ):
+        return 1
+    if (
+        args.command == "diagnose-app-readback-scopes"
+        and result.get("status") != "required-scopes-present"
+    ):
         return 1
     if args.command == "convert" and (result["needsReview"] or result["conflicts"]):
         return 1

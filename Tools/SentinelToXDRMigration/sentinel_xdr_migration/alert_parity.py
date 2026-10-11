@@ -19,6 +19,8 @@ from .artifacts import artifact_path, migrate_legacy_artifact, write_json_artifa
 from .converter import validate_document, xdr_detection_files
 from .content_paths import detection_reference
 from .deployment import DEPLOYMENT_ENDPOINT, _deployment_token, _graph_request
+from .graph_client_config import azure_cli_credential
+from .onboarding import _state_dir
 from .target_context import require_locked_target
 
 ARM_SCOPE = "https://management.azure.com/.default"
@@ -31,10 +33,10 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _arm_token() -> str:
-    from azure.identity import AzureCliCredential
-
-    return AzureCliCredential().get_token(ARM_SCOPE).token
+def _arm_token(state_dir: str | Path | None = None) -> str:
+    return azure_cli_credential(
+        state_root=_state_dir(state_dir)
+    ).get_token(ARM_SCOPE).token
 
 
 def _arm_request(
@@ -250,7 +252,7 @@ def _disable_all(
     graph_token: str | None = None,
     state_dir: str | Path | None = None,
 ) -> list[dict[str, Any]]:
-    arm = arm_token or _arm_token()
+    arm = arm_token or _arm_token(state_dir)
     target = state.get("target") or {}
     graph = graph_token or _deployment_token(
         state_dir,
@@ -393,7 +395,7 @@ def start_alert_parity(
                 "an alert parity run is already active; complete or abort it first"
             )
 
-    arm_token = _arm_token()
+    arm_token = _arm_token(state_dir)
     graph_token = _deployment_token(state_dir, tenant_id=target["tenantId"])
     _read_rule_states(pairs, workspace_resource_id, arm_token, graph_token)
     started_at = _utc_now()
@@ -533,7 +535,7 @@ def start_alert_parity_batch(
                 "an alert parity run is already active; complete or abort it first"
             )
 
-    arm_token = _arm_token()
+    arm_token = _arm_token(state_dir)
     graph_token = _deployment_token(state_dir, tenant_id=target["tenantId"])
     _read_rule_states(pairs, workspace_resource_id, arm_token, graph_token)
     started_at = _utc_now()

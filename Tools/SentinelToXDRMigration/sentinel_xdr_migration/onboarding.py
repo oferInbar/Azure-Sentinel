@@ -10,10 +10,24 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from . import __version__
+from .graph_auth import validate_delegated_graph_claims
+from .graph_client_config import (
+    DEFAULT_GRAPH_CLIENT_ID,
+    azure_cli_profile,
+    configure_graph_client,
+    configured_azure_cli_profile,
+    configure_azure_cli_profile,
+    graph_auth_record_path,
+    graph_token_cache_name,
+    ensure_private_state_root,
+    restrict_private_permissions,
+    verify_graph_auth_binding,
+    write_graph_auth_metadata,
+)
 
 LOG_ANALYTICS_RESOURCE = "https://api.loganalytics.io"
 GRAPH_SCOPE = "https://graph.microsoft.com/ThreatHunting.Read.All"
-GRAPH_CLIENT_ID = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
+GRAPH_CLIENT_ID = DEFAULT_GRAPH_CLIENT_ID
 DEFAULT_STATE_DIR = Path.home() / ".sentinel-xdr-migration"
 AUTH_RECORD_NAME = "advanced-hunting-auth-record.json"
 CONFIG_NAME = "config.json"
@@ -111,7 +125,7 @@ def configure_workspace(
         )
 
     state_root = _state_dir(state_dir)
-    state_root.mkdir(parents=True, exist_ok=True)
+    ensure_private_state_root(state_root)
     config_path = state_root / CONFIG_NAME
     config = _read_json(config_path)
     config["workspaceResourceId"] = normalized
@@ -158,38 +172,74 @@ def _advanced_hunting_status(
             "status": "failed",
             "detail": "azure-identity is not installed",
         }
-    record = _load_auth_record(state_root / AUTH_RECORD_NAME)
+    from .graph_client_config import resolve_graph_client_id
+
+    client_id = resolve_graph_client_id(state_root, "advancedHunting")
+    record_path = graph_auth_record_path(
+        state_root, "advancedHunting", client_id, AUTH_RECORD_NAME
+    )
+    record = _load_auth_record(record_path)
     if record is None:
         return {
             "name": "advancedHunting",
             "status": "failed",
             "detail": "one-time Microsoft Graph device-code sign-in is required",
         }
+    try:
+        verify_graph_auth_binding(
+            record_path,
+            record,
+            purpose="advancedHunting",
+            client_id=client_id,
+            tenant_id=tenant_id,
+        )
+    except ValueError as exc:
+        return {"name": "advancedHunting", "status": "failed", "detail": str(exc)}
     tenant_id = tenant_id or getattr(record, "tenant_id", None)
     credential = DeviceCodeCredential(
-        client_id=GRAPH_CLIENT_ID,
+        client_id=client_id,
         tenant_id=tenant_id,
         authentication_record=record,
-        cache_persistence_options=TokenCachePersistenceOptions(name=TOKEN_CACHE_NAME),
+        cache_persistence_options=TokenCachePersistenceOptions(
+            name=graph_token_cache_name(
+                "advancedHunting", client_id, TOKEN_CACHE_NAME
+            )
+        ),
         disable_automatic_authentication=True,
     )
     try:
-        credential.get_token(GRAPH_SCOPE)
+        access_token = credential.get_token(GRAPH_SCOPE).token
     except (AuthenticationRequiredError, ClientAuthenticationError) as exc:
         return {
             "name": "advancedHunting",
             "status": "failed",
             "detail": f"cached sign-in needs renewal: {exc}",
         }
+    from .graph_readiness import _token_claims
+
+    try:
+        scope_diagnostics = validate_delegated_graph_claims(
+            _token_claims(access_token),
+            tenant_id=tenant_id or "",
+            required_scopes=(GRAPH_SCOPE,),
+            purpose="Advanced Hunting",
+        )
+    except RuntimeError as exc:
+        return {
+            "name": "advancedHunting",
+            "status": "failed",
+            "detail": str(exc),
+        }
     return {
         "name": "advancedHunting",
         "status": "passed",
         "detail": "a Graph access token was obtained; provider authorization was not tested",
+        "scopeDiagnostics": scope_diagnostics["delegatedScopes"],
     }
 
 
 def _sentinel_authentication_status(
-    *, runner: CommandRunner, probe: bool
+    *, runner: CommandRunner, probe: bool, azure_config_dir: str | None = None
 ) -> dict[str, Any]:
     if not probe:
         return {
@@ -197,21 +247,22 @@ def _sentinel_authentication_status(
             "status": "notRun",
             "detail": "Log Analytics authentication and access require an explicitly scoped runtime read",
         }
-    result = _command_status(
-        "sentinelAuthentication",
-        (
-            "az",
-            "account",
-            "get-access-token",
-            "--resource",
-            LOG_ANALYTICS_RESOURCE,
-            "--query",
-            "expiresOn",
-            "--output",
-            "tsv",
-        ),
-        runner=runner,
-    )
+    with azure_cli_profile(azure_config_dir):
+        result = _command_status(
+            "sentinelAuthentication",
+            (
+                "az",
+                "account",
+                "get-access-token",
+                "--resource",
+                LOG_ANALYTICS_RESOURCE,
+                "--query",
+                "expiresOn",
+                "--output",
+                "tsv",
+            ),
+            runner=runner,
+        )
     result["name"] = "sentinelAuthentication"
     if result["status"] == "passed":
         result["detail"] = "an access token was obtained; provider authorization was not tested"
@@ -228,6 +279,7 @@ def doctor(
 ) -> dict[str, Any]:
     state_root = _state_dir(state_dir)
     env = environment if environment is not None else os.environ
+    azure_config_dir = configured_azure_cli_profile(state_root)
     setup_state = state_root / SETUP_STATE_NAME
     config = _read_json(state_root / CONFIG_NAME)
 
@@ -243,7 +295,9 @@ def doctor(
         runner=runner,
     )
     sentinel_auth = _sentinel_authentication_status(
-        runner=runner, probe=probe_authentication
+        runner=runner,
+        probe=probe_authentication,
+        azure_config_dir=azure_config_dir,
     )
     workspace_id = env.get("LA_WORKSPACE_ID") or config.get("workspaceId")
     workspace_resource_id = config.get("workspaceResourceId")
@@ -331,7 +385,10 @@ def doctor(
 
 
 def _login_advanced_hunting(
-    state_root: Path, tenant_id: str | None, auth_method: str = "device-code"
+    state_root: Path,
+    tenant_id: str | None,
+    auth_method: str = "device-code",
+    client_id: str | None = None,
 ) -> dict[str, Any]:
     from azure.identity import (
         DeviceCodeCredential,
@@ -339,10 +396,22 @@ def _login_advanced_hunting(
         TokenCachePersistenceOptions,
     )
 
-    state_root.mkdir(parents=True, exist_ok=True)
+    ensure_private_state_root(state_root)
+    from .graph_client_config import resolve_graph_client_id
+
+    selected_client = resolve_graph_client_id(
+        state_root, "advancedHunting", client_id
+    )
+    record_path = graph_auth_record_path(
+        state_root, "advancedHunting", selected_client, AUTH_RECORD_NAME
+    )
     common_kwargs: dict[str, Any] = {
-        "client_id": GRAPH_CLIENT_ID,
-        "cache_persistence_options": TokenCachePersistenceOptions(name=TOKEN_CACHE_NAME),
+        "client_id": selected_client,
+        "cache_persistence_options": TokenCachePersistenceOptions(
+            name=graph_token_cache_name(
+                "advancedHunting", selected_client, TOKEN_CACHE_NAME
+            )
+        ),
     }
     if tenant_id:
         common_kwargs["tenant_id"] = tenant_id
@@ -360,12 +429,35 @@ def _login_advanced_hunting(
             "hunting_auth_method must be 'device-code' or 'browser'"
         )
     record = credential.authenticate(scopes=[GRAPH_SCOPE])
-    (state_root / AUTH_RECORD_NAME).write_text(record.serialize(), encoding="utf-8")
-    credential.get_token(GRAPH_SCOPE)
+    access_token = credential.get_token(GRAPH_SCOPE).token
+    from .graph_readiness import _token_claims
+
+    try:
+        scope_diagnostics = validate_delegated_graph_claims(
+            _token_claims(access_token),
+            tenant_id=getattr(record, "tenant_id", None) or tenant_id or "",
+            required_scopes=(GRAPH_SCOPE,),
+            purpose="Advanced Hunting",
+        )
+    except RuntimeError as exc:
+        return {
+            "name": "advancedHuntingAuthentication",
+            "status": "failed",
+            "detail": str(exc),
+        }
+    record_path.write_text(record.serialize(), encoding="utf-8")
+    restrict_private_permissions(record_path, 0o600)
+    write_graph_auth_metadata(
+        record_path,
+        purpose="advancedHunting",
+        client_id=selected_client,
+        tenant_id=getattr(record, "tenant_id", None) or tenant_id,
+    )
     return {
         "name": "advancedHuntingAuthentication",
         "status": "completed",
         "detail": f"authenticated as {getattr(record, 'username', '') or 'user'}",
+        "scopeDiagnostics": scope_diagnostics["delegatedScopes"],
     }
 
 
@@ -377,21 +469,30 @@ def setup(
     skip_sentinel_auth: bool = False,
     skip_hunting_auth: bool = False,
     hunting_auth_method: str = "device-code",
+    hunting_client_id: str | None = None,
+    azure_config_dir: str | Path | None = None,
     state_dir: str | Path | None = None,
     runner: CommandRunner = subprocess.run,
 ) -> dict[str, Any]:
     state_root = _state_dir(state_dir)
-    state_root.mkdir(parents=True, exist_ok=True)
+    ensure_private_state_root(state_root)
     actions: list[dict[str, Any]] = []
 
     config_path = state_root / CONFIG_NAME
     config = _read_json(config_path)
+    tenant_id = tenant_id or config.get("tenantId")
     if tenant_id:
         config["tenantId"] = tenant_id
     if workspace_id:
         config["workspaceId"] = workspace_id
     if config:
         config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    if hunting_client_id:
+        configure_graph_client(
+            state_root, "advancedHunting", hunting_client_id
+        )
+    if azure_config_dir is not None:
+        configure_azure_cli_profile(state_root, azure_config_dir)
     if workspace_id:
         actions.append(
             {
@@ -423,7 +524,12 @@ def setup(
             if tenant_id:
                 command.extend(["--tenant", tenant_id])
             if az_executable:
-                result = subprocess.run(command, check=False)
+                with azure_cli_profile(
+                    str(azure_config_dir)
+                    if azure_config_dir is not None
+                    else configured_azure_cli_profile(state_root)
+                ):
+                    result = subprocess.run(command, check=False)
                 actions.append(
                     {
                         "name": "sentinelAuthentication",
@@ -448,7 +554,10 @@ def setup(
             try:
                 actions.append(
                     _login_advanced_hunting(
-                        state_root, tenant_id, auth_method=hunting_auth_method
+                        state_root,
+                        tenant_id,
+                        auth_method=hunting_auth_method,
+                        client_id=hunting_client_id,
                     )
                 )
             except Exception as exc:

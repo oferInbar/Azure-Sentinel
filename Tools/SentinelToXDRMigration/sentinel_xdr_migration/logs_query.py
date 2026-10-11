@@ -8,6 +8,9 @@ from email.utils import parsedate_to_datetime
 from decimal import Decimal
 from typing import Any, Callable, Mapping
 
+from .graph_client_config import azure_cli_credential as profiled_azure_cli_credential
+from .onboarding import _state_dir
+
 
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 90
 DEFAULT_FAMILY_TIMEOUT_SECONDS = 30 * 60
@@ -32,10 +35,9 @@ class LogsQueryFailure(RuntimeError):
 
 def azure_cli_credential(target: Mapping[str, str]):
     """Create a non-interactive credential pinned to the locked target."""
-    from azure.identity import AzureCliCredential
-
-    return AzureCliCredential(
+    return profiled_azure_cli_credential(
         tenant_id=target["tenantId"],
+        state_root=_state_dir(),
     )
 
 

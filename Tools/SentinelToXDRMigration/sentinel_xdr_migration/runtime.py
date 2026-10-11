@@ -18,15 +18,21 @@ from .artifacts import report_directory, portable_artifact, write_json_artifact
 from .catalog import referenced_catalog_tables, referenced_custom_tables
 from .converter import custom_detail_schema_errors, xdr_detection_files
 from .content_paths import content_path, yaml_files
+from .graph_auth import validate_delegated_graph_claims
 from .onboarding import (
     AUTH_RECORD_NAME,
     CONFIG_NAME,
-    GRAPH_CLIENT_ID,
     GRAPH_SCOPE,
     TOKEN_CACHE_NAME,
     _load_auth_record,
     _read_json,
     _state_dir,
+)
+from .graph_client_config import (
+    graph_auth_record_path,
+    graph_token_cache_name,
+    resolve_graph_client_id,
+    verify_graph_auth_binding,
 )
 from .report import write_runtime_validation_report
 
@@ -360,7 +366,11 @@ def _advanced_hunting_token(
 ) -> str:
     from azure.identity import DeviceCodeCredential, TokenCachePersistenceOptions
 
-    record = _load_auth_record(state_root / AUTH_RECORD_NAME)
+    client_id = resolve_graph_client_id(state_root, "advancedHunting")
+    record_path = graph_auth_record_path(
+        state_root, "advancedHunting", client_id, AUTH_RECORD_NAME
+    )
+    record = _load_auth_record(record_path)
     if record is None:
         raise RuntimeError(
             "Advanced Hunting authentication is missing; run "
@@ -368,18 +378,41 @@ def _advanced_hunting_token(
         )
     config = _read_json(state_root / CONFIG_NAME)
     configured_tenant = config.get("tenantId") or getattr(record, "tenant_id", None)
+    try:
+        verify_graph_auth_binding(
+            record_path,
+            record,
+            purpose="advancedHunting",
+            client_id=client_id,
+            tenant_id=tenant_id or configured_tenant,
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
     if tenant_id and configured_tenant and tenant_id.lower() != configured_tenant.lower():
         raise RuntimeError(
             "Advanced Hunting authentication tenant does not match the locked target"
         )
     credential = DeviceCodeCredential(
-        client_id=GRAPH_CLIENT_ID,
+        client_id=client_id,
         tenant_id=tenant_id or configured_tenant,
         authentication_record=record,
-        cache_persistence_options=TokenCachePersistenceOptions(name=TOKEN_CACHE_NAME),
+        cache_persistence_options=TokenCachePersistenceOptions(
+            name=graph_token_cache_name(
+                "advancedHunting", client_id, TOKEN_CACHE_NAME
+            )
+        ),
         disable_automatic_authentication=True,
     )
-    return credential.get_token(GRAPH_SCOPE).token
+    token = credential.get_token(GRAPH_SCOPE).token
+    from .graph_readiness import _token_claims
+
+    validate_delegated_graph_claims(
+        _token_claims(token),
+        tenant_id=tenant_id or configured_tenant or "",
+        required_scopes=(GRAPH_SCOPE,),
+        purpose="Advanced Hunting",
+    )
+    return token
 
 
 def _retry_after_seconds(value: str | None) -> float | None:

@@ -2116,6 +2116,189 @@ Rules are always submitted as disabled. The command creates missing rules,
 updates matching client-provided IDs, and writes
 `Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\deployment.graph.json`.
 
+### Delegated Graph client and guarded app registration
+
+The built-in Graph client remains the default. To use a separately registered
+public desktop client for Custom Detection deployment, first review the exact
+registration plan for the locked solution tenant:
+
+```powershell
+sentinel-xdr-migration plan-delegated-app-registration `
+  --solution "Solutions\<solution>" `
+  --app-display-name "Sentinel-XDR-QUalification"
+```
+
+The optional `--app-display-name` is bound into the plan hash and must be
+identical when registering. If omitted, the legacy
+`Sentinel-XDR-CiscoASA-Qualification` name remains the default. The plan above
+describes one single-tenant public client named exactly
+`Sentinel-XDR-QUalification`, the `http://localhost` redirect, and only the
+delegated Microsoft Graph `CustomDetection.ReadWrite.All` permission. It does
+not create an application or grant consent. The registration route requires separate delegated bootstrap scopes
+`AppRegistration.Create` (create) and `User.Read` (enumerate only the signed-in
+user's owned applications) and explicit app-registration approval. These are
+used only by the bootstrap authentication; they are not added to the
+Custom Detection app, whose only requested permission remains
+`CustomDetection.ReadWrite.All`. Authenticate explicitly, then submit the exact
+plan hash and approval:
+
+```powershell
+sentinel-xdr-migration setup-app-registration-auth `
+  --solution "Solutions\<solution>" `
+  --auth-method device-code `
+  --bootstrap-client-id "<existing-public-Graph-client-id>"
+
+sentinel-xdr-migration register-delegated-app `
+  --solution "Solutions\<solution>" `
+  --app-display-name "Sentinel-XDR-QUalification" `
+  --expected-plan-sha256 "<plan-sha256>" `
+  --approve-exact-app-registration
+```
+
+The route checks the signed-in user's owned applications before creating
+anything, reuses only one exact matching owned app, and stops on multiple,
+inaccessible, or differently configured matches. It never retries an
+uncertain create, modifies an existing app, creates a service principal,
+creates a client secret, requests admin consent, or grants application
+permissions or ARM/Defender roles. The permission declaration is not consent
+or proof that the permission is effective. An administrator must separately
+review and grant the required consent; the deployment preflight remains
+responsible for reporting token claims, read access, and write authorization
+as distinct evidence.
+If the bootstrap scopes cannot expose enough details to verify the operator's
+owned applications, registration stops before creating an app rather than
+requesting broader directory permissions.
+
+Delegated Microsoft Graph token checks across the toolkit treat each operation's
+required scopes as a minimum: every required scope must be present in a valid
+delegated `scp` claim, while additional valid scope names are reported as
+`extraScopeNames` and do not fail that scope check. This includes incidental
+OpenID Connect names such as `email`, `openid`, and `profile`; their presence
+does not mean the toolkit requested them, broadened consent, or changed an
+operation's approvals. Missing or malformed `scp`, application-role-only
+tokens, a wrong tenant, or a non-Graph audience remain blocked. Client and
+authentication-purpose binding, operation-specific minimums, and all existing
+read, write, and exact-resource approval gates remain unchanged.
+
+#### Read-only reconciliation of the approved app
+
+If creation already succeeded but the bootstrap `User.Read` view returned
+redacted application settings, do not retry registration. The dedicated
+readback route uses a separate private authentication purpose, record, and
+browser token cache. It may use the same already-approved public client ID, but
+does not reuse the bootstrap credential record or token cache. It requests
+only delegated `User.Read` and
+`Application.Read.All`, enumerates only the signed-in user's owned application
+object IDs, then performs a v1.0 `GET` for the exact pre-approved application.
+It is pinned to the locked lab tenant, application/client ID, object ID, and
+display name. It does not list tenant-wide applications, create or modify an
+application, grant consent, create credentials, or change roles.
+
+The required `Application.Read.All` delegated permission needs administrator
+consent for the existing client. The toolkit does not create that client,
+request consent, or ask for broader permissions. After parent review and
+explicit approval to authenticate, run:
+
+```powershell
+sentinel-xdr-migration setup-app-readback-auth `
+  --solution "Solutions\<solution>" `
+  --readback-client-id "14d82eec-204b-4c2f-b7e8-296a70dab67e"
+
+sentinel-xdr-migration verify-delegated-app-readback `
+  --solution "Solutions\<solution>"
+```
+
+If the readback stops at its required delegated-scope check, this bounded diagnostic
+uses only the existing private readback credential for the one approved Cisco
+run:
+
+```powershell
+sentinel-xdr-migration diagnose-app-readback-scopes `
+  --solution "Solutions\<solution>" `
+  --run-id "20261011T084730Z-473601c220c140f693d879f3f12768c6"
+```
+
+It never prompts interactively and makes no Microsoft Graph resource request;
+it may perform a non-interactive Entra token refresh from the existing cache.
+It reports normalized actual, expected, missing, and extra scope names.
+Having the required scopes is not proof of ownership, application settings, or
+Graph access, and does not run the verification GET. Missing required scopes
+remain blocked. These readback scopes belong to the existing
+public client, not the Custom Detection app: that app's approved permission
+declaration remains exactly one delegated
+`CustomDetection.ReadWrite.All` permission; readback still checks that exact
+application-registration declaration.
+Microsoft documents delegated `Application.Read.All` as requiring admin
+consent; this diagnostic does not grant or request consent.
+
+The verify command is GET-only. It requires the exact object to appear once in
+the current user's owned applications, then verifies the exact single-tenant
+audience, `http://localhost` public-client redirect, only the delegated
+`CustomDetection.ReadWrite.All` permission declaration, and no password or
+key credentials. Redacted, inaccessible, stale, or mismatched results remain
+blocked and do not complete private client configuration. A successful
+readback records only private local verification metadata while preserving the
+original creation status/snapshot. It does not prove OAuth consent, token
+claims for the Custom Detection app, deployment access, or write authorization;
+deployment preflight and all existing write gates remain required.
+
+For this localhost-redirect Custom Detection app, use browser authentication
+when setting up its deployment credential:
+
+```powershell
+sentinel-xdr-migration setup-deployment `
+  --solution "Solutions\<solution>" `
+  --auth-method browser `
+  --custom-detection-client-id "<application-id>"
+```
+
+The approved registration payload does not enable the fallback public-client
+flow used for device-code authentication. Bootstrap authentication above is a
+separate client and does not imply device-code support for this Custom Detection
+app. Consent remains a separate administrator action.
+Without requesting tenant-wide directory-read permissions, this ownership
+check cannot prove that another user's application with the same display name
+does not exist. The plan reports that limitation rather than claiming global
+name uniqueness.
+See Microsoft's [Create application API](https://learn.microsoft.com/graph/api/application-post-applications?view=graph-rest-1.0)
+and [List ownedObjects API](https://learn.microsoft.com/graph/api/user-list-ownedobjects?view=graph-rest-1.0)
+for the bootstrap permission requirements.
+The bootstrap client defaults to the existing built-in client; if it cannot
+request both bootstrap scopes, the toolkit stops before any app write. An
+operator may instead select an existing public Graph client with
+`--bootstrap-client-id`. The toolkit does not create or broaden that bootstrap
+client.
+
+Client IDs and credential records are stored outside solution `Logs` and
+`.env`, under the private state directory (default:
+`~/.sentinel-xdr-migration`). Custom client authentication records and token
+caches are namespaced by purpose and client ID; tenant/client binding is
+checked before cached credentials are used. To select another delegated
+Advanced Hunting client, pass `setup --hunting-client-id "<client-id>"`.
+For Custom Detection, `setup-deployment --custom-detection-client-id
+"<client-id>"` selects a client; after the guarded registration succeeds, the
+registered client is selected automatically.
+
+For an isolated lab state directory, set
+`SENTINEL_XDR_MIGRATION_STATE_DIR` before running the CLI, for example:
+
+```powershell
+$env:SENTINEL_XDR_MIGRATION_STATE_DIR = "<private-lab-toolkit-auth-directory>"
+```
+
+Use the same setting for setup, authentication, preflight, and later runtime
+operations. The toolkit rejects private client/credential state under
+solution `Logs` or `.env`.
+
+Azure CLI keeps its existing default profile unless an operator explicitly
+selects a separate absolute profile path with
+`setup-deployment --azure-config-dir "<isolated-profile-path>"`. The toolkit
+rejects the normal `~/.azure` profile and a path equal to the current
+`AZURE_CONFIG_DIR`. It does not log into that profile automatically except
+when the operator explicitly runs setup with `--auth-method azure-cli`.
+Delegated custom-client authentication uses `--auth-method device-code` or
+`browser`; Azure CLI credentials do not use the configured custom client.
+
 Use `--overwrite` to replace previously generated files. Without it, the
 converter refuses to overwrite a file whose content differs.
 

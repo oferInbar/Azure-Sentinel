@@ -14,6 +14,7 @@ import yaml
 from sentinel_xdr_migration.deployment import (
     _deployment_token,
     _graph_request,
+    _validate_deployment_token,
     deploy_solution,
     graph_detection_payload,
 )
@@ -89,6 +90,59 @@ def document(rule_id: str = RULE_ID) -> dict:
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_custom_detection_token_accepts_scope_supersets_but_not_invalid_claims(
+        self,
+    ) -> None:
+        base = {
+            "tid": TARGET["tenantId"],
+            "aud": "https://graph.microsoft.com",
+            "scp": (
+                "CustomDetection.ReadWrite.All CustomDetection.Read.All "
+                "User.Read email openid profile"
+            ),
+        }
+        with mock.patch(
+            "sentinel_xdr_migration.graph_readiness._token_claims",
+            return_value=base,
+        ):
+            diagnostics = _validate_deployment_token(
+                "synthetic-token",
+                tenant_id=TARGET["tenantId"],
+            )
+        self.assertEqual(
+            {
+                "CustomDetection.Read.All",
+                "User.Read",
+                "email",
+                "openid",
+                "profile",
+            },
+            set(diagnostics["delegatedScopes"]["extraScopeNames"]),
+        )
+        for claims, message in (
+            ({**base, "tid": "wrong-tenant"}, "tenant"),
+            ({**base, "aud": "https://other.example"}, "Microsoft Graph"),
+            ({**base, "scp": "CustomDetection.Read.All"}, "required delegated"),
+            ({**base, "scp": ["CustomDetection.ReadWrite.All"]}, "required delegated"),
+            (
+                {
+                    "tid": TARGET["tenantId"],
+                    "aud": "https://graph.microsoft.com",
+                    "roles": ["CustomDetection.ReadWrite.All"],
+                },
+                "required delegated",
+            ),
+        ):
+            with self.subTest(claims=claims), mock.patch(
+                "sentinel_xdr_migration.graph_readiness._token_claims",
+                return_value=claims,
+            ):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    _validate_deployment_token(
+                        "synthetic-token",
+                        tenant_id=TARGET["tenantId"],
+                    )
+
     @mock.patch("urllib.request.urlopen")
     def test_graph_write_request_builds_authorized_json_request(
         self, urlopen: mock.Mock
@@ -233,7 +287,10 @@ class DeploymentTests(unittest.TestCase):
         claims = {
             "tid": TARGET["tenantId"],
             "aud": "00000003-0000-0000-c000-000000000000",
-            "scp": "CustomDetection.ReadWrite.All",
+            "scp": (
+                "CustomDetection.ReadWrite.All CustomDetection.Read.All "
+                "User.Read email openid profile"
+            ),
         }
         encoded = base64.urlsafe_b64encode(
             json.dumps(claims).encode("utf-8")
@@ -268,6 +325,20 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(report["readChecks"][0]["exists"])
         self.assertEqual(report["permissions"]["readAccess"], "confirmed")
         self.assertEqual(report["permissions"]["writeAuthorization"], "not-tested")
+        self.assertEqual(
+            {
+                "CustomDetection.Read.All",
+                "User.Read",
+                "email",
+                "openid",
+                "profile",
+            },
+            set(
+                report["authentication"]["delegatedScopeDiagnostics"][
+                    "extraScopeNames"
+                ]
+            ),
+        )
         self.assertEqual(report["permissions"]["effectiveRole"]["status"], "unknown")
         self.assertEqual(graph_get.call_count, 1)
         credential.get_token.assert_called_once()
@@ -311,7 +382,22 @@ class DeploymentTests(unittest.TestCase):
             json.dumps(claims).encode("utf-8")
         ).decode("ascii").rstrip("=")
         credential = mock.Mock()
-        credential.get_token.return_value.token = f"header.{encoded}.signature"
+        credential.get_token.side_effect = [
+            RuntimeError("write scope unavailable"),
+            mock.Mock(
+                token=(
+                    "header."
+                    + base64.urlsafe_b64encode(
+                        json.dumps({
+                            "tid": TARGET["tenantId"],
+                            "aud": "00000003-0000-0000-c000-000000000000",
+                            "scp": "CustomDetection.Read.All",
+                        }).encode("utf-8")
+                    ).decode("ascii").rstrip("=")
+                    + ".signature"
+                )
+            ),
+        ]
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             detections = root / "XDR Detections"
@@ -347,7 +433,7 @@ class DeploymentTests(unittest.TestCase):
         )
         self.assertEqual(
             report["managementPermissionGrant"]["credentialRequestScope"],
-            "https://graph.microsoft.com/CustomDetection.ReadWrite.All",
+            "https://graph.microsoft.com/CustomDetection.Read.All",
         )
         self.assertEqual(report["deploymentReadiness"], "action-required")
         self.assertEqual(report["status"], "action-required")
@@ -390,7 +476,7 @@ class DeploymentTests(unittest.TestCase):
 
         self.assertEqual(
             report["managementPermissionGrant"]["status"],
-            "ready",
+            "missing",
         )
         self.assertEqual(
             report["managementPermissionGrant"]["grantType"],
@@ -402,7 +488,8 @@ class DeploymentTests(unittest.TestCase):
         )
         self.assertEqual(report["permissions"]["effectiveRole"]["status"], "unknown")
         self.assertEqual(report["permissions"]["writeAuthorization"], "not-tested")
-        self.assertEqual(report["deploymentReadiness"], "readiness-unconfirmed")
+        self.assertEqual(report["authentication"]["status"], "blocked")
+        self.assertEqual(report["deploymentReadiness"], "blocked")
 
     def test_missing_or_malformed_permission_claims_are_unknown(self) -> None:
         base = {
@@ -786,11 +873,20 @@ class DeploymentTests(unittest.TestCase):
     def test_deployment_token_falls_back_to_azure_cli(
         self, credential: mock.Mock
     ) -> None:
-        credential.return_value.get_token.return_value.token = "cli-token"
+        claims = {
+            "tid": TARGET["tenantId"],
+            "aud": "https://graph.microsoft.com",
+            "scp": "CustomDetection.ReadWrite.All User.Read email openid profile",
+        }
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(claims).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+        token_value = f"header.{encoded}.signature"
+        credential.return_value.get_token.return_value.token = token_value
         with tempfile.TemporaryDirectory() as temp:
-            token = _deployment_token(temp)
+            token = _deployment_token(temp, tenant_id=TARGET["tenantId"])
 
-        self.assertEqual(token, "cli-token")
+        self.assertEqual(token, token_value)
 
     @mock.patch(
         "sentinel_xdr_migration.deployment._deployment_token",
