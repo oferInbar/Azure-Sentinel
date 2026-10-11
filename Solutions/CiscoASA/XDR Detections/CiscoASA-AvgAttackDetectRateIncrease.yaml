@@ -29,15 +29,15 @@ contentProvenance:
     warnings:
     - 'Schedule assessment: source frequency=1h, lookback=6h; target frequency=PT1H, native lookback=unknown/unconfigured;
       mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
-    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
-    - Host.FullName column `DeviceName` is not retained by an equivalent entity mapping; custom details do not restore entity
-      identity or correlation
+    - Host.FullName value is retained as customDetails.HostFullName from query column `DeviceName`, but its target output
+      binding requires runtime-schema verification; custom details do not restore entity identity or correlation
     - Supplemental customDetails.HostFullName column `DeviceName` requires runtime output-schema binding verification
     - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
       and the service drops all custom details if exceeded
+    - Local detection ID changed from '79f29feb-6a9d-4cdf-baaa-2daf480a5da1' to canonical Graph-compatible ID 'xdr-79f29feb-6a9d-4cdf-baaa-2daf480a5da1'
+      for source '79f29feb-6a9d-4cdf-baaa-2daf480a5da1'. No cloud rules were updated, deleted, or migrated. Review existing
+      deployed rules and reconcile their identities before any separately approved deployment.
     informational:
-    - Supplemental Host.FullName value is configured as customDetails.HostFullName from query column `DeviceName` (runtime-binding-pending);
-      this is not entity-identity or alert-parity equivalence
     - All source MITRE tactics are preserved in source order in authored YAML. V3.1 ARM packaging carries only the first tactic
       and its compatible techniques; this classification loss is not validated parity. Direct Graph deployment requires a
       single tactic.
@@ -48,6 +48,9 @@ contentProvenance:
     originalTechniques:
     - T1046
     - T1498
+    reviewScope:
+      sourceDocumentSha256: 8e3a5cd157088c224cdaf56c1505b3175865e771700c9fc14afac7b2cc042c87
+      targetQuerySha256: d97131b413ab064a6fc032c18fadc8fe78c6eaa2ee5973230904cf6528704b8e
     supplementalEntityDetails:
     - entityType: Host
       entityIndex: 1
@@ -56,8 +59,12 @@ contentProvenance:
       column: DeviceName
       status: runtime-binding-pending
       customDetailKey: HostFullName
+    identityChange:
+      previousId: 79f29feb-6a9d-4cdf-baaa-2daf480a5da1
+      currentId: xdr-79f29feb-6a9d-4cdf-baaa-2daf480a5da1
+      scope: local-artifact-only
 properties:
-  id: 79f29feb-6a9d-4cdf-baaa-2daf480a5da1
+  id: xdr-79f29feb-6a9d-4cdf-baaa-2daf480a5da1
   displayName: Cisco ASA - average attack detection rate increase
   status: disabled
   queryCondition:

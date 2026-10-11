@@ -29,16 +29,16 @@ contentProvenance:
     warnings:
     - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
       mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
-    - converter cannot map Host.FullName to a documented Custom Detection field; this source identifier is not represented
     - entity mappings were resolved by the configured per-rule override
-    - Host.FullName column `DeviceName` is not retained by an equivalent entity mapping; custom details do not restore entity
-      identity or correlation
+    - Host.FullName value is retained as customDetails.HostFullName from query column `DeviceName`, but its target output
+      binding requires runtime-schema verification; custom details do not restore entity identity or correlation
     - Supplemental customDetails.HostFullName column `DeviceName` requires runtime output-schema binding verification
     - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
       and the service drops all custom details if exceeded
+    - Local detection ID changed from '795edf2d-cf3e-45b5-8452-fe6c9e6a582e' to canonical Graph-compatible ID 'xdr-795edf2d-cf3e-45b5-8452-fe6c9e6a582e'
+      for source '795edf2d-cf3e-45b5-8452-fe6c9e6a582e'. No cloud rules were updated, deleted, or migrated. Review existing
+      deployed rules and reconcile their identities before any separately approved deployment.
     informational:
-    - Supplemental Host.FullName value is configured as customDetails.HostFullName from query column `DeviceName` (runtime-binding-pending);
-      this is not entity-identity or alert-parity equivalence
     - All source MITRE tactics are preserved in source order in authored YAML. V3.1 ARM packaging carries only the first tactic
       and its compatible techniques; this classification loss is not validated parity. Direct Graph deployment requires a
       single tactic.
@@ -49,6 +49,9 @@ contentProvenance:
     originalTechniques:
     - T1046
     - T1498
+    reviewScope:
+      sourceDocumentSha256: 1950041799fad8925658109382fafd0a6af66a8d6f56feabf7224ddf380881c4
+      targetQuerySha256: 7c14061341a40bd433b9ca444954e39693ef716b5b4c70fdeb60b13d0754ac78
     supplementalEntityDetails:
     - entityType: Host
       entityIndex: 1
@@ -57,8 +60,12 @@ contentProvenance:
       column: DeviceName
       status: runtime-binding-pending
       customDetailKey: HostFullName
+    identityChange:
+      previousId: 795edf2d-cf3e-45b5-8452-fe6c9e6a582e
+      currentId: xdr-795edf2d-cf3e-45b5-8452-fe6c9e6a582e
+      scope: local-artifact-only
 properties:
-  id: 795edf2d-cf3e-45b5-8452-fe6c9e6a582e
+  id: xdr-795edf2d-cf3e-45b5-8452-fe6c9e6a582e
   displayName: Cisco ASA - threat detection message fired
   status: disabled
   queryCondition:

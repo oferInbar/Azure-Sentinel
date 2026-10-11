@@ -29,6 +29,9 @@ contentProvenance:
     warnings:
     - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
       mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Local detection ID changed from 'f3a8c2d0-7b41-4e9a-9f6a-2d8a1c4e5b72' to canonical Graph-compatible ID 'xdr-f3a8c2d0-7b41-4e9a-9f6a-2d8a1c4e5b72'
+      for source 'f3a8c2d0-7b41-4e9a-9f6a-2d8a1c4e5b72'. No cloud rules were updated, deleted, or migrated. Review existing
+      deployed rules and reconcile their identities before any separately approved deployment.
     informational: []
     errors: []
     originalTactics:
@@ -36,8 +39,15 @@ contentProvenance:
     originalTechniques:
     - T1041
     - T1048
+    reviewScope:
+      sourceDocumentSha256: 67136161890ac4802d25db7c66e8309e57d4bc9bd09d0be570db70a655cfc39f
+      targetQuerySha256: 4276d25aa47afd8f862a11fa2b34b1690d4a5c1909b60be0e435971c2707016e
+    identityChange:
+      previousId: f3a8c2d0-7b41-4e9a-9f6a-2d8a1c4e5b72
+      currentId: xdr-f3a8c2d0-7b41-4e9a-9f6a-2d8a1c4e5b72
+      scope: local-artifact-only
 properties:
-  id: f3a8c2d0-7b41-4e9a-9f6a-2d8a1c4e5b72
+  id: xdr-f3a8c2d0-7b41-4e9a-9f6a-2d8a1c4e5b72
   displayName: Cisco ASA - Possible Data Exfiltration Detection
   status: disabled
   queryCondition:
