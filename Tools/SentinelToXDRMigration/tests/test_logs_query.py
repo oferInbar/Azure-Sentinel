@@ -34,7 +34,7 @@ from sentinel_xdr_migration.logs_query import (
     query_family,
     verify_azure_cli_target,
 )
-from sentinel_xdr_migration.runtime import validate_sentinel_sdk
+from sentinel_xdr_migration.runtime import current_runtime_evidence, validate_sentinel_sdk
 
 
 TENANT = "11111111-2222-3333-4444-555555555555"
@@ -439,6 +439,23 @@ class SentinelSdkProviderTests(unittest.TestCase):
     def _factory(self, client):
         return lambda credential, **kwargs: client
 
+    def _write_provider_gap_evidence(self):
+        evidence = self.solution / "provider-gap.json"
+        evidence.write_text(json.dumps({
+            "mcpProvider": "triage-mcp",
+            "advertisedTool": "unavailable",
+            "queryFamily": "sentinel",
+            "fallbackProvider": "azure-monitor-sdk",
+            "scopeReference": TARGET["workspaceResourceId"],
+            "reasonCode": "tool-unavailable",
+            "reason": "No Triage workspace query tool was available.",
+            "batchComplete": True,
+            "scopeVerified": True,
+            "permissionsVerified": True,
+            "kqlError": False,
+        }))
+        return evidence
+
     def test_complete_inventory_is_run_through_cli_and_full_rows_are_reported(self):
         responses = [
             success(logs_table("PrimaryResult", ["A", "B"], [[1, "row"]])),
@@ -496,20 +513,7 @@ class SentinelSdkProviderTests(unittest.TestCase):
         self.assertFalse(report["familyComplete"])
 
     def test_full_sdk_family_can_record_only_explicit_triage_provider_gap(self):
-        evidence = self.solution / "provider-gap.json"
-        evidence.write_text(json.dumps({
-            "mcpProvider": "triage-mcp",
-            "advertisedTool": "unavailable",
-            "queryFamily": "sentinel",
-            "fallbackProvider": "azure-monitor-sdk",
-            "scopeReference": TARGET["workspaceResourceId"],
-            "reasonCode": "tool-unavailable",
-            "reason": "No Triage workspace query tool was available.",
-            "batchComplete": True,
-            "scopeVerified": True,
-            "permissionsVerified": True,
-            "kqlError": False,
-        }))
+        evidence = self._write_provider_gap_evidence()
         client = FakeClient([
             success(logs_table("events", ["A"], [])),
             success(logs_table("events", ["B"], [])),
@@ -525,6 +529,104 @@ class SentinelSdkProviderTests(unittest.TestCase):
         self.assertEqual(2, report["valid"])
         self.assertTrue(report["familyComplete"])
         self.assertEqual("azure-monitor-sdk", report["providerFallback"]["fallbackProvider"])
+
+    def test_sdk_kql_failure_with_provider_gap_is_persisted_then_rejected(self):
+        evidence = self._write_provider_gap_evidence()
+        previous_client = FakeClient([
+            success(logs_table("events", ["A"], [])),
+            success(logs_table("events", ["B"], [])),
+        ])
+        previous_report = validate_sentinel_sdk(
+            self.solution,
+            target=self.target,
+            provider_gap_evidence=evidence,
+            _scope_verifier=lambda _target: None,
+            _credential_factory=lambda _target: object(),
+            _client_factory=self._factory(previous_client),
+        )
+        self.assertEqual(2, previous_report["valid"])
+
+        query_error = RuntimeError("Failed to resolve table 'MissingTable'")
+        query_error.status_code = 400
+        client = FakeClient([
+            query_error,
+            success(logs_table("events", ["B"], [])),
+        ])
+        with self.assertRaisesRegex(ValueError, "Failed to resolve table 'MissingTable'"):
+            validate_sentinel_sdk(
+                self.solution,
+                target=self.target,
+                provider_gap_evidence=evidence,
+                _scope_verifier=lambda _target: None,
+                _credential_factory=lambda _target: object(),
+                _client_factory=self._factory(client),
+            )
+
+        report_path = report_directory(self.solution) / "runtime-validation.azure-monitor-sdk.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        failed = next(item for item in report["results"] if item["status"] == "failed")
+        self.assertEqual("query", failed["failureKind"])
+        self.assertEqual(400, failed["statusCode"])
+        self.assertIn("Failed to resolve table 'MissingTable'", failed["errorDetails"])
+        self.assertEqual(
+            hashlib.sha256(self.sources["Nested/Other.yaml"].encode()).hexdigest(),
+            failed["querySha256"],
+        )
+        self.assertEqual("azure-monitor-sdk", report["providerFallback"]["fallbackProvider"])
+        self.assertTrue(report["familyComplete"])
+        self.assertEqual(["failed", "passed"], [item["status"] for item in report["results"]])
+        self.assertEqual(2, len(client.calls))
+        current = current_runtime_evidence(self.solution)
+        self.assertIsNone(current["sentinelProvider"])
+        self.assertTrue(any("Failed to resolve table" in issue for issue in current["currentQueryFailures"]))
+
+    def test_sdk_blocked_and_unexecuted_fallback_results_are_persisted(self):
+        evidence = self._write_provider_gap_evidence()
+        error = RuntimeError("access denied")
+        error.status_code = 403
+        client = FakeClient([error])
+        with self.assertRaisesRegex(ValueError, "is blocked: access denied"):
+            validate_sentinel_sdk(
+                self.solution,
+                target=self.target,
+                provider_gap_evidence=evidence,
+                _scope_verifier=lambda _target: None,
+                _credential_factory=lambda _target: object(),
+                _client_factory=self._factory(client),
+            )
+
+        report_path = report_directory(self.solution) / "runtime-validation.azure-monitor-sdk.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(["blocked", "not-run"], [item["status"] for item in report["results"]])
+        self.assertEqual("authorization", report["providerFailure"]["failureKind"])
+        self.assertFalse(report["familyComplete"])
+        self.assertEqual("azure-monitor-sdk", report["providerFallback"]["fallbackProvider"])
+
+    def test_sdk_partial_fallback_result_is_persisted_with_diagnostics(self):
+        evidence = self._write_provider_gap_evidence()
+        response = partial(logs_table("events", ["A"], [[1]]), error="partial response details")
+        client = FakeClient([
+            response,
+            success(logs_table("events", ["B"], [])),
+        ])
+        with self.assertRaisesRegex(ValueError, "partial response details"):
+            validate_sentinel_sdk(
+                self.solution,
+                target=self.target,
+                provider_gap_evidence=evidence,
+                _scope_verifier=lambda _target: None,
+                _credential_factory=lambda _target: object(),
+                _client_factory=self._factory(client),
+            )
+
+        report_path = report_directory(self.solution) / "runtime-validation.azure-monitor-sdk.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        partial_result = next(item for item in report["results"] if item.get("partial"))
+        self.assertEqual("failed", partial_result["status"])
+        self.assertEqual("partial response details", partial_result["error"])
+        self.assertEqual("partial-response", partial_result["failureKind"])
+        self.assertEqual([[1]], partial_result["tables"][0]["rows"])
+        self.assertTrue(report["familyComplete"])
 
     def test_empty_and_stale_source_inventory_fail_before_sdk_calls(self):
         client = FakeClient([])

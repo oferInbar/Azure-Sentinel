@@ -131,7 +131,7 @@ class SolutionReportTests(unittest.TestCase):
                 {"deploymentPlanning": contract},
             )
 
-        self.assertEqual("provisional", projected["deploymentPlan"]["status"])
+        self.assertEqual("unknown", projected["deploymentPlan"]["status"])
         self.assertEqual("stale", projected["deploymentPlan"]["planningConsent"]["status"])
         self.assertEqual("not-recorded", projected["deploymentPlan"]["exactScopeWriteApproval"])
         self.assertEqual("pairs", projected["deploymentPlan"]["executionMode"])
@@ -140,7 +140,7 @@ class SolutionReportTests(unittest.TestCase):
             projected["deploymentPlan"]["components"]["disabledRulePairValidation"]["resourceTypes"],
         )
         self.assertEqual(
-            "stale",
+            "unknown",
             projected["deploymentPlan"]["components"]["mockTelemetryIngestion"]["planningConsent"],
         )
         html = _deployment_planning_html({"deploymentPlanning": projected})
@@ -149,6 +149,134 @@ class SolutionReportTests(unittest.TestCase):
         self.assertIn("Microsoft.Security/detectionRules", html)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
         self.assertNotIn("<script>alert(1)</script>", html)
+
+    def test_plan_approval_and_identity_follow_current_package_freshness(self) -> None:
+        digest = "a" * 64
+        changed_digest = "b" * 64
+        artifact_hashes = {
+            "mainTemplate": "1" * 64,
+            "createUiDefinition": "2" * 64,
+            "testParameters": "3" * 64,
+            "zip": "4" * 64,
+        }
+        resource_type = "Microsoft.Security/detectionRules"
+        target = {
+            "tenantId": "tenant",
+            "subscriptionId": "subscription",
+            "resourceGroup": "resource-group",
+            "workspaceResourceId": "/subscriptions/example/workspaces/lab",
+            "solution": "Example",
+            "version": "3.1.1",
+        }
+        plan_template = {
+            "schemaVersion": "1.0.0",
+            "status": "current",
+            "selectedProfile": "qualification",
+            "executionMode": "pairs",
+            "target": target,
+            "planSha256": "c" * 64,
+            "packageInputSha256": digest,
+            "packageArtifactHashes": artifact_hashes,
+            "recordedPackageArtifactHashes": artifact_hashes,
+            "packageIdentity": {"status": "current", "version": "3.1.1"},
+            "components": {
+                "sentinelAlertRules": {
+                    "resourceTypes": [resource_type],
+                    "planningConsent": {"status": "approved"},
+                },
+            },
+            "planningConsent": {
+                "status": "approved",
+                "planSha256": "c" * 64,
+                "componentKeys": ["sentinelAlertRules"],
+                "resourceTypes": [resource_type],
+                "selectedFlags": {"disabledOnly": True},
+            },
+            "packageAcceptancePlan": {
+                "status": "proposed",
+                "approvalStatus": "approved",
+                "packageIdentity": {"status": "current", "version": "3.1.1"},
+            },
+        }
+        package = {
+            "packageInputs": {"after": {"sha256": digest}},
+            "packageArtifactHashes": artifact_hashes,
+            "packageArtifactsSha256": "d" * 64,
+            "packageReport": "Logs/run/packaging.v3_1.attempt.json",
+            "version": "3.1.1",
+            "deploymentParameters": {},
+        }
+        template = {"resources": []}
+
+        def project(freshness: dict) -> dict:
+            workflow = {
+                "profile": "qualification",
+                "profileSelectionConfirmed": True,
+                "packageFreshness": freshness,
+            }
+            with (
+                patch(
+                    "sentinel_xdr_migration.solution_report._read_local_package_template",
+                    return_value=(template, artifact_hashes["mainTemplate"]),
+                ),
+                patch(
+                    "sentinel_xdr_migration.solution_report._deployment_planning_input",
+                    return_value=plan_template,
+                ),
+            ):
+                return _planning_summary(Path("/selected-run"), package, workflow, {})
+
+        stale = project({
+            "status": "stale",
+            "currentPackageInputSha256": changed_digest,
+        })
+        self.assertEqual("stale", stale["packageFreshness"])
+        self.assertEqual("stale", stale["packageIdentity"])
+        self.assertEqual(changed_digest, stale["currentPackageInputSha256"])
+        self.assertEqual("stale", stale["deploymentPlan"]["status"])
+        self.assertEqual("stale", stale["deploymentPlan"]["packageIdentity"]["status"])
+        self.assertEqual("stale", stale["deploymentPlan"]["planningConsent"]["status"])
+        self.assertEqual(
+            "stale",
+            stale["deploymentPlan"]["components"]["sentinelAlertRules"]["planningConsent"],
+        )
+        self.assertEqual("stale", stale["deploymentPlan"]["packageAcceptancePlan"]["approvalStatus"])
+        self.assertEqual(
+            "stale",
+            stale["deploymentPlan"]["packageAcceptancePlan"]["packageIdentity"]["status"],
+        )
+
+        unknown = project({"status": "unverifiable"})
+        self.assertEqual("unknown", unknown["packageFreshness"])
+        self.assertEqual("unknown", unknown["packageIdentity"])
+        self.assertEqual("unknown", unknown["deploymentPlan"]["status"])
+        self.assertEqual("unknown", unknown["deploymentPlan"]["planningConsent"]["status"])
+        self.assertEqual(
+            "unknown",
+            unknown["deploymentPlan"]["components"]["sentinelAlertRules"]["planningConsent"],
+        )
+        self.assertEqual("unknown", unknown["deploymentPlan"]["packageAcceptancePlan"]["approvalStatus"])
+
+        missing_current_identity = project({"status": "current"})
+        self.assertEqual("unknown", missing_current_identity["packageFreshness"])
+        self.assertEqual("unknown", missing_current_identity["packageIdentity"])
+        self.assertEqual("unknown", missing_current_identity["deploymentPlan"]["status"])
+        self.assertEqual("unknown", missing_current_identity["deploymentPlan"]["planningConsent"]["status"])
+
+        current = project({
+            "status": "current",
+            "currentPackageInputSha256": digest,
+        })
+        self.assertEqual("current", current["packageFreshness"])
+        self.assertEqual(digest, current["currentPackageInputSha256"])
+        self.assertEqual("verified current", current["packageIdentity"])
+        self.assertEqual("current", current["deploymentPlan"]["status"])
+        self.assertEqual("approved", current["deploymentPlan"]["planningConsent"]["status"])
+        self.assertEqual(
+            "approved",
+            current["deploymentPlan"]["components"]["sentinelAlertRules"]["planningConsent"],
+        )
+        self.assertEqual("approved", current["deploymentPlan"]["packageAcceptancePlan"]["approvalStatus"])
 
     def test_package_inventory_reads_nested_arrays_and_language_version_two_resources(self) -> None:
         inventory = _package_resource_inventory({

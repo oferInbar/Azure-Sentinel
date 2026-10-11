@@ -527,18 +527,93 @@ def _planning_summary(
         and isinstance(template_sha256, str)
         and template_sha256 == artifact_hashes.get("mainTemplate")
     )
+    hash_pattern = r"[0-9a-fA-F]{64}"
+    report_input_hash_valid = (
+        isinstance(current_input_hash, str)
+        and re.fullmatch(hash_pattern, current_input_hash) is not None
+    )
+    freshness_input_hash_valid = (
+        isinstance(freshness_current_input_hash, str)
+        and re.fullmatch(hash_pattern, freshness_current_input_hash) is not None
+    )
+    known_input_mismatch = bool(
+        report_input_hash_valid
+        and freshness_input_hash_valid
+        and current_input_hash.casefold() != freshness_current_input_hash.casefold()
+    )
+    report_template_hash = (
+        package_report_hashes.get("mainTemplate")
+        if isinstance(package_report_hashes, dict)
+        else None
+    )
+    template_hash_mismatch = bool(
+        isinstance(template_sha256, str)
+        and isinstance(report_template_hash, str)
+        and re.fullmatch(hash_pattern, report_template_hash)
+        and template_sha256.casefold() != report_template_hash.casefold()
+    )
+    if freshness_status == "stale" or known_input_mismatch or template_hash_mismatch:
+        package_evidence_status = "stale"
+    elif (
+        freshness_status == "current"
+        and report_input_hash_valid
+        and freshness_input_hash_valid
+        and current_input_hash.casefold() == freshness_current_input_hash.casefold()
+        and isinstance(template_sha256, str)
+        and isinstance(report_template_hash, str)
+        and re.fullmatch(hash_pattern, report_template_hash)
+        and template_sha256.casefold() == report_template_hash.casefold()
+    ):
+        package_evidence_status = "current"
+    else:
+        package_evidence_status = "unknown"
+
     contract_status = plan.get("status") if isinstance(plan.get("status"), str) else "not-recorded"
     if contract_status not in {
-        "current", "provisional", "stale", "unavailable", "not-applicable", "unknown",
+        "current", "provisional", "stale", "unavailable", "not-applicable",
+        "not-recorded", "unknown",
     }:
         contract_status = "unknown"
-    if contract_status == "current" and (
-        not input_identity_matches
-        or not artifact_identity_matches
-        or not isinstance(contract_input_hash, str)
-        or not re.fullmatch(r"[0-9a-fA-F]{64}", contract_input_hash)
-    ):
+    contract_input_hash_valid = (
+        isinstance(contract_input_hash, str)
+        and re.fullmatch(hash_pattern, contract_input_hash) is not None
+    )
+    plan_package_identity_status = (
+        plan.get("packageIdentity", {}).get("status")
+        if isinstance(plan.get("packageIdentity"), dict)
+        and isinstance(plan["packageIdentity"].get("status"), str)
+        else None
+    )
+    if plan and package_evidence_status == "stale":
         contract_status = "stale"
+    elif plan and package_evidence_status == "unknown" and contract_status not in {
+        "not-applicable", "unavailable", "not-recorded",
+    }:
+        contract_status = "unknown"
+    elif contract_status == "current":
+        if not (
+            report_input_hash_valid
+            and freshness_input_hash_valid
+            and contract_input_hash_valid
+            and isinstance(artifact_hashes, dict)
+            and isinstance(recorded_artifact_hashes, dict)
+            and isinstance(package_report_hashes, dict)
+        ):
+            contract_status = "unknown"
+        elif (
+            not input_identity_matches
+            or contract_input_hash.casefold() != freshness_current_input_hash.casefold()
+        ):
+            contract_status = "stale"
+        elif not valid_current_hashes:
+            contract_status = "unknown"
+        elif not artifact_identity_matches:
+            contract_status = "stale"
+    if plan_package_identity_status == "stale":
+        contract_status = "stale"
+    elif plan_package_identity_status not in {None, "current", "verified current", "stale"}:
+        if contract_status == "current":
+            contract_status = "unknown"
     recorded_profile = plan.get("selectedProfile")
     if (
         mode in {"authoring", "qualification"}
@@ -546,8 +621,78 @@ def _planning_summary(
         and recorded_profile != mode
     ):
         contract_status = "stale"
-    if consent_status == "approved" and contract_status != "current":
-        consent_status = "stale" if contract_status == "stale" else "unknown"
+    if consent_status == "approved" and (
+        contract_status != "current" or package_evidence_status != "current"
+    ):
+        consent_status = (
+            "stale"
+            if contract_status == "stale" or package_evidence_status == "stale"
+            else "unknown"
+        )
+
+    if package_evidence_status == "stale" or plan_package_identity_status == "stale":
+        final_package_identity_status = "stale"
+    elif (
+        package_evidence_status == "unknown"
+        or plan_package_identity_status == "unknown"
+        or contract_status == "unknown"
+    ):
+        final_package_identity_status = "unknown"
+    elif package_evidence_status == "current" and hash_matches:
+        final_package_identity_status = "verified current"
+    elif identity_status == "stale":
+        final_package_identity_status = "stale"
+    else:
+        final_package_identity_status = "unknown"
+
+    safe_components = {}
+    for key, item in components.items():
+        if not isinstance(key, str) or not isinstance(item, dict):
+            continue
+        safe_component = _safe_plan_value(item)
+        if not isinstance(safe_component, dict):
+            continue
+        raw_component_consent = item.get("planningConsent")
+        raw_component_consent = (
+            raw_component_consent.get("status")
+            if isinstance(raw_component_consent, dict)
+            else raw_component_consent
+        )
+        if item.get("advanceConsentSupported") is False:
+            component_consent_status = "not-supported"
+        elif consent_status in {"stale", "unknown"} and (
+            key in consent_component_keys or raw_component_consent == "approved"
+        ):
+            component_consent_status = consent_status
+        elif consent_status == "approved" and key in consent_component_keys:
+            component_consent_status = "approved"
+        elif raw_component_consent in {
+            "unknown", "stale", "declined", "not-approved", "not-recorded",
+        }:
+            component_consent_status = raw_component_consent
+        else:
+            component_consent_status = "not-recorded"
+        safe_component["planningConsent"] = component_consent_status
+        safe_components[key] = safe_component
+
+    package_acceptance_approval = package_acceptance.get("approvalStatus")
+    if package_acceptance_approval == "approved":
+        if contract_status == "stale" or package_evidence_status == "stale":
+            package_acceptance["approvalStatus"] = "stale"
+        elif contract_status != "current" or package_evidence_status != "current":
+            package_acceptance["approvalStatus"] = "unknown"
+    package_acceptance_identity = package_acceptance.get("packageIdentity")
+    if isinstance(package_acceptance_identity, dict):
+        package_acceptance_identity["status"] = final_package_identity_status
+    elif plan_package_identity_status is not None:
+        package_acceptance["packageIdentity"] = {
+            "status": final_package_identity_status,
+        }
+    safe_plan_identity = {
+        **safe_plan_identity,
+        "status": final_package_identity_status,
+    }
+    projected_freshness_status = package_evidence_status
     planning_contract = {
         "schemaVersion": plan.get("schemaVersion") if isinstance(plan.get("schemaVersion"), str) else None,
         "status": contract_status,
@@ -582,10 +727,13 @@ def _planning_summary(
             else None
         ),
         "packageIdentity": {
-            key: plan.get("packageIdentity", {}).get(key)
-            for key in ("version", "status")
-            if isinstance(plan.get("packageIdentity"), dict)
-            and isinstance(plan["packageIdentity"].get(key), str)
+            "version": (
+                plan.get("packageIdentity", {}).get("version")
+                if isinstance(plan.get("packageIdentity"), dict)
+                and isinstance(plan["packageIdentity"].get("version"), str)
+                else package.get("version") if isinstance(package.get("version"), str) else None
+            ),
+            "status": final_package_identity_status,
         },
         "sourceInventory": {
             key: value for key, value in source_inventory.items()
@@ -645,13 +793,8 @@ def _planning_summary(
         "planningConsent": planning_contract["planningConsent"]["status"],
         "exactScopeWriteApproval": planning_contract["exactScopeWriteApproval"],
         "deploymentPlan": planning_contract,
-        "packageFreshness": freshness_status,
-        "packageIdentity": (
-            plan.get("packageIdentity", {}).get("status")
-            if isinstance(plan.get("packageIdentity"), dict)
-            and isinstance(plan["packageIdentity"].get("status"), str)
-            else identity_status
-        ),
+        "packageFreshness": projected_freshness_status,
+        "packageIdentity": final_package_identity_status,
         "packageVersion": (
             plan.get("packageIdentity", {}).get("version")
             if isinstance(plan.get("packageIdentity"), dict)
@@ -665,6 +808,11 @@ def _planning_summary(
         "packageArtifactsSha256": package.get("packageArtifactsSha256"),
         "packageInputSha256": (
             current_input_hash if isinstance(current_input_hash, str) else None
+        ),
+        "currentPackageInputSha256": (
+            freshness_current_input_hash
+            if freshness_input_hash_valid
+            else None
         ),
         "resourceInventory": _package_resource_inventory(template),
         "resourceInventoryAvailable": bool(template_sha256 and template),

@@ -1531,7 +1531,11 @@ form—are kept in the ignored run-local `runtime-validation.azure-monitor-sdk.j
 report. A successful zero-row response means only that the query ran; it is not
 parity evidence. An optional `--provider-gap-evidence` binds this complete SDK
 family to an approved Triage MCP provider failure. Query families are never
-combined across providers.
+combined across providers. If any SDK query fails, is blocked, or is not run,
+the current SDK attempt—including per-query diagnostics and family-completion
+status—is persisted before the command returns failure. This replaces older
+SDK evidence for the same provider and cannot qualify a fallback family as
+successful.
 
 Use the official Sentinel Triage MCP first when it advertises an appropriate
 workspace-query tool. If it fails at the provider level, rerun the entire

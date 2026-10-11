@@ -2026,6 +2026,12 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
     hash_details = (
         f'<details class="planning-details"><summary>Package hashes and plan provenance</summary>'
         + hash_markup + plan_fingerprint_html
+        + (
+            f'<p>Current package input SHA-256: <code>{_text(plan.get("currentPackageInputSha256"))}</code></p>'
+            if isinstance(plan.get("currentPackageInputSha256"), str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", plan["currentPackageInputSha256"])
+            else '<p>Current package input identity: unavailable.</p>'
+        )
         + (f'<p>Package content SHA-256: <code>{_text(contract.get("packageContentSha256"))}</code></p>' if contract.get("packageContentSha256") else "")
         + (f'<p>Source inventory SHA-256: <code>{_text(contract.get("sourceInventorySha256"))}</code></p>' if contract.get("sourceInventorySha256") else "")
         + '</details>'

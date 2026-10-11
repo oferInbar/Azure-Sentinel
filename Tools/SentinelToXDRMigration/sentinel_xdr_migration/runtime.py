@@ -957,12 +957,6 @@ def record_runtime_validation(
             normalized_entry["partial"] = True
         normalized.append(normalized_entry)
 
-    if provider_fallback and any(item["status"] != "passed" for item in normalized):
-        raise ValueError(
-            "provider fallback is not allowed unless every fallback query completed "
-            "successfully; retain the failure and do not relabel it as a provider gap"
-        )
-
     missing = sorted(expected - names)
     unknown = sorted(names - expected)
     if missing or unknown:
@@ -972,7 +966,28 @@ def record_runtime_validation(
         if unknown:
             details.append(f"unknown detections: {', '.join(unknown)}")
         raise ValueError("; ".join(details))
-    return _write_runtime_artifacts(
+
+    fallback_rejection = None
+    if provider_fallback:
+        failed_results = [
+            item for item in normalized if item["status"] != "passed"
+        ]
+        if failed_results or family_complete is False:
+            reasons = [
+                (
+                    f"{item['detection']} is {item['status']}: "
+                    f"{item.get('error') or item.get('errorDetails') or 'no query diagnostics returned'}"
+                )
+                for item in failed_results
+            ]
+            if family_complete is False:
+                reasons.append("the query family is incomplete")
+            fallback_rejection = (
+                "provider fallback is not allowed unless every fallback query completed "
+                "successfully; " + "; ".join(reasons)
+            )
+
+    report = _write_runtime_artifacts(
         root,
         provider,
         normalized,
@@ -980,3 +995,8 @@ def record_runtime_validation(
         provider_failure=provider_failure,
         family_complete=family_complete,
     )
+    if fallback_rejection:
+        raise ValueError(
+            f"{fallback_rejection}; attempt diagnostics were persisted to {report['jsonReport']}"
+        )
+    return report
