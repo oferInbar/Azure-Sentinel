@@ -247,6 +247,7 @@ try {
     foreach ($inputFile in $(Get-ChildItem -Path "$solutionFolderBasePath\$dataFolderName\$dataFileName")) {
         #$inputJsonPath = Join-Path -Path $path -ChildPath "$($inputFile.Name)"
         $contentToImport = Get-Content -Raw $inputFile | Out-String | ConvertFrom-Json
+        Assert-NoOperationalContent -Content $contentToImport
 
         $has1PConnectorProperty = [bool]($contentToImport.PSobject.Properties.Name -match "Is1PConnector")
         if ($has1PConnectorProperty) {
