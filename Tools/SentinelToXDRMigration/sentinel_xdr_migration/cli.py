@@ -64,9 +64,13 @@ from .workflow import (
     read_authoring_contract,
     package_workflow_v3_1,
     plan_new_package_release,
+    plan_release_notes_refresh,
+    plan_same_version_content_rebuild,
+    recover_conversion_evidence,
     refresh_yolo_authoring,
     run_yolo_authoring,
     start_workflow_stage,
+    verify_same_version_content_rebuild,
     workflow_status,
 )
 from .packaging_selection import (
@@ -600,6 +604,17 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         choices=["none", "patch", "minor", "major"],
     )
+    package_v3_1.add_argument(
+        "--target-version",
+        help="Explicit canonical V3.1 solution version (>=3.1.0 and <4.0.0); use with --version-bump none.",
+    )
+    package_v3_1.add_argument(
+        "--legacy-baseline-evidence",
+        help=(
+            "Receipt-bound package-input comparison JSON for a legacy same-version "
+            "rebuild plan that predates per-file V3.1 receipts."
+        ),
+    )
     selection_plan = subparsers.add_parser(
         "package-selection-plan",
         help="Plan evidence-based Analytic Rule and Custom Detection package eligibility.",
@@ -616,11 +631,70 @@ def main(argv: list[str] | None = None) -> int:
         help="Explicitly select a new V3.1 release action for changed package inputs.",
     )
     package_release.add_argument("--solution", required=True)
-    package_release.add_argument("--version-bump", required=True, choices=["patch", "minor", "major"])
+    package_release.add_argument("--version-bump", choices=["patch", "minor", "major"])
+    package_release.add_argument(
+        "--target-version",
+        help="Explicit canonical V3.1 solution version (>=3.1.0 and <4.0.0), instead of a version bump.",
+    )
     package_release.add_argument(
         "--expected-package-input-sha256",
         required=True,
         help="Exact current package-input SHA-256 reported by workflow-status.",
+    )
+    notes_refresh = subparsers.add_parser(
+        "workflow-plan-release-notes-refresh",
+        help="Authorize one exact ReleaseNotes-only refresh without incrementing the package version.",
+    )
+    notes_refresh.add_argument("--solution", required=True)
+    notes_refresh.add_argument("--release-date", required=True)
+    notes_refresh.add_argument("--change-history", required=True)
+    notes_refresh.add_argument(
+        "--expected-package-input-sha256",
+        required=True,
+        help="Current hash of the already successfully packaged inputs.",
+    )
+    same_version_rebuild = subparsers.add_parser(
+        "workflow-plan-same-version-content-rebuild",
+        help=(
+            "Explicitly approve one exact-input Authoring rebuild at the current "
+            "solution version after content changes."
+        ),
+    )
+    same_version_rebuild.add_argument("--solution", required=True)
+    same_version_rebuild.add_argument(
+        "--target-version",
+        required=True,
+        help="Exact current solution version to preserve; no version bump is performed.",
+    )
+    same_version_rebuild.add_argument(
+        "--expected-package-input-sha256",
+        required=True,
+        help="Exact current package-input SHA-256 reported by workflow-status.",
+    )
+    same_version_rebuild.add_argument(
+        "--changed-input",
+        action="append",
+        required=True,
+        help=(
+            "Exact current non-ReleaseNotes package-input path in the approved "
+            "change scope; repeat once per changed input."
+        ),
+    )
+    same_version_rebuild.add_argument(
+        "--legacy-baseline-evidence",
+        help=(
+            "Receipt-bound package-input comparison JSON used only when the prior "
+            "successful V3.1 receipt has no per-file manifest."
+        ),
+    )
+    same_version_verify = subparsers.add_parser(
+        "workflow-verify-same-version-content-rebuild",
+        help="Read-only verification of the exact scope and receipt for a same-version rebuild.",
+    )
+    same_version_verify.add_argument("--solution", required=True)
+    same_version_verify.add_argument(
+        "--legacy-baseline-evidence",
+        help="Receipt-bound comparison JSON for a legacy rebuild plan without a saved evidence binding.",
     )
     workflow_init = subparsers.add_parser(
         "workflow-init",
@@ -639,6 +713,10 @@ def main(argv: list[str] | None = None) -> int:
     workflow_init.add_argument(
         "--version-bump",
         choices=["none", "patch", "minor", "major"],
+    )
+    workflow_init.add_argument(
+        "--target-version",
+        help="Persist an explicit canonical V3.1 solution version (>=3.1.0 and <4.0.0); use with --version-bump none.",
     )
     workflow_init.add_argument(
         "--workflow-profile",
@@ -680,6 +758,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Return the next stage whose dependencies have passed.",
     )
     workflow_next.add_argument("--solution", required=True)
+    workflow_recover_conversion = subparsers.add_parser(
+        "workflow-recover-conversion-evidence",
+        help=(
+            "Revalidate and bind a legacy full-solution conversion manifest "
+            "for offline Authoring in the selected run."
+        ),
+    )
+    workflow_recover_conversion.add_argument("--solution", required=True)
     workflow_start = subparsers.add_parser(
         "workflow-start-stage",
         help="Start or retry one gated workflow stage.",
@@ -847,6 +933,28 @@ def main(argv: list[str] | None = None) -> int:
             action.required = True
             action.help = "Select the exact existing workflow run to update."
             break
+    for action in subparsers.choices["workflow-recover-conversion-evidence"]._actions:
+        if action.dest == "run_id":
+            action.required = True
+            action.help = "Select the exact existing Authoring run to revalidate."
+            break
+    for action in subparsers.choices["workflow-verify-same-version-content-rebuild"]._actions:
+        if action.dest == "run_id":
+            action.required = True
+            action.help = "Select the exact workflow run whose rebuild scope is being verified."
+            break
+    for action in subparsers.choices["workflow-plan-release-notes-refresh"]._actions:
+        if action.dest == "run_id":
+            action.required = True
+            action.help = "Select the exact existing Authoring run to update."
+            break
+    for action in subparsers.choices[
+        "workflow-plan-same-version-content-rebuild"
+    ]._actions:
+        if action.dest == "run_id":
+            action.required = True
+            action.help = "Select the exact existing Authoring run to update."
+            break
     for name in ("package-selection-plan", "package-selection-apply"):
         for action in subparsers.choices[name]._actions:
             if action.dest == "run_id":
@@ -873,7 +981,7 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "solution", None) and args.command not in isolated_permission_commands:
             selection = select_run(args.solution, args.run_id)
         # Read-only status and migration planning must not initialize or change artifacts.
-        if args.command not in {"migrate-reports", "workflow-status", "workflow-next", "workflow-init", "workflow-runs", "export-evidence", "preflight-deployment", "plan-deployment", "review-deployment-plan", "plan-runtime-query-consent", "confirm-primary-lab-setting", "review-runtime-query-consent", "revoke-lab-runtime-query-consent", "check-runtime-query-consent", "coordinator-enroll", "coordinator-status", "coordinator-reconcile", "coordinator-event", "coordinator-claim", "coordinator-heartbeat", "coordinator-ack", *isolated_permission_commands} and not (
+        if args.command not in {"migrate-reports", "workflow-status", "workflow-next", "workflow-init", "workflow-runs", "workflow-verify-same-version-content-rebuild", "export-evidence", "preflight-deployment", "plan-deployment", "review-deployment-plan", "plan-runtime-query-consent", "confirm-primary-lab-setting", "review-runtime-query-consent", "revoke-lab-runtime-query-consent", "check-runtime-query-consent", "coordinator-enroll", "coordinator-status", "coordinator-reconcile", "coordinator-event", "coordinator-claim", "coordinator-heartbeat", "coordinator-ack", *isolated_permission_commands} and not (
             args.command == "convert" and args.rule_id
         ):
             configure_logging(getattr(args, "solution", None))
@@ -1179,7 +1287,9 @@ def main(argv: list[str] | None = None) -> int:
                 result = package_workflow_v3_1(
                     args.solution,
                     requested_version_bump=args.version_bump,
+                    requested_target_version=args.target_version,
                     toolkit_root=args.toolkit_root,
+                    legacy_baseline_evidence=args.legacy_baseline_evidence,
                 )
             else:
                 raise ValueError(
@@ -1202,7 +1312,28 @@ def main(argv: list[str] | None = None) -> int:
             result = plan_new_package_release(
                 args.solution,
                 version_bump=args.version_bump,
+                target_version=args.target_version,
                 expected_package_input_sha256=args.expected_package_input_sha256,
+            )
+        elif args.command == "workflow-plan-release-notes-refresh":
+            result = plan_release_notes_refresh(
+                args.solution,
+                release_date=args.release_date,
+                change_history=args.change_history,
+                expected_package_input_sha256=args.expected_package_input_sha256,
+            )
+        elif args.command == "workflow-plan-same-version-content-rebuild":
+            result = plan_same_version_content_rebuild(
+                args.solution,
+                target_version=args.target_version,
+                changed_inputs=args.changed_input,
+                expected_package_input_sha256=args.expected_package_input_sha256,
+                legacy_baseline_evidence=args.legacy_baseline_evidence,
+            )
+        elif args.command == "workflow-verify-same-version-content-rebuild":
+            result = verify_same_version_content_rebuild(
+                args.solution,
+                legacy_baseline_evidence=args.legacy_baseline_evidence,
             )
         elif args.command == "inspect":
             result = inspect_solution(args.solution)
@@ -1333,6 +1464,7 @@ def main(argv: list[str] | None = None) -> int:
                     target["workspaceCustomerId"] if target else args.workspace_customer_id
                 ),
                 version_bump=args.version_bump,
+                target_version=args.target_version,
                 workflow_profile=args.workflow_profile,
                 yolo=True if args.yolo else None,
                 campaign_id=args.campaign_id,
@@ -1390,6 +1522,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "workflow-next":
             result = next_workflow_stage(args.solution)
+        elif args.command == "workflow-recover-conversion-evidence":
+            result = recover_conversion_evidence(args.solution)
         elif args.command == "workflow-start-stage":
             result = start_workflow_stage(args.solution, args.stage)
         elif args.command == "workflow-complete-stage":

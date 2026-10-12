@@ -135,6 +135,37 @@ class VersionPolicyTests(unittest.TestCase):
         self.update_detection("1.0.0")
         self.assert_rejected_unchanged(entry, version_bump="patch")
 
+    def test_explicit_target_version_uses_v31_backend_and_rejects_out_of_range_targets(self):
+        entry = self.fixture("3.0.7")
+
+        def package_target(target):
+            return self.run_ps(
+                f"& {attribution.ps_literal(entry)} "
+                f"-SolutionDataFolderPath {attribution.ps_literal(self.data.parent)} "
+                f"-VersionMode local -VersionBump none "
+                f"-TargetVersion {attribution.ps_literal(target)}"
+            )
+
+        result = package_target("3.1.2")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("3.1.2", json.loads(self.data.read_text())["Version"])
+        self.assertEqual("3.1.2", json.loads(self.metadata.read_text())["version"])
+        self.assertTrue((self.solution / "Package" / "3.1.2.zip").is_file())
+
+        result = package_target("3.999.999")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("3.999.999", json.loads(self.data.read_text())["Version"])
+        self.assertEqual("3.999.999", json.loads(self.metadata.read_text())["version"])
+        self.assertTrue((self.solution / "Package" / "3.999.999.zip").is_file())
+
+        for version in ("3.0.999", "4.0.0", "3.1", "3.1.0-preview", "03.1.0"):
+            with self.subTest(version=version):
+                before = self.snapshot()
+                rejected = package_target(version)
+                self.assertNotEqual(0, rejected.returncode, rejected.stdout + rejected.stderr)
+                self.assertIn("V3.1 target version", rejected.stdout + rejected.stderr)
+                self.assertEqual(before, self.snapshot())
+
     def test_pipeline_mismatch_and_missing_solution_default_fail(self):
         entry = self.fixture(xdr=False)
         self.assert_rejected_unchanged(entry, pipeline=True, calculated_version="3.2.0")

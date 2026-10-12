@@ -32,6 +32,7 @@ param (
     [Parameter(ParameterSetName = "Local")]
     [ValidateSet("none", "patch", "minor", "major")]
     [string]$VersionBump = "patch",
+    [string]$TargetVersion = $null,
     [Parameter(ParameterSetName = "Local")]
     [string]$ToolkitRootPath = $null,
     [Parameter(ParameterSetName = "Local")]
@@ -40,6 +41,9 @@ param (
 )
 
 if ($PSCmdlet.ParameterSetName -eq "Local") {
+    if (-not [string]::IsNullOrWhiteSpace($TargetVersion) -and $VersionBump -ne "none") {
+        throw "TargetVersion cannot be combined with a version bump."
+    }
     if (-not [string]::IsNullOrWhiteSpace($ToolkitRootPath)) {
         $selectedToolkitRoot = (Resolve-Path -LiteralPath $ToolkitRootPath -ErrorAction Stop).Path
         $entryPointToolkitRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..\..") -ErrorAction Stop).Path
@@ -56,6 +60,7 @@ if ($PSCmdlet.ParameterSetName -eq "Local") {
         -SolutionDataFolderPath $SolutionDataFolderPath `
         -VersionMode $VersionMode `
         -VersionBump $VersionBump `
+        -TargetVersion $TargetVersion `
         -EntryPointName "V3.1" `
         -DefaultInputPath (Join-Path $PSScriptRoot "input") `
         -ToolkitRootPath $ToolkitRootPath `

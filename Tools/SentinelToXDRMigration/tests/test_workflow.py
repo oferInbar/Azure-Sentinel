@@ -17,9 +17,12 @@ from sentinel_xdr_migration.workflow import (
     next_workflow_stage,
     package_workflow_v3_1,
     plan_new_package_release,
+    plan_release_notes_refresh,
+    plan_same_version_content_rebuild,
     _yolo_package_readiness,
     read_authoring_contract,
     refresh_yolo_authoring,
+    recover_conversion_evidence,
     run_yolo_authoring,
     start_workflow_stage,
     workflow_status,
@@ -40,8 +43,10 @@ from sentinel_xdr_migration.budget import (
     finish_operation,
 )
 from sentinel_xdr_migration.converter import convert_solution
-from sentinel_xdr_migration.packaging import package_input_identity
+from sentinel_xdr_migration.packaging import package_input_file_hashes, package_input_identity
 from sentinel_xdr_migration import cli as cli_module
+from sentinel_xdr_migration import runtime as runtime_module
+from sentinel_xdr_migration.report_dashboard import _run_html
 from sentinel_xdr_migration.solution_report import build_solution_report
 from test_converter import RULE
 from sentinel_xdr_migration import workflow as workflow_module
@@ -56,14 +61,18 @@ class WorkflowTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def _packaging_artifacts(self, version_bump: str = "none") -> dict[str, str]:
+    def _packaging_artifacts(
+        self,
+        version_bump: str = "none",
+        version: str = "1.0.0",
+    ) -> dict[str, str]:
         package = self.solution / "Package"
         package.mkdir(exist_ok=True)
         paths = {
             "mainTemplate": package / "mainTemplate.json",
             "createUiDefinition": package / "createUiDefinition.json",
             "testParameters": package / "testParameters.json",
-            "zip": package / "1.0.0.zip",
+            "zip": package / f"{version}.zip",
         }
         for path in paths.values():
             path.write_text("{}", encoding="utf-8")
@@ -82,24 +91,56 @@ class WorkflowTests(unittest.TestCase):
             **{name: str(path) for name, path in paths.items()},
         }
 
+    def test_package_input_hash_preserves_legacy_path_ordering(self) -> None:
+        (self.solution / "Data").mkdir()
+        (self.solution / "Data" / "foo").write_bytes(b"data\n")
+        (self.solution / "Data Connectors").mkdir()
+        (self.solution / "Data Connectors" / "foo").write_bytes(b"connector\n")
+
+        self.assertEqual(
+            "a1619ceb3e74e25fecf64a29ebcf9714d89cc13917ce1e63c2b0e091cbd90960",
+            package_input_identity(self.solution)["sha256"],
+        )
+
     def _mock_v3_1_package(self, solution: Path, **kwargs: str) -> dict:
-        artifacts = self._packaging_artifacts(kwargs["version_bump"])
+        input_before = package_input_identity(solution)
+        target_version = kwargs.get("target_version")
+        if target_version:
+            data_files = sorted((solution / "Data").glob("Solution_*.json"))
+            if len(data_files) != 1:
+                raise AssertionError("target-version mock requires one solution data file")
+            data = json.loads(data_files[0].read_text(encoding="utf-8"))
+            data["Version"] = target_version
+            data_files[0].write_text(json.dumps(data), encoding="utf-8")
+        version = workflow_module.solution_data_version(solution) or "1.0.0"
+        artifacts = self._packaging_artifacts(kwargs["version_bump"], version)
         package_hashes = {
             name: hashlib.sha256(Path(artifacts[name]).read_bytes()).hexdigest()
             for name in ("mainTemplate", "createUiDefinition", "testParameters", "zip")
         }
         inputs = package_input_identity(solution)
+        input_files = package_input_file_hashes(solution)
+        if (
+            workflow_module._identity_from_file_hashes(input_files) != inputs["sha256"]
+            or len(input_files) != inputs["fileCount"]
+        ):
+            raise AssertionError("mock V3.1 input manifest does not match its identity")
         attempt_id = kwargs["package_attempt_id"]
         report = {
             "status": "passed",
             "packager": "V3.1",
-            "version": "1.0.0",
+            "version": version,
             "versionBump": kwargs["version_bump"],
             "requestedVersionBump": kwargs["requested_version_bump"],
             "effectiveVersionBump": kwargs["version_bump"],
+            "requestedTargetVersion": target_version,
+            "effectiveTargetVersion": target_version,
             "packageAttemptId": attempt_id,
             "workflowRunId": kwargs["workflow_run_id"],
-            "packageInputs": {"before": inputs, "after": inputs},
+            "packageInputs": {
+                "before": input_before,
+                "after": {**inputs, "files": input_files},
+            },
             "packageArtifactHashes": package_hashes,
             "packageArtifactsSha256": hashlib.sha256(
                 json.dumps(package_hashes, sort_keys=True, separators=(",", ":")).encode()
@@ -149,6 +190,25 @@ class WorkflowTests(unittest.TestCase):
             },
         }
 
+    def _mock_v3_1_patch_package(self, solution: Path, **kwargs: str) -> dict:
+        before = package_input_identity(solution)
+        if kwargs.get("version_bump") != "patch":
+            raise AssertionError("patch test helper requires the patch version action")
+        data_files = sorted((solution / "Data").glob("Solution_*.json"))
+        if len(data_files) != 1:
+            raise AssertionError("patch test helper requires one solution data file")
+        data = json.loads(data_files[0].read_text(encoding="utf-8"))
+        major, minor, patch = (int(part) for part in str(data["Version"]).split("."))
+        data["Version"] = f"{major}.{minor}.{patch + 1}"
+        data_files[0].write_text(json.dumps(data), encoding="utf-8")
+        result = self._mock_v3_1_package(solution, **kwargs)
+        report_path = Path(result["packageReport"])
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report["packageInputs"]["before"] = before
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        result["packageInputs"]["before"] = before
+        return result
+
     def _prepare_workflow_for_package(self, version_bump: str = "patch") -> str:
         initialized = initialize_workflow(
             self.solution,
@@ -159,6 +219,36 @@ class WorkflowTests(unittest.TestCase):
         for stage in ("discovery", "conversion", "validation"):
             self._complete_passed_stage(stage)
         return initialized["runId"]
+
+    def _prepare_offline_authoring_validation(
+        self,
+        *,
+        campaign_id: str | None = "test-campaign",
+    ) -> tuple[dict, Path]:
+        self._create_source_rules()
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump="none",
+            workflow_profile="authoring",
+            campaign_id=campaign_id,
+        )
+        with using_run(self.solution, initialized["runId"]):
+            start_workflow_stage(self.solution, "discovery")
+            complete_workflow_stage(self.solution, "discovery", status="passed")
+            start_workflow_stage(self.solution, "conversion")
+            conversion = convert_solution(self.solution)
+            manifest_path = Path(conversion["manifest"])
+            complete_workflow_stage(
+                self.solution,
+                "conversion",
+                status="passed",
+                artifacts={
+                    "manifest": "manifest.json",
+                    "manifestSha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                },
+            )
+            start_workflow_stage(self.solution, "validation")
+        return initialized, manifest_path
 
     def _qualification_args(self) -> dict[str, str]:
         return {
@@ -927,6 +1017,1274 @@ class WorkflowTests(unittest.TestCase):
                 )
         self.assertEqual(before, state_path.read_bytes())
 
+    def test_offline_authoring_validation_and_first_patch_release(self) -> None:
+        initialized, _ = self._prepare_offline_authoring_validation()
+        with using_run(self.solution, initialized["runId"]):
+            validation = complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+            state = workflow_status(self.solution)
+            self.assertEqual("passed", validation["status"])
+            self.assertEqual("not-run", state["stages"]["validation"]["artifacts"]["runtimeStatus"])
+            self.assertEqual("not-run", state["runtimeAssessment"]["runtimeStatus"])
+            self.assertFalse(state["runtimeAssessment"]["fullyRuntimeQualified"])
+            self.assertEqual("packaging", next_workflow_stage(self.solution)["next"])
+            self.assertIn(
+                "Passed — offline Authoring; runtime not run",
+                _run_html(build_solution_report(self.solution)),
+            )
+
+            package_hash = package_input_identity(self.solution)["sha256"]
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=package_hash,
+            )
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ):
+                package = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="patch",
+                )
+
+        final = workflow_status(self.solution)
+        self.assertEqual("patch", package["effectiveVersionBump"])
+        self.assertEqual("passed", final["stages"]["packaging"]["status"])
+        self.assertEqual("consumed", final["packaging"]["releaseActions"][-1]["status"])
+        self.assertEqual("current", final["packageFreshness"]["status"])
+
+    def test_same_release_notes_refresh_rebuilds_only_approved_notes_row(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir(parents=True)
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.2"}), encoding="utf-8")
+        aligned_header = (
+            "| **Version** | **Date Modified (DD-MM-YYYY)** | "
+            "**Change History**                                                           |"
+        )
+        aligned_separator = (
+            "|-------------|--------------------------------|"
+            "------------------------------------------------------------------------------|"
+        )
+        notes = self.solution / "ReleaseNotes.md"
+        notes.write_text(
+            aligned_header + "\n"
+            + aligned_separator + "\n"
+            + "| 3.1.1 | 01-10-2026 | Previous hybrid package refresh for reviewed detections. |\n"
+            + "| 3.1.0 | 01-09-2026 | Added reviewed source-rule mappings. |\n"
+            + "| 3.0.9 | 01-08-2026 | Improved detection migration provenance. |\n"
+            + "| 3.0.0 | 01-07-2026 | Initial hybrid solution release. |\n",
+            encoding="utf-8",
+        )
+        initialized, _ = self._prepare_offline_authoring_validation()
+        with using_run(self.solution, initialized["runId"]):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+            legacy_receipt_input = package_input_identity(self.solution)["sha256"]
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ):
+                first = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="patch",
+                )
+            self.assertEqual(
+                legacy_receipt_input,
+                workflow_status(self.solution)["packaging"]["lastSuccessful"]["packageInputSha256"],
+            )
+            version_before = json.loads(data.read_text(encoding="utf-8"))["Version"]
+            base_hash = package_input_identity(self.solution)["sha256"]
+            self.assertEqual(0, cli_module.main([
+                "workflow-plan-release-notes-refresh",
+                "--solution", str(self.solution),
+                "--run-id", initialized["runId"],
+                "--release-date", "12-10-2026",
+                "--change-history", (
+                    "Refreshed the V3.1 hybrid package for three disabled Defender XDR "
+                    "Custom Detections with reviewed Host mappings and source-rule provenance."
+                ),
+                "--expected-package-input-sha256", base_hash,
+            ]))
+            planned = workflow_status(self.solution)["packaging"]["pendingReleaseAction"]
+            expected_row = (
+                "| 3.1.2 | 12-10-2026 | Refreshed the V3.1 hybrid package for three disabled "
+                "Defender XDR Custom Detections with reviewed Host mappings and source-rule "
+                "provenance. |"
+            )
+            original_notes = notes.read_bytes()
+            separator_bytes = aligned_separator.encode("utf-8") + b"\n"
+            self.assertIn(separator_bytes, original_notes)
+            inserted_notes = original_notes.replace(
+                separator_bytes,
+                separator_bytes + expected_row.encode("utf-8") + b"\n",
+                1,
+            )
+            notes.write_bytes(inserted_notes)
+            self.assertEqual(
+                hashlib.sha256(inserted_notes).hexdigest(),
+                planned["releaseNotesExpectedSha256"],
+            )
+            with self.assertRaisesRegex(ValueError, "must be rebuilt with --version-bump none"):
+                package_workflow_v3_1(self.solution, requested_version_bump="patch")
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ) as package:
+                refreshed = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                )
+            package.assert_called_once()
+            self.assertEqual("none", refreshed["effectiveVersionBump"])
+            self.assertEqual("3.1.2", version_before)
+            self.assertEqual(version_before, json.loads(data.read_text(encoding="utf-8"))["Version"])
+            self.assertEqual(first["version"], refreshed["version"])
+            self.assertEqual(inserted_notes, notes.read_bytes())
+            self.assertNotEqual(
+                planned["basePackageInputSha256"],
+                planned["packageInputSha256"],
+            )
+            state = workflow_status(self.solution)
+            self.assertEqual("current", state["packageFreshness"]["status"])
+            self.assertEqual(
+                "consumed",
+                state["packaging"]["releaseActions"][-1]["status"],
+            )
+            consumed_patch_action = state["packaging"]["lastConsumedAction"]["attemptId"]
+            start_workflow_stage(self.solution, "report")
+            complete_workflow_stage(self.solution, "report", status="passed")
+            final = workflow_status(self.solution)
+            self.assertEqual("passed", final["stages"]["report"]["status"])
+            self.assertEqual("current", final["packageFreshness"]["status"])
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ) as repeat_package:
+                repeated = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                )
+            repeat_package.assert_called_once()
+            repeated_state = workflow_status(self.solution)
+            self.assertEqual("none", repeated["effectiveVersionBump"])
+            self.assertEqual(
+                planned["packageInputSha256"],
+                repeated_state["packaging"]["lastSuccessful"]["packageInputSha256"],
+            )
+            self.assertNotEqual(
+                consumed_patch_action,
+                repeated_state["packaging"]["lastConsumedAction"]["attemptId"],
+            )
+            self.assertEqual("current", repeated_state["packageFreshness"]["status"])
+            with self.assertRaisesRegex(ValueError, "already exists for unchanged inputs"):
+                package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="patch",
+                )
+            drift = self.solution / "README.md"
+            drift.write_text("non-notes drift\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "explicit new release action"):
+                package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                )
+            release_plan = plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+            self.assertEqual("patch", release_plan["versionBump"])
+
+    def test_same_release_notes_refresh_rejects_non_notes_changes_and_wrong_row(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir(parents=True)
+        data.write_text(json.dumps({"Name": "Sample", "Version": "1.0.0"}), encoding="utf-8")
+        notes = self.solution / "ReleaseNotes.md"
+        notes.write_text(
+            "| **Version** | **Date Modified (DD-MM-YYYY)** | **Change History** |\n"
+            "|---|---|---|\n"
+            "| 0.9.0 | 01-10-2026 | Prior release |\n",
+            encoding="utf-8",
+        )
+        initialized, _ = self._prepare_offline_authoring_validation()
+        with using_run(self.solution, initialized["runId"]):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ):
+                package_workflow_v3_1(self.solution, requested_version_bump="patch")
+            plan_release_notes_refresh(
+                self.solution,
+                release_date="12-10-2026",
+                change_history="Approved description",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+            unrelated = self.solution / "README.md"
+            unrelated.write_text("unexpected change\n", encoding="utf-8")
+            notes.write_text(
+                notes.read_text(encoding="utf-8").replace(
+                    "|---|---|---|\n",
+                    "|---|---|---|\n| 1.0.0 | 12-10-2026 | Different description |\n",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "package inventory changed|only the exact planned"):
+                package_workflow_v3_1(self.solution, requested_version_bump="none")
+            unrelated.unlink()
+            with self.assertRaisesRegex(ValueError, "does not match the exact approved refresh"):
+                package_workflow_v3_1(self.solution, requested_version_bump="none")
+
+    def test_same_release_notes_refresh_repeat_build_without_campaign(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir(parents=True)
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.2"}), encoding="utf-8")
+        notes = self.solution / "ReleaseNotes.md"
+        notes.write_text(
+            "| **Version** | **Date Modified (DD-MM-YYYY)** | **Change History** |\n"
+            "|---|---|---|\n"
+            "| 3.1.1 | 01-10-2026 | Previous release |\n",
+            encoding="utf-8",
+        )
+        initialized, _ = self._prepare_offline_authoring_validation(campaign_id=None)
+        with using_run(self.solution, initialized["runId"]):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ):
+                package_workflow_v3_1(self.solution, requested_version_bump="patch")
+            base_hash = package_input_identity(self.solution)["sha256"]
+            action = plan_release_notes_refresh(
+                self.solution,
+                release_date="12-10-2026",
+                change_history="Approved same-release note",
+                expected_package_input_sha256=base_hash,
+            )
+            state = workflow_status(self.solution)
+            pending = state["packaging"]["pendingReleaseAction"]
+            notes.write_text(
+                notes.read_text(encoding="utf-8").replace(
+                    "|---|---|---|\n",
+                    "|---|---|---|\n| 3.1.2 | 12-10-2026 | Approved same-release note |\n",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(action["packageInputSha256After"], pending["packageInputSha256"])
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ):
+                package_workflow_v3_1(self.solution, requested_version_bump="none")
+                repeated = package_workflow_v3_1(self.solution, requested_version_bump="none")
+            self.assertEqual("none", repeated["effectiveVersionBump"])
+            self.assertEqual("current", workflow_status(self.solution)["packageFreshness"]["status"])
+
+    def test_same_version_content_rebuild_archives_inputs_and_builds_without_bumping(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir(parents=True)
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.1"}), encoding="utf-8")
+        readme = self.solution / "README.md"
+        readme.write_text("approved package content before the first build\n", encoding="utf-8")
+        initialized, _ = self._prepare_offline_authoring_validation()
+        with using_run(self.solution, initialized["runId"]):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_patch_package,
+            ):
+                first = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="patch",
+                )
+            self.assertEqual("3.1.2", first["version"])
+            original_input = readme.read_bytes()
+            readme.write_text("explicitly approved non-notes content fix\n", encoding="utf-8")
+            approved_input = readme.read_bytes()
+            approved_hash = package_input_identity(self.solution)["sha256"]
+            prior_zip = Path(first["zip"])
+            prior_zip_bytes = prior_zip.read_bytes()
+            prior_zip.write_bytes(b"stale prior package")
+            with self.assertRaisesRegex(ValueError, "artifact is stale: zip"):
+                plan_same_version_content_rebuild(
+                    self.solution,
+                    target_version="3.1.2",
+                    changed_inputs=["README.md"],
+                    expected_package_input_sha256=approved_hash,
+                )
+            prior_zip.write_bytes(prior_zip_bytes)
+            planned = plan_same_version_content_rebuild(
+                self.solution,
+                target_version="3.1.2",
+                changed_inputs=["README.md"],
+                expected_package_input_sha256=approved_hash,
+            )
+            state = workflow_status(self.solution)
+            action = state["packaging"]["pendingReleaseAction"]
+            self.assertEqual("same-version-content-rebuild", action["actionType"])
+            self.assertEqual("none", action["versionBump"])
+            self.assertEqual("3.1.2", action["targetVersion"])
+            self.assertEqual(approved_hash, action["packageInputSha256"])
+            self.assertEqual(
+                hashlib.sha256(approved_input).hexdigest(),
+                action["approvedChangedInputs"]["README.md"],
+            )
+            archived_root = self.solution / planned["inputBackupRoot"]
+            self.assertEqual(approved_input, (archived_root / "README.md").read_bytes())
+            for artifact in (
+                "packageReport", "mainTemplate", "createUiDefinition", "testParameters", "zip",
+            ):
+                self.assertIn(artifact, planned["historicalEvidence"])
+                self.assertTrue(
+                    (self.solution / planned["historicalEvidence"][artifact]).is_file()
+                )
+
+            readme.write_bytes(approved_input + b"stale plan drift\n")
+            with self.assertRaisesRegex(ValueError, "inputs changed or no longer match"):
+                package_workflow_v3_1(self.solution, requested_version_bump="none")
+            readme.write_bytes(approved_input)
+            backup_readme = archived_root / "README.md"
+            backup_readme.write_bytes(original_input)
+            with self.assertRaisesRegex(ValueError, "input backup is missing or modified"):
+                package_workflow_v3_1(self.solution, requested_version_bump="none")
+            backup_readme.write_bytes(approved_input)
+
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ) as package:
+                rebuilt = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                )
+            package.assert_called_once()
+            self.assertEqual("none", rebuilt["effectiveVersionBump"])
+            self.assertEqual("3.1.2", rebuilt["version"])
+            self.assertEqual("3.1.2", json.loads(data.read_text(encoding="utf-8"))["Version"])
+            self.assertEqual(approved_input, readme.read_bytes())
+            state = workflow_status(self.solution)
+            self.assertEqual("consumed", state["packaging"]["releaseActions"][-1]["status"])
+            self.assertEqual("current", state["packageFreshness"]["status"])
+
+            first_rebuild_attempt = state["packaging"]["lastConsumedAction"]["attemptId"]
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ) as repeat_package:
+                repeated = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                )
+            repeat_package.assert_called_once()
+            self.assertEqual("3.1.2", repeated["version"])
+            self.assertNotEqual(
+                first_rebuild_attempt,
+                workflow_status(self.solution)["packaging"]["lastConsumedAction"]["attemptId"],
+            )
+            self.assertEqual("current", workflow_status(self.solution)["packageFreshness"]["status"])
+
+    def test_same_version_content_rebuild_retry_and_scope_guards(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir(parents=True)
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.1"}), encoding="utf-8")
+        readme = self.solution / "README.md"
+        readme.write_text("before\n", encoding="utf-8")
+        release_notes = self.solution / "ReleaseNotes.md"
+        release_notes.write_text("baseline notes\n", encoding="utf-8")
+        initialized, _ = self._prepare_offline_authoring_validation()
+        with using_run(self.solution, initialized["runId"]):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_patch_package,
+            ):
+                package_workflow_v3_1(self.solution, requested_version_bump="patch")
+            readme.write_text("approved correction\n", encoding="utf-8")
+            expected_hash = package_input_identity(self.solution)["sha256"]
+            with self.assertRaisesRegex(ValueError, "exactly match the current solution version"):
+                plan_same_version_content_rebuild(
+                    self.solution,
+                    target_version="3.1.3",
+                    changed_inputs=["README.md"],
+                    expected_package_input_sha256=expected_hash,
+                )
+            with self.assertRaisesRegex(ValueError, "current input identity"):
+                plan_same_version_content_rebuild(
+                    self.solution,
+                    target_version="3.1.2",
+                    changed_inputs=["README.md"],
+                    expected_package_input_sha256="0" * 64,
+                )
+            with self.assertRaisesRegex(ValueError, "ReleaseNotes"):
+                plan_same_version_content_rebuild(
+                    self.solution,
+                    target_version="3.1.2",
+                    changed_inputs=["ReleaseNotes.md"],
+                    expected_package_input_sha256=expected_hash,
+                )
+            plan_same_version_content_rebuild(
+                self.solution,
+                target_version="3.1.2",
+                changed_inputs=["README.md"],
+                expected_package_input_sha256=expected_hash,
+            )
+
+            def mutate_notes_after_v31(solution: Path, **kwargs: str) -> dict:
+                result = self._mock_v3_1_package(solution, **kwargs)
+                release_notes.write_text("unapproved during-build notes edit\n", encoding="utf-8")
+                return result
+
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=mutate_notes_after_v31,
+            ):
+                with self.assertRaisesRegex(ValueError, "inputs changed or no longer match"):
+                    package_workflow_v3_1(
+                        self.solution,
+                        requested_version_bump="none",
+                    )
+            release_notes.write_text("baseline notes\n", encoding="utf-8")
+
+            failed_state = workflow_status(self.solution)
+            self.assertEqual(
+                expected_hash,
+                failed_state["packaging"]["pendingReleaseAction"]["packageInputSha256"],
+            )
+            self.assertEqual("failed", failed_state["packaging"]["currentAttempt"]["status"])
+            self.assertEqual("3.1.2", json.loads(data.read_text(encoding="utf-8"))["Version"])
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ):
+                retried = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                )
+            self.assertEqual("3.1.2", retried["version"])
+            self.assertEqual("consumed", workflow_status(self.solution)["packaging"]["releaseActions"][-1]["status"])
+
+    def test_same_version_rebuild_requires_exact_receipt_to_current_path_diff(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir(parents=True)
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.1"}), encoding="utf-8")
+        contents = {
+            "README.md": b"before\n",
+            "ReleaseNotes.md": b"historical notes\n",
+            "Hidden.txt": b"hidden before\n",
+            "Unchanged.txt": b"unchanged\n",
+            "Removed.txt": b"removed before\n",
+        }
+        for name, value in contents.items():
+            (self.solution / name).write_bytes(value)
+        initialized, _ = self._prepare_offline_authoring_validation()
+        with using_run(self.solution, initialized["runId"]):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_patch_package,
+            ):
+                package_workflow_v3_1(self.solution, requested_version_bump="patch")
+
+            (self.solution / "README.md").write_bytes(b"approved\n")
+            (self.solution / "ReleaseNotes.md").write_bytes(b"unapproved notes change\n")
+            (self.solution / "Hidden.txt").write_bytes(b"hidden after\n")
+            (self.solution / "Added.txt").write_bytes(b"added\n")
+            (self.solution / "Removed.txt").unlink()
+            current_hash = package_input_identity(self.solution)["sha256"]
+            with self.assertRaisesRegex(ValueError, "does not permit any ReleaseNotes change"):
+                plan_same_version_content_rebuild(
+                    self.solution,
+                    target_version="3.1.2",
+                    changed_inputs=["README.md"],
+                    expected_package_input_sha256=current_hash,
+                )
+
+            (self.solution / "ReleaseNotes.md").write_bytes(contents["ReleaseNotes.md"])
+            current_hash = package_input_identity(self.solution)["sha256"]
+            with self.assertRaisesRegex(ValueError, "scope must exactly match"):
+                plan_same_version_content_rebuild(
+                    self.solution,
+                    target_version="3.1.2",
+                    changed_inputs=["README.md"],
+                    expected_package_input_sha256=current_hash,
+                )
+
+            (self.solution / "Hidden.txt").write_bytes(contents["Hidden.txt"])
+            (self.solution / "Added.txt").unlink()
+            (self.solution / "Removed.txt").write_bytes(contents["Removed.txt"])
+            current_hash = package_input_identity(self.solution)["sha256"]
+            with self.assertRaisesRegex(ValueError, "scope must exactly match"):
+                plan_same_version_content_rebuild(
+                    self.solution,
+                    target_version="3.1.2",
+                    changed_inputs=["README.md", "Unchanged.txt"],
+                    expected_package_input_sha256=current_hash,
+                )
+
+            planned = plan_same_version_content_rebuild(
+                self.solution,
+                target_version="3.1.2",
+                changed_inputs=["README.md"],
+                expected_package_input_sha256=current_hash,
+            )
+            self.assertEqual(
+                {"README.md": hashlib.sha256(b"approved\n").hexdigest()},
+                workflow_status(self.solution)["packaging"]["pendingReleaseAction"][
+                    "approvedChangedInputs"
+                ],
+            )
+            self.assertEqual("blocked", planned["workflowStatus"])
+
+    def test_same_version_rebuild_reconstructs_receipt_bound_legacy_baseline(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir(parents=True)
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.1"}), encoding="utf-8")
+        readme = self.solution / "README.md"
+        readme.write_bytes(b"legacy baseline\n")
+        initialized, _ = self._prepare_offline_authoring_validation()
+        with using_run(self.solution, initialized["runId"]):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+
+            def legacy_package(solution: Path, **kwargs: str) -> dict:
+                result = self._mock_v3_1_patch_package(solution, **kwargs)
+                report_path = Path(result["packageReport"])
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                report["packageInputs"]["after"].pop("files")
+                report_path.write_text(json.dumps(report), encoding="utf-8")
+                return result
+
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=legacy_package,
+            ):
+                package_workflow_v3_1(self.solution, requested_version_bump="patch")
+
+            state = workflow_status(self.solution)
+            prior_identity = state["packaging"]["lastSuccessful"]["packageInputSha256"]
+            prior_files = package_input_file_hashes(self.solution)
+            readme.write_bytes(b"legacy content correction\n")
+            current_files = package_input_file_hashes(self.solution)
+            current_identity = package_input_identity(self.solution)["sha256"]
+            evidence_path = (
+                Path("Logs")
+                / "same-version-content-rebuild"
+                / "legacy-baseline-comparison.json"
+            )
+            evidence_file = self.solution / evidence_path
+            evidence_file.parent.mkdir(parents=True)
+            evidence = {
+                "priorReceiptIdentity": prior_identity,
+                "currentIdentity": current_identity,
+                "priorFileCount": len(prior_files),
+                "currentFileCount": len(current_files),
+                "changedInputs": [{
+                    "path": "README.md",
+                    "beforeSha256": prior_files["README.md"],
+                    "currentSha256": current_files["README.md"],
+                }],
+            }
+            evidence_file.write_text(json.dumps(evidence), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "provide exact receipt-bound"):
+                plan_same_version_content_rebuild(
+                    self.solution,
+                    target_version="3.1.2",
+                    changed_inputs=["README.md"],
+                    expected_package_input_sha256=current_identity,
+                )
+            bad_evidence = dict(evidence)
+            bad_evidence["changedInputs"] = []
+            (evidence_file.parent / "bad-comparison.json").write_text(
+                json.dumps(bad_evidence),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "not bound to the successful receipt"):
+                plan_same_version_content_rebuild(
+                    self.solution,
+                    target_version="3.1.2",
+                    changed_inputs=["README.md"],
+                    expected_package_input_sha256=current_identity,
+                    legacy_baseline_evidence=(
+                        evidence_path.parent / "bad-comparison.json"
+                    ).as_posix(),
+                )
+            planned = plan_same_version_content_rebuild(
+                self.solution,
+                target_version="3.1.2",
+                changed_inputs=["README.md"],
+                expected_package_input_sha256=current_identity,
+                legacy_baseline_evidence=evidence_path.as_posix(),
+            )
+            action = workflow_status(self.solution)["packaging"]["pendingReleaseAction"]
+            self.assertEqual(
+                {
+                    "path": evidence_path.as_posix(),
+                    "sha256": hashlib.sha256(evidence_file.read_bytes()).hexdigest(),
+                },
+                action["legacyBaselineEvidence"],
+            )
+            valid_evidence_bytes = evidence_file.read_bytes()
+            evidence_file.write_text("changed after planning", encoding="utf-8")
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ) as package:
+                with self.assertRaisesRegex(ValueError, "evidence changed after the rebuild plan"):
+                    package_workflow_v3_1(
+                        self.solution,
+                        requested_version_bump="none",
+                    )
+            package.assert_not_called()
+            evidence_file.write_bytes(valid_evidence_bytes)
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ):
+                rebuilt = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                )
+            self.assertEqual("3.1.2", rebuilt["version"])
+            self.assertEqual("consumed", workflow_status(self.solution)["packaging"][
+                "releaseActions"
+            ][-1]["status"])
+            receipt = json.loads(
+                Path(rebuilt["packageReport"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                package_input_file_hashes(self.solution),
+                receipt["packageInputs"]["after"]["files"],
+            )
+            self.assertEqual("blocked", planned["workflowStatus"])
+            verified = workflow_module.verify_same_version_content_rebuild(self.solution)
+            self.assertEqual("verified", verified["status"])
+            self.assertTrue(verified["receiptVerified"])
+            self.assertFalse(verified["stateChanged"])
+
+    def test_same_version_content_rebuild_is_authoring_only_and_version_bound(self) -> None:
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump="none",
+            workflow_profile="qualification",
+            **self._qualification_args(),
+        )
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "only for Authoring"):
+                plan_same_version_content_rebuild(
+                    self.solution,
+                    target_version="3.1.2",
+                    changed_inputs=["README.md"],
+                    expected_package_input_sha256="a" * 64,
+                )
+
+    def test_same_release_notes_refresh_is_authoring_only_and_does_not_reconsume_patch(self) -> None:
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump="none",
+            workflow_profile="qualification",
+            **self._qualification_args(),
+        )
+        run_id = initialized["runId"]
+        with using_run(self.solution, run_id):
+            with self.assertRaisesRegex(ValueError, "only for Authoring"):
+                plan_release_notes_refresh(
+                    self.solution,
+                    release_date="12-10-2026",
+                    change_history="Approved release note",
+                    expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+                )
+
+    def test_same_release_notes_refresh_requires_fresh_package_receipt(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir(parents=True)
+        data.write_text(json.dumps({"Name": "Sample", "Version": "1.0.0"}), encoding="utf-8")
+        notes = self.solution / "ReleaseNotes.md"
+        notes.write_text(
+            "| **Version** | **Date Modified (DD-MM-YYYY)** | **Change History** |\n"
+            "|---|---|---|\n"
+            "| 0.9.0 | 01-10-2026 | Prior release |\n",
+            encoding="utf-8",
+        )
+        initialized, _ = self._prepare_offline_authoring_validation()
+        with using_run(self.solution, initialized["runId"]):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ):
+                package = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="patch",
+                )
+            Path(package["zip"]).write_text("tampered", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "artifact is stale: zip"):
+                plan_release_notes_refresh(
+                    self.solution,
+                    release_date="12-10-2026",
+                    change_history="Approved release note",
+                    expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+                )
+
+    def test_release_notes_refresh_parses_aligned_header_and_rejects_malformed_history(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir(parents=True)
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.2"}), encoding="utf-8")
+        notes = self.solution / "ReleaseNotes.md"
+        aligned_header = (
+            "| **Version** | **Date Modified (DD-MM-YYYY)** | "
+            "**Change History**                                                           |"
+        )
+        aligned_separator = (
+            "|-------------|--------------------------------|"
+            "------------------------------------------------------------------------------|"
+        )
+        valid_row = "| 3.1.1 | 01-10-2026 | Existing valid history |"
+        malformed_cases = [
+            (
+                "| **Version** | **Date Modified (DD-MM-YYYY)** | **Wrong History** |",
+                aligned_separator,
+                valid_row,
+                "required three-column table header",
+            ),
+            (
+                "| **Date Modified (DD-MM-YYYY)** | **Version** | **Change History** |",
+                aligned_separator,
+                valid_row,
+                "required three-column table header",
+            ),
+            (
+                "| **Version** | **Date Modified (DD-MM-YYYY)** | **Change History** | **Extra** |",
+                "|---|---|---|---|",
+                valid_row,
+                "required three-column table header",
+            ),
+            (
+                aligned_header,
+                "|---|broken|---|",
+                valid_row,
+                "table separator is invalid",
+            ),
+            (
+                aligned_header,
+                aligned_separator,
+                "| 3.1.1 | 32-10-2026 | Invalid date |",
+                "invalid DD-MM-YYYY date",
+            ),
+            (
+                aligned_header,
+                aligned_separator,
+                "| 3.1.x | 01-10-2026 | Invalid version |",
+                "invalid semantic version",
+            ),
+            (
+                aligned_header,
+                aligned_separator,
+                "| 3.1.1 | 01-10-2026 | First |\n| 3.1.1 | 01-09-2026 | Duplicate |",
+                "duplicate version",
+            ),
+            (
+                aligned_header,
+                aligned_separator,
+                "| 3.0.0 | 01-10-2026 | Older first |\n| 3.1.1 | 01-09-2026 | Newer second |",
+                "not in descending order",
+            ),
+        ]
+        for header, separator, rows, message in malformed_cases:
+            with self.subTest(message=message, header=header):
+                notes.write_text(f"{header}\n{separator}\n{rows}\n", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    workflow_module._release_notes_refresh_proposal(
+                        self.solution,
+                        release_date="12-10-2026",
+                        change_history="Approved release history",
+                    )
+
+    def test_offline_authoring_rejects_changed_source_inventory(self) -> None:
+        initialized, _ = self._prepare_offline_authoring_validation()
+        source = self.solution / "Analytic Rules" / "Nested" / "Rule0.yaml"
+        document = yaml.safe_load(source.read_text(encoding="utf-8"))
+        document["query"] += "\n| where Severity == 'High'\n"
+        source.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "stale or unresolved|review or conversion findings"):
+                complete_workflow_stage(
+                    self.solution,
+                    "validation",
+                    status="passed",
+                    artifacts={
+                        "runtimeStatus": "not-run",
+                        "validationMode": "offline-authoring",
+                    },
+                )
+
+    def test_offline_authoring_rejects_missing_converted_query(self) -> None:
+        initialized, _ = self._prepare_offline_authoring_validation()
+        target = self.solution / "XDR Detections" / "Nested" / "Rule0.yaml"
+        document = yaml.safe_load(target.read_text(encoding="utf-8"))
+        document["properties"]["queryCondition"].pop("queryText")
+        target.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "no Advanced Hunting query"):
+                complete_workflow_stage(
+                    self.solution,
+                    "validation",
+                    status="passed",
+                    artifacts={
+                        "runtimeStatus": "not-run",
+                        "validationMode": "offline-authoring",
+                    },
+                )
+
+    def test_offline_authoring_rejects_new_unconverted_inventory_item(self) -> None:
+        initialized, _ = self._prepare_offline_authoring_validation()
+        self._create_source_rules(count=2)
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "complete source inventory"):
+                complete_workflow_stage(
+                    self.solution,
+                    "validation",
+                    status="passed",
+                    artifacts={
+                        "runtimeStatus": "not-run",
+                        "validationMode": "offline-authoring",
+                    },
+                )
+
+    def test_offline_authoring_requires_conversion_manifest(self) -> None:
+        initialized, manifest = self._prepare_offline_authoring_validation()
+        manifest.unlink()
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "manifest"):
+                complete_workflow_stage(
+                    self.solution,
+                    "validation",
+                    status="passed",
+                    artifacts={
+                        "runtimeStatus": "not-run",
+                        "validationMode": "offline-authoring",
+                    },
+                )
+
+    def _remove_conversion_manifest_hash(self, state_path: Path) -> None:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["stages"]["conversion"]["artifacts"].pop("manifestSha256", None)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    def test_legacy_conversion_manifest_is_recovered_via_explicit_run_command(self) -> None:
+        initialized, manifest = self._prepare_offline_authoring_validation()
+        state_path = Path(initialized["statePath"])
+        self._remove_conversion_manifest_hash(state_path)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr), mock.patch.object(
+            cli_module,
+            "configure_logging",
+        ):
+            result = cli_module.main([
+                "workflow-recover-conversion-evidence",
+                "--solution", str(self.solution),
+                "--run-id", initialized["runId"],
+            ])
+
+        self.assertEqual(0, result, stderr.getvalue())
+        recovered = json.loads(stdout.getvalue())
+        self.assertEqual("recovered", recovered["status"])
+        self.assertEqual(
+            hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            recovered["manifestSha256"],
+        )
+        state = workflow_status(self.solution)
+        conversion_artifacts = state["stages"]["conversion"]["artifacts"]
+        self.assertEqual(recovered["manifestSha256"], conversion_artifacts["manifestSha256"])
+        self.assertEqual(
+            "offline-authoring-full-revalidation",
+            conversion_artifacts["manifestEvidenceRecovery"],
+        )
+        self.assertEqual("running", state["stages"]["validation"]["status"])
+
+        with using_run(self.solution, initialized["runId"]):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+        self.assertEqual("passed", workflow_status(self.solution)["stages"]["validation"]["status"])
+
+    def test_conversion_evidence_recovery_does_not_replace_a_bound_mismatch(self) -> None:
+        initialized, _ = self._prepare_offline_authoring_validation()
+        state_path = Path(initialized["statePath"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["stages"]["conversion"]["artifacts"]["manifestSha256"] = "0" * 64
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        before = state_path.read_bytes()
+
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "will not replace a bound digest"):
+                recover_conversion_evidence(self.solution)
+
+        self.assertEqual(before, state_path.read_bytes())
+
+    def test_conversion_evidence_recovery_rejects_scoped_manifest(self) -> None:
+        initialized, manifest_path = self._prepare_offline_authoring_validation()
+        self._remove_conversion_manifest_hash(Path(initialized["statePath"]))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["scope"]["kind"] = "rule"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        state_path = Path(initialized["statePath"])
+        state_before = state_path.read_bytes()
+
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "complete source inventory"):
+                recover_conversion_evidence(self.solution)
+
+        self.assertEqual(state_before, state_path.read_bytes())
+
+    def test_conversion_evidence_recovery_rejects_missing_manifest(self) -> None:
+        initialized, manifest_path = self._prepare_offline_authoring_validation()
+        state_path = Path(initialized["statePath"])
+        self._remove_conversion_manifest_hash(state_path)
+        manifest_path.unlink()
+        state_before = state_path.read_bytes()
+
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "manifest is missing or unsafe"):
+                recover_conversion_evidence(self.solution)
+
+        self.assertEqual(state_before, state_path.read_bytes())
+
+    def test_conversion_evidence_recovery_rejects_inventory_drift(self) -> None:
+        initialized, _ = self._prepare_offline_authoring_validation()
+        self._remove_conversion_manifest_hash(Path(initialized["statePath"]))
+        self._create_source_rules(count=2)
+        state_path = Path(initialized["statePath"])
+        state_before = state_path.read_bytes()
+
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "complete source inventory"):
+                recover_conversion_evidence(self.solution)
+
+        self.assertEqual(state_before, state_path.read_bytes())
+
+    def test_conversion_evidence_recovery_rejects_source_and_technical_drift(self) -> None:
+        initialized, manifest_path = self._prepare_offline_authoring_validation()
+        state_path = Path(initialized["statePath"])
+        self._remove_conversion_manifest_hash(state_path)
+        source = self.solution / "Analytic Rules" / "Nested" / "Rule0.yaml"
+        source_doc = yaml.safe_load(source.read_text(encoding="utf-8"))
+        source_doc["query"] += "\n| where Severity == 'High'\n"
+        source.write_text(yaml.safe_dump(source_doc, sort_keys=False), encoding="utf-8")
+        state_before = state_path.read_bytes()
+
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "stale or unresolved"):
+                recover_conversion_evidence(self.solution)
+        self.assertEqual(state_before, state_path.read_bytes())
+
+        source_doc["query"] = yaml.safe_load(RULE)["query"]
+        source.write_text(yaml.safe_dump(source_doc, sort_keys=False), encoding="utf-8")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["results"][0]["errors"] = ["synthetic conversion error"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "technical"):
+                recover_conversion_evidence(self.solution)
+        self.assertEqual(state_before, state_path.read_bytes())
+
+    def test_conversion_evidence_recovery_rejects_review_and_structural_drift(self) -> None:
+        initialized, _ = self._prepare_offline_authoring_validation()
+        self._remove_conversion_manifest_hash(Path(initialized["statePath"]))
+        target = self.solution / "XDR Detections" / "Nested" / "Rule0.yaml"
+        document = yaml.safe_load(target.read_text(encoding="utf-8"))
+        document["contentProvenance"]["conversion"]["reviewRequired"] = True
+        target.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        state_path = Path(initialized["statePath"])
+        state_before = state_path.read_bytes()
+
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "review or conversion findings"):
+                recover_conversion_evidence(self.solution)
+        self.assertEqual(state_before, state_path.read_bytes())
+
+        document["contentProvenance"]["conversion"]["reviewRequired"] = False
+        document["properties"].pop("status", None)
+        target.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "structural validation to pass"):
+                recover_conversion_evidence(self.solution)
+        self.assertEqual(state_before, state_path.read_bytes())
+
+    def test_offline_authoring_rejects_missing_conversion_target(self) -> None:
+        initialized, _ = self._prepare_offline_authoring_validation()
+        (self.solution / "XDR Detections" / "Nested" / "Rule0.yaml").unlink()
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "target is missing|target does not exist"):
+                complete_workflow_stage(
+                    self.solution,
+                    "validation",
+                    status="passed",
+                    artifacts={
+                        "runtimeStatus": "not-run",
+                        "validationMode": "offline-authoring",
+                    },
+                )
+
+    def test_yolo_without_authoring_consent_does_not_dispatch_advanced_hunting(self) -> None:
+        with mock.patch.object(
+            runtime_module,
+            "validate_advanced_hunting",
+            side_effect=AssertionError("Advanced Hunting must not dispatch without consent"),
+        ) as graph_validation, mock.patch.object(
+            runtime_module,
+            "validate_sentinel_sdk",
+            side_effect=AssertionError("Sentinel validation must not dispatch in offline Authoring"),
+        ) as sentinel_validation:
+            result, _ = self._run_yolo(profile="authoring")
+
+        self.assertEqual("passed", result["validationStatus"])
+        self.assertEqual("not-run", result["runtimeStatus"])
+        graph_validation.assert_not_called()
+        sentinel_validation.assert_not_called()
+
+    def test_offline_authoring_rejects_unresolved_review_and_structural_failure(self) -> None:
+        initialized, _ = self._prepare_offline_authoring_validation()
+        target = self.solution / "XDR Detections" / "Nested" / "Rule0.yaml"
+        document = yaml.safe_load(target.read_text(encoding="utf-8"))
+        document["contentProvenance"]["conversion"]["reviewRequired"] = True
+        target.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "review or conversion findings"):
+                complete_workflow_stage(
+                    self.solution,
+                    "validation",
+                    status="passed",
+                    artifacts={
+                        "runtimeStatus": "not-run",
+                        "validationMode": "offline-authoring",
+                    },
+                )
+
+        document["contentProvenance"]["conversion"]["reviewRequired"] = False
+        document["properties"].pop("status", None)
+        target.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "structural validation to pass"):
+                complete_workflow_stage(
+                    self.solution,
+                    "validation",
+                    status="passed",
+                    artifacts={
+                        "runtimeStatus": "not-run",
+                        "validationMode": "offline-authoring",
+                    },
+                )
+
+    def test_offline_authoring_does_not_override_runtime_failure_reports(self) -> None:
+        initialized, _ = self._prepare_offline_authoring_validation()
+        target = self.solution / "XDR Detections" / "Nested" / "Rule0.yaml"
+        target_doc = yaml.safe_load(target.read_text(encoding="utf-8"))
+        with using_run(self.solution, initialized["runId"]):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+            runtime_module._write_runtime_artifacts(
+                self.solution,
+                "graph",
+                [{
+                    "detection": "Nested/Rule0.yaml",
+                    "status": "failed",
+                    "querySha256": hashlib.sha256(
+                        target_doc["properties"]["queryCondition"]["queryText"].encode()
+                    ).hexdigest(),
+                    "error": "Synthetic current KQL failure",
+                }],
+            )
+            state = workflow_status(self.solution)
+            self.assertEqual("blocked", state["stages"]["validation"]["status"])
+            self.assertIn(
+                "new graph provider evidence",
+                state["stages"]["validation"]["message"],
+            )
+            self.assertEqual("blocked", state["runtimeAssessment"]["runtimeStatus"])
+
+    def test_qualification_cannot_use_offline_authoring_validation_mode(self) -> None:
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="qualification",
+            **self._qualification_args(),
+        )
+        with using_run(self.solution, initialized["runId"]):
+            start_workflow_stage(self.solution, "discovery")
+            complete_workflow_stage(self.solution, "discovery", status="passed")
+            start_workflow_stage(self.solution, "conversion")
+            complete_workflow_stage(self.solution, "conversion", status="passed")
+            start_workflow_stage(self.solution, "validation")
+            with self.assertRaisesRegex(ValueError, "only for Authoring"):
+                complete_workflow_stage(
+                    self.solution,
+                    "validation",
+                    status="passed",
+                    artifacts={
+                        "runtimeStatus": "not-run",
+                        "validationMode": "offline-authoring",
+                    },
+                )
+            with self.assertRaisesRegex(ValueError, "complete Sentinel and Advanced Hunting"):
+                complete_workflow_stage(
+                    self.solution,
+                    "validation",
+                    status="passed",
+                )
+
+    def test_conversion_evidence_recovery_rejects_qualification(self) -> None:
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="qualification",
+            **self._qualification_args(),
+        )
+        with using_run(self.solution, initialized["runId"]):
+            with self.assertRaisesRegex(ValueError, "restricted to explicitly selected Authoring"):
+                recover_conversion_evidence(self.solution)
+
     def test_consumed_initial_release_cannot_be_replanned_and_retries_with_none(self) -> None:
         data_path = self.solution / "Data" / "Solution_Sample.json"
         data_path.parent.mkdir(parents=True)
@@ -1159,6 +2517,256 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual("none", result["effectiveVersionBump"])
             package.assert_called_once()
 
+    def test_explicit_target_version_survives_resume_and_rebuilds_without_reapplying(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir()
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.0.7"}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            initialize_workflow(
+                self.solution,
+                version_bump="patch",
+                target_version="3.1.2",
+                workflow_profile="authoring",
+            )
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump="none",
+            target_version="3.1.2",
+            workflow_profile="authoring",
+            campaign_id="target-version-campaign",
+        )
+        run_id = initialized["runId"]
+        for stage in ("discovery", "conversion", "validation"):
+            self._complete_passed_stage(stage)
+
+        resumed = initialize_workflow(
+            self.solution,
+            version_bump="none",
+            target_version="3.1.2",
+            workflow_profile="authoring",
+            campaign_id="target-version-campaign",
+        )
+        self.assertTrue(resumed["resumed"])
+        self.assertEqual("3.1.2", resumed["context"]["targetVersion"])
+
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ) as package:
+            built = package_workflow_v3_1(
+                self.solution,
+                requested_version_bump="none",
+                requested_target_version="3.1.2",
+            )
+            self.assertEqual("3.1.2", json.loads(data.read_text())["Version"])
+            self.assertEqual("3.1.2", built["version"])
+            self.assertEqual("3.1.2", workflow_status(self.solution)["packaging"]["lastConsumedAction"]["effectiveTargetVersion"])
+            package.assert_called_once()
+            self.assertEqual("3.1.2", package.call_args.kwargs["target_version"])
+
+            resumed = initialize_workflow(
+                self.solution,
+                version_bump="none",
+                target_version="3.1.2",
+                workflow_profile="authoring",
+                campaign_id="target-version-campaign",
+            )
+            self.assertEqual("3.1.2", resumed["context"]["targetVersion"])
+            rebuilt = package_workflow_v3_1(
+                self.solution,
+                requested_version_bump="none",
+            )
+            self.assertEqual("3.1.2", rebuilt["version"])
+            self.assertIsNone(package.call_args.kwargs["target_version"])
+            self.assertEqual("3.1.2", json.loads(data.read_text())["Version"])
+            with self.assertRaisesRegex(ValueError, "version action was already consumed"):
+                package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                    requested_target_version="3.1.3",
+                )
+
+    def test_target_release_plan_binds_exact_version_and_current_inputs(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir()
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.0"}), encoding="utf-8")
+        run_id = self._prepare_workflow_for_package("none")
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ):
+            package_workflow_v3_1(self.solution, requested_version_bump="none")
+            changed_input = self.solution / "XDR Detections" / "Detection.yaml"
+            changed_input.parent.mkdir(parents=True, exist_ok=True)
+            changed_input.write_text("kind: CustomDetection\n", encoding="utf-8")
+            original = changed_input.read_bytes()
+            planned = plan_new_package_release(
+                self.solution,
+                target_version="3.1.2",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+            self.assertEqual("3.1.2", planned["targetVersion"])
+            self.assertEqual("target-version", workflow_status(self.solution)["packaging"]["pendingReleaseAction"]["actionType"])
+            with self.assertRaisesRegex(ValueError, "exactly one version bump or target version"):
+                plan_new_package_release(
+                    self.solution,
+                    version_bump="patch",
+                    target_version="3.1.3",
+                    expected_package_input_sha256=planned["packageInputSha256"],
+                )
+            with self.assertRaisesRegex(ValueError, "differs from the explicitly selected"):
+                package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                    requested_target_version="3.1.3",
+                )
+            changed_input.write_text("kind: CustomDetection\n# input changed\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "differs from the explicitly selected"):
+                package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                    requested_target_version="3.1.2",
+                )
+            changed_input.write_bytes(original)
+            built = package_workflow_v3_1(
+                self.solution,
+                requested_version_bump="none",
+                requested_target_version="3.1.2",
+            )
+            self.assertEqual("3.1.2", built["version"])
+            state = workflow_status(self.solution)["packaging"]
+            self.assertEqual("consumed", state["releaseActions"][-1]["status"])
+            self.assertEqual("3.1.2", state["releaseActions"][-1]["targetVersion"])
+
+    def test_target_version_remains_compatible_with_campaign_and_notes_refresh(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir(parents=True)
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.0.7"}), encoding="utf-8")
+        notes = self.solution / "ReleaseNotes.md"
+        separator = "|---------|-------------------------------|----------------|\n"
+        notes.write_text(
+            "| **Version** | **Date Modified (DD-MM-YYYY)** | **Change History** |\n"
+            + separator
+            + "| 3.1.1 | 01-10-2026 | Prior release. |\n"
+            + "| 3.1.0 | 01-09-2026 | Older release. |\n",
+            encoding="utf-8",
+        )
+        initialized, _ = self._prepare_offline_authoring_validation()
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump="none",
+            target_version="3.1.2",
+            workflow_profile="authoring",
+            campaign_id="test-campaign",
+        )
+        run_id = initialized["runId"]
+        with using_run(self.solution, run_id):
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="passed",
+                artifacts={
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                },
+            )
+            plan_new_package_release(
+                self.solution,
+                target_version="3.1.2",
+                expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+            )
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ):
+                first = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                    requested_target_version="3.1.2",
+                )
+            self.assertEqual("3.1.2", first["version"])
+            base_hash = package_input_identity(self.solution)["sha256"]
+            refresh = plan_release_notes_refresh(
+                self.solution,
+                release_date="12-10-2026",
+                change_history="Approved target release notes.",
+                expected_package_input_sha256=base_hash,
+            )
+            row = "| 3.1.2 | 12-10-2026 | Approved target release notes. |\n"
+            notes.write_text(notes.read_text(encoding="utf-8").replace(
+                separator, separator + row, 1
+            ), encoding="utf-8")
+            self.assertEqual(
+                refresh["packageInputSha256After"],
+                package_input_identity(self.solution)["sha256"],
+            )
+            with mock.patch.object(
+                workflow_module,
+                "package_solution_v3_1",
+                side_effect=self._mock_v3_1_package,
+            ):
+                refreshed = package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                )
+            self.assertEqual(first["version"], refreshed["version"])
+            self.assertEqual("3.1.2", json.loads(data.read_text())["Version"])
+            state = workflow_status(self.solution)["packaging"]
+            self.assertEqual("consumed", state["releaseActions"][-1]["status"])
+
+    def test_failed_target_version_write_retries_with_none_without_second_change(self) -> None:
+        data = self.solution / "Data" / "Solution_Sample.json"
+        data.parent.mkdir()
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.0.7"}), encoding="utf-8")
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump="none",
+            target_version="3.1.2",
+            workflow_profile="authoring",
+            campaign_id="target-version-retry-campaign",
+        )
+        run_id = initialized["runId"]
+        for stage in ("discovery", "conversion", "validation"):
+            self._complete_passed_stage(stage)
+
+        def fail_after_target_write(solution: Path, **kwargs: str) -> dict:
+            data.write_text(
+                json.dumps({"Name": "Sample", "Version": kwargs["target_version"]}),
+                encoding="utf-8",
+            )
+            raise RuntimeError("synthetic failure after target version write")
+
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=fail_after_target_write,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "after target version write"):
+                package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="none",
+                    requested_target_version="3.1.2",
+                )
+            consumed = workflow_status(self.solution)["packaging"]["lastConsumedAction"]
+            self.assertTrue(consumed["bumpConsumed"])
+            self.assertTrue(consumed["targetConsumed"])
+            self.assertEqual("3.1.2", consumed["effectiveTargetVersion"])
+            self.assertFalse(consumed["packageSucceeded"])
+
+        with using_run(self.solution, run_id), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ) as package:
+            retry = package_workflow_v3_1(self.solution, requested_version_bump="none")
+            self.assertEqual("3.1.2", retry["version"])
+            package.assert_called_once()
+            self.assertIsNone(package.call_args.kwargs["target_version"])
+            self.assertEqual("3.1.2", json.loads(data.read_text())["Version"])
+
     def test_stale_package_artifact_blocks_next_workflow_stage(self) -> None:
         run_id = self._prepare_workflow_for_package("none")
         with using_run(self.solution, run_id), mock.patch.object(
@@ -1216,13 +2824,19 @@ class WorkflowTests(unittest.TestCase):
                 "--toolkit-root", str(self.solution.parent),
                 "--run-id", initialized["runId"],
                 "--version-bump", "patch",
+                "--legacy-baseline-evidence",
+                "Logs/same-version-content-rebuild/baseline.json",
             ])
 
         self.assertEqual(0, result)
         workflow_package.assert_called_once_with(
             str(self.solution),
             requested_version_bump="patch",
+            requested_target_version=None,
             toolkit_root=str(self.solution.parent),
+            legacy_baseline_evidence=(
+                "Logs/same-version-content-rebuild/baseline.json"
+            ),
         )
 
     def test_release_plan_cli_requires_run_and_routes_exact_action_identity(self) -> None:
@@ -1248,7 +2862,114 @@ class WorkflowTests(unittest.TestCase):
         plan.assert_called_once_with(
             str(self.solution),
             version_bump="patch",
+            target_version=None,
             expected_package_input_sha256=expected_hash,
+        )
+
+    def test_target_version_cli_options_route_to_workflow_apis(self) -> None:
+        expected_hash = "b" * 64
+        with mock.patch.object(cli_module, "configure_logging"), mock.patch.object(
+            cli_module,
+            "workflow_status",
+            return_value={"context": {"workflowProfile": "authoring"}},
+        ), mock.patch.object(
+            cli_module,
+            "package_workflow_v3_1",
+            return_value={"packager": "V3.1"},
+        ) as workflow_package:
+            result = cli_module.main([
+                "package-v3-1",
+                "--solution", str(self.solution),
+                "--version-bump", "none",
+                "--target-version", "3.1.2",
+            ])
+        self.assertEqual(0, result)
+        workflow_package.assert_called_once_with(
+            str(self.solution),
+            requested_version_bump="none",
+            requested_target_version="3.1.2",
+            toolkit_root=None,
+            legacy_baseline_evidence=None,
+        )
+
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+        )
+        with mock.patch.object(cli_module, "configure_logging"), mock.patch.object(
+            cli_module,
+            "plan_new_package_release",
+            return_value={"targetVersion": "3.1.2", "packageInputSha256": expected_hash},
+        ) as release_plan:
+            result = cli_module.main([
+                "workflow-plan-package-release",
+                "--solution", str(self.solution),
+                "--run-id", initialized["runId"],
+                "--target-version", "3.1.2",
+                "--expected-package-input-sha256", expected_hash,
+            ])
+        self.assertEqual(0, result)
+        release_plan.assert_called_once_with(
+            str(self.solution),
+            version_bump=None,
+            target_version="3.1.2",
+            expected_package_input_sha256=expected_hash,
+        )
+
+    def test_same_version_rebuild_cli_requires_run_and_exact_input_scope(self) -> None:
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+        )
+        expected_hash = "c" * 64
+        with mock.patch.object(cli_module, "configure_logging"), mock.patch.object(
+            cli_module,
+            "plan_same_version_content_rebuild",
+            return_value={"version": "3.1.2", "packageInputSha256": expected_hash},
+        ) as plan:
+            result = cli_module.main([
+                "workflow-plan-same-version-content-rebuild",
+                "--solution", str(self.solution),
+                "--run-id", initialized["runId"],
+                "--target-version", "3.1.2",
+                "--expected-package-input-sha256", expected_hash,
+                "--changed-input", "XDR Detections\\Rule.yaml",
+                "--changed-input", "Data\\Solution_Sample.json",
+                "--legacy-baseline-evidence",
+                "Logs\\same-version-content-rebuild\\baseline.json",
+            ])
+
+        self.assertEqual(0, result)
+        plan.assert_called_once_with(
+            str(self.solution),
+            target_version="3.1.2",
+            changed_inputs=[
+                "XDR Detections\\Rule.yaml",
+                "Data\\Solution_Sample.json",
+            ],
+            expected_package_input_sha256=expected_hash,
+            legacy_baseline_evidence=(
+                "Logs\\same-version-content-rebuild\\baseline.json"
+            ),
+        )
+
+    def test_same_version_rebuild_verification_cli_requires_explicit_run(self) -> None:
+        initialized = initialize_workflow(self.solution, workflow_profile="authoring")
+        with mock.patch.object(cli_module, "configure_logging"), mock.patch.object(
+            cli_module,
+            "verify_same_version_content_rebuild",
+            return_value={"status": "verified", "stateChanged": False},
+        ) as verify:
+            result = cli_module.main([
+                "workflow-verify-same-version-content-rebuild",
+                "--solution", str(self.solution),
+                "--run-id", initialized["runId"],
+                "--legacy-baseline-evidence", "Logs/baseline.json",
+            ])
+        self.assertEqual(0, result)
+        verify.assert_called_once_with(
+            str(self.solution),
+            legacy_baseline_evidence="Logs/baseline.json",
         )
 
     def test_yolo_review_required_rule_blocks_package_without_clearing_it(self) -> None:
@@ -1640,8 +3361,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(1, record["coverage"]["N"])
         self.assertEqual(1, record["coverage"]["M"])
         self.assertEqual("migrated", record["results"][0]["status"])
-        self.assertEqual("blocked", result["validationStatus"])
-        self.assertEqual("validation", result["next"])
+        self.assertEqual("passed", result["validationStatus"])
+        self.assertEqual("packaging", result["next"])
         self.assertFalse(result["packageAuthorized"])
         self.assertFalse(result["qualificationAuthorized"])
         self.assertFalse(result["prCreationAuthorized"])
@@ -1649,7 +3370,7 @@ class WorkflowTests(unittest.TestCase):
             self.solution
         )["stages"]
         self.assertEqual("passed", stages["conversion"]["status"])
-        self.assertEqual("blocked", stages["validation"]["status"])
+        self.assertEqual("passed", stages["validation"]["status"])
         self.assertEqual("pending", stages["packaging"]["status"])
 
     def test_yolo_stop_is_durable_after_later_results_improve(self) -> None:
@@ -1782,7 +3503,14 @@ class WorkflowTests(unittest.TestCase):
         result = stored["results"][0]
         self.assertEqual("active", refreshed["status"])
         self.assertEqual("passed", workflow_status(self.solution)["stages"]["validation"]["status"])
-        self.assertEqual("source-waived", workflow_status(self.solution)["stages"]["validation"]["artifacts"]["runtimeStatus"])
+        self.assertEqual(
+            "not-run",
+            workflow_status(self.solution)["stages"]["validation"]["artifacts"]["runtimeStatus"],
+        )
+        self.assertEqual(
+            "source-waived",
+            workflow_status(self.solution)["runtimeAssessment"]["runtimeStatus"],
+        )
         self.assertFalse(evidence["passed"])
         self.assertEqual("source-waived", evidence["sourceStatus"])
         self.assertTrue(any(
@@ -1848,20 +3576,11 @@ class WorkflowTests(unittest.TestCase):
         )
 
         with using_run(self.solution, record["runId"]):
-            start_workflow_stage(self.solution, "validation")
             with self.assertRaisesRegex(ValueError, "generated target hash is stale"):
-                complete_workflow_stage(
+                workflow_module._validate_current_yolo_targets(
                     self.solution,
-                    "validation",
-                    status="passed",
-                    artifacts={"runtimeStatus": "source-waived"},
+                    record,
                 )
-            complete_workflow_stage(
-                self.solution,
-                "validation",
-                status="blocked",
-                message="The generated target changed and must be refreshed.",
-            )
 
     def test_yolo_sdk_source_family_rejects_stale_query_hash(self) -> None:
         _, record = self._run_yolo(count=1)
@@ -1986,7 +3705,7 @@ class WorkflowTests(unittest.TestCase):
                 "--solution", str(self.solution),
                 "--run-id", initialized["runId"],
             ])
-        self.assertEqual(1, run_code)
+        self.assertEqual(0, run_code)
         outcome = json.loads(stdout.getvalue())
         self.assertEqual("active", outcome["status"])
         self.assertEqual(1, outcome["coverage"]["M"])

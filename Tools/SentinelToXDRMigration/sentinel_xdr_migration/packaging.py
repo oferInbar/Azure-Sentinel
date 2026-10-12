@@ -38,6 +38,9 @@ PACKAGE_OUTPUT_DIRECTORIES = {
     ".venv",
     "__pycache__",
 }
+V31_TARGET_VERSION_PATTERN = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z"
+)
 V31_TOOLKIT_PATHS = (
     "Tools/Create-Azure-Sentinel-Solution/V3/createSolutionV3_1.ps1",
     "Tools/Create-Azure-Sentinel-Solution/common/createSolutionLocal.ps1",
@@ -63,10 +66,25 @@ V31_TOOLKIT_PATHS = (
 )
 
 
-def package_input_identity(solution: str | Path) -> dict[str, Any]:
-    """Hash the complete local solution input tree, excluding generated/runtime output."""
+def validate_v31_target_version(version: str | None) -> str:
+    """Validate an explicitly selected canonical V3.1 solution release version."""
+    if not isinstance(version, str) or not V31_TARGET_VERSION_PATTERN.fullmatch(version):
+        raise ValueError(
+            "target version must be canonical major.minor.patch in the V3.1 "
+            "range >= 3.1.0 and < 4.0.0"
+        )
+    major, minor, _patch = version.split(".")
+    if major != "3" or minor == "0":
+        raise ValueError(
+            "target version must be in the V3.1 range >= 3.1.0 and < 4.0.0"
+        )
+    return version
+
+
+def package_input_file_hashes(solution: str | Path) -> dict[str, str]:
+    """Return the complete package-input file manifest, excluding generated output."""
     root = Path(solution).expanduser().resolve()
-    files: list[dict[str, str]] = []
+    files: dict[str, str] = {}
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
         parts = relative.parts
@@ -78,11 +96,18 @@ def package_input_identity(solution: str | Path) -> dict[str, Any]:
             raise ValueError(f"package input contains an unsafe symlink: {relative.as_posix()}")
         if not path.is_file():
             continue
-        files.append({
-            "path": relative.as_posix(),
-            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        })
-    canonical = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        files[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return files
+
+
+def package_input_identity(solution: str | Path) -> dict[str, Any]:
+    """Hash the complete local solution input tree, excluding generated/runtime output."""
+    files = package_input_file_hashes(solution)
+    canonical = json.dumps(
+        [{"path": path, "sha256": digest} for path, digest in files.items()],
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return {
         "sha256": hashlib.sha256(canonical).hexdigest(),
         "fileCount": len(files),
@@ -613,6 +638,7 @@ def package_solution_v3_1(
     solution: str | Path,
     *,
     version_bump: str,
+    target_version: str | None = None,
     toolkit_root: str | Path | None = None,
     requested_version_bump: str | None = None,
     package_attempt_id: str | None = None,
@@ -621,6 +647,10 @@ def package_solution_v3_1(
 ) -> dict[str, Any]:
     if version_bump not in {"none", "patch", "minor", "major"}:
         raise ValueError("version bump must be none, patch, minor, or major")
+    if target_version is not None:
+        validate_v31_target_version(target_version)
+        if version_bump != "none":
+            raise ValueError("target version cannot be combined with a version bump")
 
     root = Path(solution).expanduser().resolve()
     if not root.is_dir():
@@ -700,6 +730,8 @@ def package_solution_v3_1(
         "-VersionBump",
         version_bump,
     ]
+    if target_version is not None:
+        command.extend(["-TargetVersion", target_version])
     if toolkit_root is not None:
         command.extend(["-ToolkitRootPath", str(selected_toolkit_root)])
     input_before = package_input_identity(root)
@@ -793,6 +825,11 @@ def package_solution_v3_1(
     version = str(_value(after, "Version") or "").strip()
     if not version:
         raise ValueError(f"solution data does not declare a package version: {data_file}")
+    if target_version is not None and version != target_version:
+        raise RuntimeError(
+            "V3.1 packager did not persist the explicitly selected target version: "
+            f"{version!r} != {target_version!r}"
+        )
 
     package = root / "Package"
     main_template = package / "mainTemplate.json"
@@ -852,6 +889,22 @@ def package_solution_v3_1(
     }
     artifact_hashes = _package_artifact_hashes(artifact_paths)
     input_after = package_input_identity(root)
+    input_after_files = package_input_file_hashes(root)
+    input_after_manifest_identity = hashlib.sha256(
+        json.dumps(
+            [
+                {"path": name, "sha256": digest}
+                for name, digest in input_after_files.items()
+            ],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if (
+        input_after_manifest_identity != input_after["sha256"]
+        or len(input_after_files) != input_after["fileCount"]
+    ):
+        raise RuntimeError("package inputs changed while the V3.1 receipt manifest was captured")
     reports = report_directory(root, create=True)
     report_path = reports / "packaging.v3_1.json"
     if report_path.exists():
@@ -879,12 +932,17 @@ def package_solution_v3_1(
         "versionBump": version_bump,
         "requestedVersionBump": requested_version_bump or version_bump,
         "effectiveVersionBump": version_bump,
+        "requestedTargetVersion": target_version,
+        "effectiveTargetVersion": target_version,
         "packageAttemptId": package_attempt_id,
         "workflowRunId": workflow_run_id,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "packageInputs": {
             "before": input_before,
-            "after": input_after,
+            "after": {
+                **input_after,
+                "files": input_after_files,
+            },
         },
         "packageArtifactHashes": artifact_hashes,
         "packageArtifactsSha256": _canonical_digest(artifact_hashes),

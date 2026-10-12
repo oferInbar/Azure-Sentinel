@@ -88,6 +88,13 @@
             null
           ]
         },
+        "targetVersion": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+        },
         "workflowProfile": {
           "enum": [
             "authoring",
@@ -290,6 +297,17 @@
                 "bumpConsumed": {
                   "type": "boolean"
                 },
+                "requestedTargetVersion": {
+                  "type": ["string", "null"],
+                  "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                },
+                "effectiveTargetVersion": {
+                  "type": ["string", "null"],
+                  "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                },
+                "targetConsumed": {
+                  "type": "boolean"
+                },
                 "packageInputSha256": {
                   "$ref": "#/$defs/sha256"
                 },
@@ -315,26 +333,149 @@
         "releaseActions": {
           "type": "array",
           "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "versionBump",
-              "packageInputSha256",
-              "selectedAt",
-              "status"
-            ],
-            "properties": {
-              "versionBump": {"enum": ["patch", "minor", "major"]},
-              "packageInputSha256": {"$ref": "#/$defs/sha256"},
-              "selectedAt": {"type": "string", "format": "date-time"},
-              "status": {"enum": ["selected", "consumed"]},
-              "historicalEvidence": {
+            "anyOf": [
+              {
                 "type": "object",
-                "additionalProperties": {
-                  "type": "string"
+                "additionalProperties": false,
+                "required": [
+                  "versionBump",
+                  "packageInputSha256",
+                  "selectedAt",
+                  "status"
+                ],
+                "properties": {
+                  "versionBump": {"enum": ["patch", "minor", "major"]},
+                  "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                  "selectedAt": {"type": "string", "format": "date-time"},
+                  "status": {"enum": ["selected", "consumed"]},
+                  "historicalEvidence": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "actionType",
+                  "versionBump",
+                  "basePackageInputSha256",
+                  "packageInputSha256",
+                  "releaseNotesPath",
+                  "releaseNotesOriginalSha256",
+                  "releaseNotesExpectedSha256",
+                  "releaseNotesDate",
+                  "releaseNotesVersion",
+                  "releaseNotesChangeHistory",
+                  "packageInputFilesBefore",
+                  "selectedAt",
+                  "status",
+                  "historicalEvidence"
+                ],
+                "properties": {
+                  "actionType": {"const": "release-notes-refresh"},
+                  "versionBump": {"const": "none"},
+                  "basePackageInputSha256": {"$ref": "#/$defs/sha256"},
+                  "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                  "releaseNotesPath": {"type": "string", "minLength": 1},
+                  "releaseNotesOriginalSha256": {"$ref": "#/$defs/sha256"},
+                  "releaseNotesExpectedSha256": {"$ref": "#/$defs/sha256"},
+                  "releaseNotesDate": {"type": "string", "pattern": "^\\d{2}-\\d{2}-\\d{4}$"},
+                  "releaseNotesVersion": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$"},
+                  "releaseNotesChangeHistory": {"type": "string", "minLength": 1},
+                  "packageInputFilesBefore": {"$ref": "#/$defs/packageInputFiles"},
+                  "selectedAt": {"type": "string", "format": "date-time"},
+                  "status": {"enum": ["selected", "consumed"]},
+                  "historicalEvidence": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "actionType",
+                  "versionBump",
+                  "runId",
+                  "targetVersion",
+                  "basePackageInputSha256",
+                  "packageInputSha256",
+                  "packageInputFilesBefore",
+                  "approvedChangedInputs",
+                  "priorPackageAttemptId",
+                  "priorPackageReportSha256",
+                  "inputBackupRoot",
+                  "backupId",
+                  "selectedAt",
+                  "historicalEvidence",
+                  "status"
+                ],
+                "properties": {
+                  "actionType": {"const": "same-version-content-rebuild"},
+                  "versionBump": {"const": "none"},
+                  "runId": {"type": "string", "minLength": 1},
+                  "targetVersion": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                  },
+                  "basePackageInputSha256": {"$ref": "#/$defs/sha256"},
+                  "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                  "packageInputFilesBefore": {"$ref": "#/$defs/packageInputFiles"},
+                  "approvedChangedInputs": {"$ref": "#/$defs/packageInputChanges"},
+                  "priorPackageAttemptId": {"type": "string", "format": "uuid"},
+                  "priorPackageReportSha256": {"$ref": "#/$defs/sha256"},
+                  "inputBackupRoot": {"type": "string", "minLength": 1},
+                  "backupId": {"type": "string", "format": "uuid"},
+                  "selectedAt": {"type": "string", "format": "date-time"},
+                  "historicalEvidence": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "legacyBaselineEvidence": {
+                    "$ref": "#/$defs/legacyBaselineEvidence"
+                  },
+                  "status": {"enum": ["selected", "consumed"]}
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "actionType",
+                  "versionBump",
+                  "targetVersion",
+                  "packageInputSha256",
+                  "selectedAt",
+                  "status"
+                ],
+                "properties": {
+                  "actionType": {"const": "target-version"},
+                  "versionBump": {"const": "none"},
+                  "targetVersion": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                  },
+                  "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                  "selectedAt": {"type": "string", "format": "date-time"},
+                  "status": {"enum": ["selected", "consumed"]},
+                  "historicalEvidence": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
-            }
+            ]
           }
         },
         "pendingReleaseAction": {
@@ -342,13 +483,118 @@
             {"type": "null"},
             {
               "type": "object",
-              "additionalProperties": false,
-              "required": ["versionBump", "packageInputSha256", "selectedAt"],
-              "properties": {
-                "versionBump": {"enum": ["patch", "minor", "major"]},
-                "packageInputSha256": {"$ref": "#/$defs/sha256"},
-                "selectedAt": {"type": "string", "format": "date-time"}
-              }
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["versionBump", "packageInputSha256", "selectedAt"],
+                  "properties": {
+                    "versionBump": {"enum": ["patch", "minor", "major"]},
+                    "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                    "selectedAt": {"type": "string", "format": "date-time"}
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "actionType",
+                    "versionBump",
+                    "targetVersion",
+                    "packageInputSha256",
+                    "selectedAt"
+                  ],
+                  "properties": {
+                    "actionType": {"const": "target-version"},
+                    "versionBump": {"const": "none"},
+                    "targetVersion": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                    },
+                    "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                    "selectedAt": {"type": "string", "format": "date-time"}
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "actionType",
+                    "versionBump",
+                    "basePackageInputSha256",
+                    "packageInputSha256",
+                    "releaseNotesPath",
+                    "releaseNotesOriginalSha256",
+                    "releaseNotesExpectedSha256",
+                    "releaseNotesDate",
+                    "releaseNotesVersion",
+                    "releaseNotesChangeHistory",
+                    "packageInputFilesBefore",
+                    "selectedAt"
+                  ],
+                  "properties": {
+                    "actionType": {"const": "release-notes-refresh"},
+                    "versionBump": {"const": "none"},
+                    "basePackageInputSha256": {"$ref": "#/$defs/sha256"},
+                    "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                    "releaseNotesPath": {"type": "string", "minLength": 1},
+                    "releaseNotesOriginalSha256": {"$ref": "#/$defs/sha256"},
+                    "releaseNotesExpectedSha256": {"$ref": "#/$defs/sha256"},
+                    "releaseNotesDate": {"type": "string", "pattern": "^\\d{2}-\\d{2}-\\d{4}$"},
+                    "releaseNotesVersion": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$"},
+                    "releaseNotesChangeHistory": {"type": "string", "minLength": 1},
+                    "packageInputFilesBefore": {"$ref": "#/$defs/packageInputFiles"},
+                    "selectedAt": {"type": "string", "format": "date-time"}
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "actionType",
+                    "versionBump",
+                    "runId",
+                    "targetVersion",
+                    "basePackageInputSha256",
+                    "packageInputSha256",
+                    "packageInputFilesBefore",
+                    "approvedChangedInputs",
+                    "priorPackageAttemptId",
+                    "priorPackageReportSha256",
+                    "inputBackupRoot",
+                    "backupId",
+                    "selectedAt",
+                    "historicalEvidence"
+                  ],
+                  "properties": {
+                    "actionType": {"const": "same-version-content-rebuild"},
+                    "versionBump": {"const": "none"},
+                    "runId": {"type": "string", "minLength": 1},
+                    "targetVersion": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                    },
+                    "basePackageInputSha256": {"$ref": "#/$defs/sha256"},
+                    "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                    "packageInputFilesBefore": {"$ref": "#/$defs/packageInputFiles"},
+                    "approvedChangedInputs": {"$ref": "#/$defs/packageInputChanges"},
+                    "priorPackageAttemptId": {"type": "string", "format": "uuid"},
+                    "priorPackageReportSha256": {"$ref": "#/$defs/sha256"},
+                    "inputBackupRoot": {"type": "string", "minLength": 1},
+                    "backupId": {"type": "string", "format": "uuid"},
+                    "selectedAt": {"type": "string", "format": "date-time"},
+                    "historicalEvidence": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "legacyBaselineEvidence": {
+                      "$ref": "#/$defs/legacyBaselineEvidence"
+                    }
+                  }
+                }
+              ]
             }
           ]
         }
@@ -359,6 +605,30 @@
     "sha256": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
+    },
+    "packageInputFiles": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/sha256"
+      }
+    },
+    "packageInputChanges": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          {"$ref": "#/$defs/sha256"},
+          {"type": "null"}
+        ]
+      }
+    },
+    "legacyBaselineEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
     },
     "packageAction": {
       "type": "object",
@@ -406,6 +676,17 @@
         "version": {
           "type": "string",
           "minLength": 1
+        },
+        "requestedTargetVersion": {
+          "type": ["string", "null"],
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+        },
+        "effectiveTargetVersion": {
+          "type": ["string", "null"],
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+        },
+        "targetConsumed": {
+          "type": "boolean"
         }
       }
     },

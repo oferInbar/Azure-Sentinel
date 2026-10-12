@@ -660,6 +660,45 @@ class ReportDashboardTests(unittest.TestCase):
         self.assertIn("Current full-suite result not recorded", html)
         self.assertIn("Full-package deployment and read-back are separate", html)
 
+    def test_offline_validation_label_requires_passed_stage(self) -> None:
+        value = report(rule())
+        value["runtimeAssessment"] = {
+            "runtimeStatus": "failed",
+            "fullyRuntimeQualified": False,
+        }
+        value["rules"][0]["analyticRule"]["runtime"] = [{
+            "status": "failed",
+            "provider": "triage-mcp",
+        }]
+        validation = value["workflow"]["stages"]["validation"]
+        validation.update({
+            "status": "blocked",
+            "attempts": 1,
+            "artifacts": {
+                "runtimeStatus": "not-run",
+                "validationMode": "offline-authoring",
+            },
+            "message": "A current runtime validation failed; offline completion was invalidated.",
+        })
+        html = render_dashboard(value)
+        self.assertIn("Validation: Blocked", html)
+        self.assertIn("A current runtime validation failed; offline completion was invalidated.", html)
+        self.assertNotIn("Passed — offline Authoring; runtime not run", html)
+
+        for status, expected in (
+            ("failed", "Validation: Failed"),
+            ("running", "Validation: Running"),
+            ("pending", "Validation: Pending"),
+        ):
+            validation["status"] = status
+            html = render_dashboard(value)
+            self.assertIn(expected, html)
+            self.assertNotIn("Passed — offline Authoring; runtime not run", html)
+
+        validation["status"] = "passed"
+        html = render_dashboard(value)
+        self.assertIn("Passed — offline Authoring; runtime not run", html)
+
     def test_unknown_mode_is_not_inferred_and_attempted_qualification_failures_stay_visible(self) -> None:
         value = report(rule())
         value["workflow"].pop("profileSelectionConfirmed")

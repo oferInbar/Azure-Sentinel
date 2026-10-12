@@ -426,6 +426,15 @@ def _write_runtime_artifacts(
     summary["htmlReport"] = str(html_path)
     write_json_artifact(root, json_path, summary)
     write_runtime_validation_report(portable_artifact(root, summary), html_path)
+    from .workflow import invalidate_runtime_completion
+
+    invalidate_runtime_completion(
+        root,
+        [],
+        reason=(
+            f"new {provider} provider evidence was recorded after offline Authoring completion."
+        ),
+    )
     return summary
 
 

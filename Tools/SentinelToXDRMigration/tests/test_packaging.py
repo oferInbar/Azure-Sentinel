@@ -18,8 +18,10 @@ from sentinel_xdr_migration.packaging import (
     V31_TOOLKIT_PATHS,
     _verify_package_selection,
     _xdr_references,
+    package_input_file_hashes,
     package_input_identity,
     package_solution_v3_1,
+    validate_v31_target_version,
 )
 from sentinel_xdr_migration.workflow import (
     complete_workflow_stage,
@@ -116,6 +118,48 @@ class PackagingTests(unittest.TestCase):
                     workflow_run_id="selected-run",
                 )
         run.assert_not_called()
+
+    def test_v31_target_version_boundaries_and_conflicting_bump(self) -> None:
+        for version in ("3.1.0", "3.1.2", "3.999.999"):
+            with self.subTest(version=version):
+                self.assertEqual(version, validate_v31_target_version(version))
+        for version in (
+            "3.0.999",
+            "4.0.0",
+            "3.1",
+            "3.1.0.1",
+            "3.1.0-preview",
+            "03.1.0",
+            "3.01.0",
+            "3.1.00",
+            "",
+        ):
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(ValueError, "target version"):
+                    validate_v31_target_version(version)
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            package_solution_v3_1(
+                self.solution,
+                version_bump="patch",
+                target_version="3.1.2",
+            )
+
+    def test_v31_target_version_is_forwarded_to_official_packager(self) -> None:
+        with mock.patch(
+            "sentinel_xdr_migration.packaging.subprocess.run",
+            return_value=CompletedProcess(
+                args=[], returncode=1, stdout="synthetic stop", stderr="",
+            ),
+        ) as run:
+            with self.assertRaisesRegex(RuntimeError, "failed with exit code"):
+                package_solution_v3_1(
+                    self.solution,
+                    version_bump="none",
+                    target_version="3.1.2",
+                )
+        command = run.call_args.args[0]
+        self.assertIn("-TargetVersion", command)
+        self.assertEqual("3.1.2", command[command.index("-TargetVersion") + 1])
 
     def test_template_and_zip_match_partial_selection_exclusions(self) -> None:
         data_path = self.solution / "Data" / "Solution_Sample.json"
@@ -529,10 +573,21 @@ class PackagingTests(unittest.TestCase):
         report = json.loads(Path(result["packageReport"]).read_text(encoding="utf-8"))
         self.assertEqual("none", report["requestedVersionBump"])
         self.assertEqual("none", report["effectiveVersionBump"])
-        self.assertEqual(report["packageInputs"]["before"], report["packageInputs"]["after"])
+        self.assertEqual(
+            report["packageInputs"]["before"]["sha256"],
+            report["packageInputs"]["after"]["sha256"],
+        )
+        self.assertEqual(
+            report["packageInputs"]["before"]["fileCount"],
+            report["packageInputs"]["after"]["fileCount"],
+        )
         self.assertEqual(
             package_input_identity(self.solution)["sha256"],
             report["packageInputs"]["after"]["sha256"],
+        )
+        self.assertEqual(
+            package_input_file_hashes(self.solution),
+            report["packageInputs"]["after"]["files"],
         )
         self.assertEqual(
             {"mainTemplate", "createUiDefinition", "testParameters", "zip"},

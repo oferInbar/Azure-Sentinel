@@ -5,6 +5,7 @@ param(
     [string]$VersionMode = "catalog",
     [ValidateSet("none", "patch", "minor", "major")]
     [string]$VersionBump = "patch",
+    [string]$TargetVersion = $null,
     [string]$EntryPointName = "Local",
     [string]$DefaultInputPath = $null,
     [string]$ToolkitRootPath = $null,
@@ -150,6 +151,15 @@ $getccpDetailsFilePath = Join-Path $toolkitRoot "Tools/Create-Azure-Sentinel-Sol
 if ($EnforceV31Versions) {
     $v31VersionPolicy = @{ Errors = [System.Collections.Generic.List[string]]::new() }
 }
+if (-not [string]::IsNullOrWhiteSpace($TargetVersion)) {
+    if (-not $EnforceV31Versions -or $VersionMode -ne "local") {
+        throw "TargetVersion is supported only by local V3.1 packaging."
+    }
+    if ($VersionBump -ne "none") {
+        throw "TargetVersion cannot be combined with a version bump."
+    }
+    Assert-V31TargetVersion -Version $TargetVersion
+}
 
 # Load catalog API functions only if using catalog mode
 if ($VersionMode -eq "catalog") {
@@ -225,7 +235,7 @@ function GetIncrementedVersion($version, $bumpType = "patch") {
 }
 
 # Function to get package version from local solution data file instead of Microsoft catalog
-function GetLocalPackageVersion($defaultPackageVersion, $userInputPackageVersion, $packageVersionAttribute, $versionBumpType, $dataFilePath) {
+function GetLocalPackageVersion($defaultPackageVersion, $userInputPackageVersion, $packageVersionAttribute, $versionBumpType, $dataFilePath, $targetVersion) {
     Write-Host "Using local version from solution data file instead of Microsoft catalog (Bump type: $versionBumpType)"
     
     if ($packageVersionAttribute -and $null -ne $userInputPackageVersion -and $userInputPackageVersion -ne '') {
@@ -253,13 +263,19 @@ function GetLocalPackageVersion($defaultPackageVersion, $userInputPackageVersion
             return $defaultPackageVersion
         }
 
-        # Increment only when a release bump was requested.
-        $incrementedVersion = GetIncrementedVersion $userInputPackageVersion $versionBumpType
-        if ($versionBumpType -eq "none") {
-            Write-Host "Package version remains $incrementedVersion for local validation"
+        if (-not [string]::IsNullOrWhiteSpace($targetVersion)) {
+            $incrementedVersion = $targetVersion
+            Write-Host "Using explicitly selected V3.1 target version $incrementedVersion"
         }
         else {
-            Write-Host "Package version incremented to $incrementedVersion (from local solution data: $userInputPackageVersion)"
+            # Increment only when a release bump was requested.
+            $incrementedVersion = GetIncrementedVersion $userInputPackageVersion $versionBumpType
+            if ($versionBumpType -eq "none") {
+                Write-Host "Package version remains $incrementedVersion for local validation"
+            }
+            else {
+                Write-Host "Package version incremented to $incrementedVersion (from local solution data: $userInputPackageVersion)"
+            }
         }
         
         # Persist the release version only when an increment was requested.
@@ -349,7 +365,7 @@ try {
         
         if ($VersionMode -eq "local") {
             # Use local version bumping
-            $packageVersion = GetLocalPackageVersion $defaultPackageVersion $userInputPackageVersion $packageVersionAttribute $VersionBump $inputFile.FullName
+            $packageVersion = GetLocalPackageVersion $defaultPackageVersion $userInputPackageVersion $packageVersionAttribute $VersionBump $inputFile.FullName $TargetVersion
         }
         else {
             # Use catalog API for version management
@@ -573,7 +589,7 @@ try {
         updateDescriptionCount ($global:playbookCounter - $global:customConnectorsList.Count - $global:functionAppList.Count)  "**Playbooks:** "   "{{PlaybookCount}}"       $false
 
         GeneratePackage -solutionName $solutionName -contentToImport $contentToImport -calculatedBuildPipelinePackageVersion $contentToImport.Version -IncludeXdrDetections $IncludeXdrDetections -SolutionMetadataPath (Join-Path $solutionFolderBasePath 'SolutionMetadata.json') -SkipAttributionLookup:$SkipAttributionLookup;
-        if ($EnforceV31Versions -and $VersionMode -eq 'local' -and $VersionBump -ne 'none') {
+        if ($EnforceV31Versions -and $VersionMode -eq 'local' -and ($VersionBump -ne 'none' -or -not [string]::IsNullOrWhiteSpace($TargetVersion))) {
             Save-V31LocalPackageVersion -DataFilePath $inputFile.FullName -Version $contentToImport.Version
         }
         RunArmTtkOnPackage -solutionName $solutionName -isPipelineRun $false;

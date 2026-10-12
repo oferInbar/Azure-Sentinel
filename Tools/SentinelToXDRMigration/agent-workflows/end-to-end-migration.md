@@ -142,10 +142,10 @@ For a YOLO run, `package-v3-1` uses the existing workflow state: validation
 must pass and every rule in the complete inventory must clear technical and
 explicit-review gates. It records fresh V3.1 report and artifact hashes; the
 advisory coverage threshold never bypasses these gates. The initialization-
-selected version action is consumed once. A retry may use `--version-bump none`
+selected bump or target-version action is consumed once. A retry may use `--version-bump none`
 only after that action was consumed and the current package-input hash matches
 the post-build identity recorded by the run. Changed inputs make the previous
-package stale and require an explicit new bump choice. Every retry runs V3.1
+package stale and require an explicit new release choice. Every retry runs V3.1
 again; an old report, package artifact, or V4 report is never relabeled as
 current V3.1 evidence.
 
@@ -178,6 +178,87 @@ post-build input identity still matches. The old V3.1 report and all package
 artifacts are retained as historical evidence before rebuilding. This lifecycle
 does not waive technical or entity-review gates: unresolved `reviewRequired`
 flags continue to block packaging.
+
+An author may select a canonical target version instead of a patch/minor/major
+bump. The target must satisfy `>=3.1.0` and `<4.0.0` and need not be consecutive
+with the current version. For example, an initial release may go directly from
+`3.0.7` to `3.1.2`:
+
+```powershell
+sentinel-xdr-migration workflow-init `
+  --solution "Solutions\<solution>" `
+  --workflow-profile authoring `
+  --version-bump none `
+  --target-version 3.1.2
+
+sentinel-xdr-migration package-v3-1 `
+  --solution "Solutions\<solution>" `
+  --version-bump none `
+  --target-version 3.1.2
+```
+
+For changed package inputs, plan the exact target against the current input
+hash with `workflow-plan-package-release --target-version <version>` and pass
+that same target to `package-v3-1`. The V3.1 backend persists the approved
+target in solution data and metadata. If the target was written before a build
+failure, a retry must omit `--target-version` and use `--version-bump none`;
+it is permitted only for the matching post-write input identity. A target
+cannot be combined with a non-`none` bump. The persisted target/action and
+release plan retain the same review, freshness, campaign, and one-time
+consumption protections as bump actions.
+
+For offline Authoring only, if the successful package is already at the
+approved version but its release-note row is missing, use
+`workflow-plan-release-notes-refresh` rather than selecting another version
+bump. Supply the exact approved date, change-history cell, and current package
+input hash. The planner requires current offline validation and a successful,
+fresh V3.1 receipt, records the complete input-file hash manifest, and archives
+the prior package evidence. Add the exact resulting row immediately below the
+ReleaseNotes table separator, then run `package-v3-1 --version-bump none`.
+The required three header labels and their order are matched after trimming
+Markdown cell padding; the original aligned header and existing history bytes
+are preserved.
+Before and after V3.1, the gate permits only that one exact ReleaseNotes change;
+any other changed or missing input, stale receipt, mismatched row, or changed
+inventory blocks the build. The build creates new package evidence without
+changing or consuming another version bump. This route does not apply to
+Qualification and cannot replace its runtime, target, consent, or deployment
+gates. If the old receipt is stale or does not match the current full input
+tree, use the ordinary explicit new-release path instead.
+
+For an explicitly approved non-ReleaseNotes content correction that must retain
+the already packaged solution version, Authoring may use
+`workflow-plan-same-version-content-rebuild` instead of selecting another
+release. It requires the exact current package-input hash, the actual solution
+version matching the successful V3.1 receipt from the selected run, and fresh
+passed full-inventory offline conversion, structural, and review evidence.
+List the exact changed non-ReleaseNotes package inputs with repeated
+`--changed-input` arguments. The planner archives the prior V3.1 receipt and
+artifacts plus a hash-verified snapshot of the current inputs; the build then
+uses only `package-v3-1 --version-bump none` with no target version. The route
+is Authoring-only, preserves the same solution version, and does not relax
+Qualification runtime, target, consent, or deployment gates. A failed build may
+be retried only against the still-pending plan and identical input manifest;
+the actual V3.1 build and fresh receipt remain mandatory.
+
+Successful V3.1 receipts include the complete post-build package-input
+file/hash manifest. The rebuild planner compares it to the current manifest and
+requires the explicitly approved path set to equal the complete additions,
+removals, and modifications. Unchanged declarations and every ReleaseNotes
+delta are rejected. Dispatch, receipt acceptance, and retries recompute the
+same scope and hashes. A legacy receipt without a per-file manifest is rejected
+unless `--legacy-baseline-evidence` supplies a comparison whose reconstructed
+full prior manifest hashes exactly to that successful receipt; its current
+identity and changed-path before/current hashes must also match the plan backup.
+The evidence path and digest are saved by new legacy-recovery plans. A
+pre-existing legacy plan may provide the same evidence flag to each package
+attempt without rewriting its workflow state; if no exact baseline can be
+reconstructed, stop rather than infer scope from the approved path list.
+`workflow-verify-same-version-content-rebuild --solution <solution> --run-id
+<run-id>` performs a read-only scope and receipt check for a pending or completed
+rebuild; legacy plans without a saved evidence binding must also supply
+`--legacy-baseline-evidence`. This check does not alter workflow state or claim
+full workflow completion.
 
 #### Evidence-based package selection
 
@@ -843,13 +924,34 @@ queries. Present this disclosure while retaining actual static/schema checks:
 
 > KQL has not been validated because this migration runs without runtime validation. Enable full validation, or review/accept the specific migration checks below.
 
-This disclosure does not create a general no-runtime completion mode. A
-specific review acceptance is not runtime verification. Report unexecuted
-checks as not run; keep failed, blocked, and unresolved-review results visible.
-Do not complete an unmet stage, silently bypass it, or treat declined runtime
-checks as an environment-only error. The Authoring exception below remains
-unchanged; if its evidence cannot be obtained, report the unmet gate and pending
-implementation rather than success.
+This disclosure is not runtime verification. Report unexecuted checks as not
+run; keep failed, blocked, and unresolved-review results visible. A specific
+review acceptance is not runtime verification. Offline Authoring may complete
+Validation only through its explicit `validationMode=offline-authoring` route:
+the current complete recursive source inventory must have fresh full-solution
+conversion and structural evidence, all technical findings and hash-bound
+review decisions must be resolved, and no persisted runtime report may be
+overridden or discarded. This outcome records `runtimeStatus=not-run`, clearly
+states that Sentinel and Advanced Hunting runtime validation did not run, and
+is not runtime/XDR qualification. It does not dispatch queries or weaken any
+Qualification gate. If any prerequisite is missing or stale, or actual runtime
+failure evidence exists, keep Validation blocked and preserve that evidence.
+If a current provider report is recorded after offline Validation passed, the
+workflow reopens Validation and downstream gates so the new evidence is
+evaluated rather than silently ignored. Do not turn an unmet runtime check
+into an environment-only error.
+
+For a legacy Authoring run whose passed Conversion stage lacks
+`manifestSha256`, use the explicit
+`workflow-recover-conversion-evidence --solution <solution> --run-id <run-id>`
+operation. It binds only the selected run's existing `manifest.json` after
+revalidating current complete inventory, clean conversion outcomes, target
+provenance, review resolution, and full-solution structure. It never repairs an
+existing mismatched digest or accepts a scoped/stale manifest. Do not edit
+workflow state manually or reconvert to bypass a failed recovery. Once
+recovered, resume the already-running Validation stage, or start it if still
+pending, then complete it with `runtimeStatus=not-run` and
+`validationMode=offline-authoring`.
 
 Run structural validation. When runtime validation is authorized, validate
 original Sentinel and converted Advanced Hunting queries. Prefer capabilities
@@ -997,6 +1099,15 @@ V3.1 copies only the first authored tactic and its compatible nested techniques
 into the ARM payload, without changing the complete YAML/provenance. Disclose
 this intentional classification loss; packaging is not classification/alert
 parity validation and must not mark parity passed.
+
+Offline Authoring may use this package gate only after its explicit
+`validationMode=offline-authoring` Validation stage has passed for the current
+full inventory. If initialization selected `version-bump=none` but a first
+versioned release is required, inspect the current package-input SHA-256 and
+explicitly plan one `patch`, `minor`, or `major` action against that exact hash
+before invoking V3.1. Do not reuse stale selection, skip review gates, or
+consume a second version action. Qualification still requires its exact
+runtime-bound selection and all Qualification gates before packaging.
 
 ### Advance deployment-scope planning and consent
 

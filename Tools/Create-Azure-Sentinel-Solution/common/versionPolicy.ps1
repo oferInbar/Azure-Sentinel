@@ -49,6 +49,18 @@ function Assert-V31SolutionVersion {
     }
 }
 
+function Assert-V31TargetVersion {
+    param([AllowNull()][AllowEmptyString()][string]$Version)
+
+    if ($Version -cnotmatch '\A(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\z') {
+        throw "V3.1 target version '$Version' must be canonical major.minor.patch in the range >= 3.1.0 and < 4.0.0."
+    }
+    $parts = $Version.Split(".")
+    if ($parts[0] -cne "3" -or [System.Numerics.BigInteger]::Parse($parts[1]) -lt [System.Numerics.BigInteger]::One) {
+        throw "V3.1 target version '$Version' must be in the range >= 3.1.0 and < 4.0.0."
+    }
+}
+
 function Assert-V31VersionChecksPassed {
     if ($v31VersionPolicy -and $v31VersionPolicy.Errors.Count -gt 0) {
         # Some legacy content readers catch exceptions. Never emit a partial package after a failed guard.

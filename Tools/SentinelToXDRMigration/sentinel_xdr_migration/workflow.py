@@ -17,7 +17,7 @@ from jsonschema import Draft202012Validator
 import yaml
 
 from .artifacts import (
-    artifact_path, existing_artifact_path, resolve_artifact_reference,
+    artifact_path, existing_artifact_path, report_directory, resolve_artifact_reference,
     create_run, requested_run_id, solution_for_artifact, using_run, RUN_MARKER,
     conversion_scope, require_solution_conversion_scope, portable_artifact,
 )
@@ -52,9 +52,11 @@ from .converter import (
 )
 from .target_context import build_target, write_target
 from .packaging import (
+    package_input_file_hashes,
     package_input_identity,
     package_solution_v3_1,
     solution_data_version,
+    validate_v31_target_version,
     version_bump_was_consumed,
 )
 from .packaging_selection import (
@@ -164,6 +166,17 @@ def _atomic_json(path: Path, value: Any) -> bytes:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _version_action_was_consumed(
+    before: str | None,
+    after: str | None,
+    version_bump: str,
+    target_version: str | None,
+) -> bool:
+    if target_version is not None:
+        return bool(before and after == target_version and before != after)
+    return version_bump_was_consumed(before, after, version_bump)
 
 
 def _paths(solution: str | Path) -> tuple[Path, Path]:
@@ -1285,15 +1298,83 @@ def _read_full_conversion_manifest(
         document = json.loads(content)
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"full-solution conversion manifest is invalid: {exc}") from exc
+    if not isinstance(document, dict):
+        raise ValueError("full-solution conversion manifest must be a JSON object")
     scope = document.get("scope") or {}
+    results = document.get("results")
     if (
-        scope.get("kind") != "solution"
+        not isinstance(scope, dict)
+        or scope.get("kind") != "solution"
         or scope.get("sourceTotal") != len(inventory)
         or scope.get("selectedTotal") != len(inventory)
-        or len(document.get("results") or []) != len(inventory)
+        or not isinstance(results, list)
+        or len(results) != len(inventory)
     ):
         raise ValueError("conversion manifest does not cover the frozen complete source inventory")
     return document
+
+
+def _validate_clean_full_conversion_manifest(
+    root: Path,
+    inventory: list[dict[str, Any]],
+    manifest: dict[str, Any],
+) -> set[str]:
+    total = len(inventory)
+    if any(
+        type(manifest.get(field)) is not int or manifest[field] != expected
+        for field, expected in (
+            ("total", total),
+            ("converted", total),
+            ("excluded", 0),
+            ("needsReview", 0),
+            ("reviewRequired", 0),
+            ("conflicts", 0),
+        )
+    ):
+        raise ValueError(
+            "conversion manifest is not a complete, technically clean full-solution result"
+        )
+    _, analytic, _ = solution_paths(root)
+    analytic_prefix = analytic.relative_to(root).as_posix() + "/"
+    inventory_by_path = {item["path"]: item for item in inventory}
+    seen_sources: set[str] = set()
+    expected_outputs: set[str] = set()
+    for item in manifest["results"]:
+        if not isinstance(item, dict):
+            raise ValueError("conversion manifest contains a malformed result")
+        source_reference = str(item.get("sourceRelativePath") or "").replace("\\", "/")
+        suffix = (
+            source_reference[len(analytic_prefix):]
+            if source_reference.startswith(analytic_prefix)
+            else None
+        )
+        expected_output = (
+            (Path("XDR Detections") / Path(suffix)).as_posix()
+            if suffix
+            else None
+        )
+        output_reference = str(item.get("outputRelativePath") or "").replace("\\", "/")
+        if (
+            source_reference not in inventory_by_path
+            or source_reference in seen_sources
+            or expected_output is None
+            or output_reference != expected_output
+            or output_reference in expected_outputs
+            or item.get("status") != "converted"
+            or item.get("reviewRequired") is not False
+            or item.get("errors") not in ([], None)
+        ):
+            raise ValueError(
+                "conversion manifest has scoped, stale, incomplete, technical, "
+                "or unresolved-review results"
+            )
+        seen_sources.add(source_reference)
+        expected_outputs.add(output_reference)
+    if seen_sources != set(inventory_by_path):
+        raise ValueError(
+            "conversion manifest does not match the current complete source inventory"
+        )
+    return expected_outputs
 
 
 def _source_waiver_unrelated_blockers(record: dict[str, Any]) -> list[str]:
@@ -1452,6 +1533,375 @@ def _validate_source_waiver_conversion_gates(
         )
 
 
+def _validate_offline_authoring_gates(
+    solution: Path,
+    state_path: Path,
+    state: dict[str, Any],
+    *,
+    record: dict[str, Any] | None = None,
+) -> None:
+    """Require fresh full-inventory local evidence before offline Authoring completion."""
+    if state.get("context", {}).get("workflowProfile") != "authoring":
+        raise ValueError("offline validation completion is available only for Authoring")
+    if any(
+        state["stages"][stage].get("status") != "passed"
+        for stage in ("discovery", "conversion")
+    ):
+        raise ValueError(
+            "offline Authoring validation requires passed discovery and full-solution conversion"
+        )
+    runtime_reports = [
+        report_directory(solution) / f"runtime-validation.{provider}.json"
+        for provider in ("triage-mcp", "azure-monitor-sdk", "log-analytics-cli", "graph")
+    ]
+    present_reports = [path.name for path in runtime_reports if path.exists()]
+    if present_reports:
+        raise ValueError(
+            "offline Authoring cannot replace existing runtime evidence; inspect current "
+            "reports and preserve their results: " + ", ".join(present_reports)
+        )
+
+    root = solution.expanduser().resolve()
+    inventory = _source_inventory(root)
+    conversion_artifacts = state["stages"]["conversion"].get("artifacts") or {}
+    expected_manifest_hash = conversion_artifacts.get("manifestSha256")
+    if not isinstance(expected_manifest_hash, str) or not re.fullmatch(
+        r"[a-f0-9]{64}", expected_manifest_hash
+    ):
+        raise ValueError(
+            "offline Authoring requires a hash-bound full-solution conversion manifest; "
+            "run workflow-recover-conversion-evidence for eligible legacy evidence"
+        )
+    manifest = _read_full_conversion_manifest(
+        root,
+        state_path.parent,
+        inventory,
+        expected_sha256=expected_manifest_hash,
+    )
+    manifest_outputs = _validate_clean_full_conversion_manifest(
+        root,
+        inventory,
+        manifest,
+    )
+    if state.get("authoring"):
+        if record is None:
+            record, _ = _current_yolo_record(root, state_path, state)
+        _validate_current_yolo_targets(root, record)
+        blockers = _source_waiver_unrelated_blockers(record)
+        if blockers:
+            raise ValueError(
+                "offline Authoring validation is blocked by current technical or review "
+                "findings: " + ", ".join(blockers)
+            )
+        expected_outputs = {
+            (Path("XDR Detections") / Path(*Path(rule["path"]).parts[1:])).as_posix()
+            for rule in inventory
+        }
+    else:
+        _validate_source_waiver_conversion_gates(root, state_path, state)
+        analytic, output = solution_paths(root)[1:]
+        analytic_prefix = analytic.relative_to(root).as_posix() + "/"
+        inventory_by_path = {rule["path"]: rule for rule in inventory}
+        manifest_by_source: dict[str, dict[str, Any]] = {}
+        expected_outputs: set[str] = set()
+        for item in manifest.get("results") or []:
+            if not isinstance(item, dict):
+                raise ValueError("offline Authoring conversion manifest contains a malformed result")
+            source_reference = str(item.get("sourceRelativePath") or "").replace("\\", "/")
+            if source_reference in manifest_by_source:
+                raise ValueError("offline Authoring conversion manifest contains duplicate sources")
+            source_rule = inventory_by_path.get(source_reference)
+            source_suffix = (
+                source_reference[len(analytic_prefix):]
+                if source_reference.startswith(analytic_prefix)
+                else None
+            )
+            expected_output = (
+                (Path("XDR Detections") / Path(source_suffix)).as_posix()
+                if source_suffix
+                else None
+            )
+            if (
+                source_rule is None
+                or expected_output is None
+                or item.get("outputRelativePath") != expected_output
+                or item.get("status") != "converted"
+                or item.get("reviewRequired") is not False
+                or item.get("errors") not in ([], None)
+            ):
+                raise ValueError(
+                    "offline Authoring conversion manifest is incomplete, stale, or has "
+                    "unresolved technical/review findings"
+                )
+            manifest_by_source[source_reference] = item
+            expected_outputs.add(expected_output)
+
+            source_path = content_path(root, source_reference)
+            target_path = content_path(root, expected_output)
+            if (
+                source_path.is_symlink()
+                or target_path.is_symlink()
+                or not source_path.is_file()
+                or not target_path.is_file()
+            ):
+                raise ValueError("offline Authoring source or converted target is missing or unsafe")
+            try:
+                source_document = yaml.safe_load(source_path.read_text(encoding="utf-8-sig")) or {}
+                target_document = yaml.safe_load(target_path.read_text(encoding="utf-8-sig")) or {}
+            except (OSError, UnicodeError, yaml.YAMLError) as exc:
+                raise ValueError(f"offline Authoring source or target YAML is invalid: {exc}") from exc
+            provenance = (
+                target_document.get("contentProvenance", {})
+                if isinstance(target_document, dict)
+                else {}
+            )
+            source_provenance = (
+                provenance.get("source", {}) if isinstance(provenance, dict) else {}
+            )
+            conversion = (
+                provenance.get("conversion", {}) if isinstance(provenance, dict) else {}
+            )
+            review_scope = (
+                conversion.get("reviewScope", {}) if isinstance(conversion, dict) else {}
+            )
+            target_properties = (
+                target_document.get("properties")
+                if isinstance(target_document, dict)
+                else None
+            )
+            query_condition = (
+                target_properties.get("queryCondition")
+                if isinstance(target_properties, dict)
+                else None
+            )
+            target_query = (
+                query_condition.get("queryText")
+                if isinstance(query_condition, dict)
+                else None
+            )
+            source_query = source_document.get("query") if isinstance(source_document, dict) else None
+            if (
+                not isinstance(source_document, dict)
+                or not isinstance(source_provenance, dict)
+                or not isinstance(conversion, dict)
+                or not isinstance(review_scope, dict)
+            ):
+                raise ValueError(
+                    f"offline Authoring conversion evidence is malformed for {source_reference}"
+                )
+            canonical_source_hash = hashlib.sha256(
+                yaml.safe_dump(
+                    source_document,
+                    sort_keys=True,
+                    allow_unicode=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            current_source_query_hash = (
+                hashlib.sha256(source_query.encode("utf-8")).hexdigest()
+                if isinstance(source_query, str)
+                else None
+            )
+            current_target_query_hash = (
+                hashlib.sha256(target_query.encode("utf-8")).hexdigest()
+                if isinstance(target_query, str)
+                else None
+            )
+            if (
+                source_provenance.get("path") != source_reference
+                or source_provenance.get("id") != source_document.get("id")
+                or source_provenance.get("querySha256") != current_source_query_hash
+                or not current_target_query_hash
+                or conversion.get("status") != "converted"
+                or conversion.get("reviewRequired") is not False
+                or conversion.get("errors") not in ([], None)
+                or review_scope.get("sourceDocumentSha256") != canonical_source_hash
+                or review_scope.get("targetQuerySha256") != current_target_query_hash
+            ):
+                raise ValueError(
+                    f"offline Authoring conversion evidence is stale or unresolved for {source_reference}"
+                )
+        if set(manifest_by_source) != set(inventory_by_path):
+            raise ValueError(
+                "offline Authoring conversion manifest does not match the current full source inventory"
+            )
+        current_outputs = {
+            path.relative_to(root).as_posix()
+            for path in xdr_detection_files(output)
+        }
+        if current_outputs != expected_outputs:
+            raise ValueError(
+                "offline Authoring converted targets do not match the complete current inventory"
+            )
+
+    if expected_outputs != manifest_outputs:
+        raise ValueError(
+            "offline Authoring conversion outputs do not match the bound manifest"
+        )
+    structural = validate_solution(root)
+    if (
+        structural.get("conversionScope", {}).get("kind") != "solution"
+        or structural.get("total") != len(inventory)
+        or structural.get("invalid") != 0
+        or structural.get("valid") != len(inventory)
+        or len(structural.get("results") or []) != len(inventory)
+        or any(item.get("valid") is not True for item in structural.get("results") or [])
+    ):
+        raise ValueError(
+            "offline Authoring validation requires current full-solution structural validation to pass"
+        )
+
+
+def recover_conversion_evidence(solution: str | Path) -> dict[str, Any]:
+    """Rebind a legacy Authoring conversion manifest only after complete offline revalidation."""
+    root = Path(solution).expanduser().resolve()
+    with _state_writer_lock(root) as path:
+        loaded_path, state = _load(root)
+        if loaded_path != path:
+            raise ValueError("workflow state selection changed while acquiring its writer lock")
+        if state.get("context", {}).get("workflowProfile") != "authoring":
+            raise ValueError(
+                "conversion evidence recovery is restricted to explicitly selected Authoring runs"
+            )
+        if any(
+            state["stages"][stage].get("status") != "passed"
+            for stage in ("discovery", "conversion")
+        ):
+            raise ValueError(
+                "conversion evidence recovery requires passed discovery and conversion stages"
+            )
+
+        conversion_stage = state["stages"]["conversion"]
+        artifacts = conversion_stage.get("artifacts")
+        if not isinstance(artifacts, dict):
+            raise ValueError("passed conversion stage has no artifact record to recover")
+        manifest_reference = artifacts.get("manifest")
+        if not isinstance(manifest_reference, str) or not manifest_reference.strip():
+            raise ValueError(
+                "conversion evidence recovery requires the existing manifest artifact reference"
+            )
+
+        manifest_path = path.parent / "manifest.json"
+        if manifest_path.is_symlink() or not manifest_path.is_file():
+            raise ValueError("current run conversion manifest is missing or unsafe")
+        if manifest_reference != "manifest.json":
+            try:
+                referenced_manifest = resolve_artifact_reference(root, manifest_reference)
+            except (OSError, ValueError) as exc:
+                raise ValueError("conversion manifest artifact reference is invalid") from exc
+            if referenced_manifest.resolve() != manifest_path.resolve():
+                raise ValueError(
+                    "conversion manifest artifact reference does not identify this run's manifest"
+                )
+
+        manifest_bytes = manifest_path.read_bytes()
+        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        prior_sha256 = artifacts.get("manifestSha256")
+        if prior_sha256 is not None and prior_sha256 != manifest_sha256:
+            raise ValueError(
+                "existing conversion manifest hash does not match current bytes; "
+                "recovery will not replace a bound digest"
+            )
+
+        inventory = _source_inventory(root)
+        canonical_inventory_sha256 = hashlib.sha256(
+            json.dumps(
+                inventory,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        prior_inventory_sha256 = artifacts.get("sourceInventorySha256")
+        if state.get("authoring"):
+            record, _ = _current_yolo_record(root, path, state)
+            inventory_sha256 = record["inventory"]["sha256"]
+        else:
+            inventory_sha256 = canonical_inventory_sha256
+        if (
+            prior_inventory_sha256 is not None
+            and prior_inventory_sha256 != inventory_sha256
+        ):
+            raise ValueError(
+                "current source inventory differs from the conversion stage inventory; "
+                "recovery will not rebind stale evidence"
+            )
+
+        manifest = _read_full_conversion_manifest(
+            root,
+            path.parent,
+            inventory,
+            expected_sha256=manifest_sha256,
+        )
+        total = len(inventory)
+        _validate_clean_full_conversion_manifest(root, inventory, manifest)
+
+        candidate_state = dict(state)
+        candidate_stages = dict(state["stages"])
+        candidate_conversion_stage = dict(conversion_stage)
+        candidate_artifacts = dict(artifacts)
+        candidate_artifacts["manifestSha256"] = manifest_sha256
+        candidate_conversion_stage["artifacts"] = candidate_artifacts
+        candidate_stages["conversion"] = candidate_conversion_stage
+        candidate_state["stages"] = candidate_stages
+        _validate_offline_authoring_gates(
+            root,
+            path,
+            candidate_state,
+        )
+
+        if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != manifest_sha256:
+            raise ValueError(
+                "conversion manifest changed during evidence recovery; no digest was persisted"
+            )
+        current_inventory = _source_inventory(root)
+        current_inventory_sha256 = hashlib.sha256(
+            json.dumps(
+                current_inventory,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if current_inventory_sha256 != inventory_sha256:
+            if state.get("authoring"):
+                current_record, _ = _current_yolo_record(root, path, state)
+                current_inventory_sha256 = current_record["inventory"]["sha256"]
+        if current_inventory_sha256 != inventory_sha256:
+            raise ValueError(
+                "source inventory changed during evidence recovery; no digest was persisted"
+            )
+
+        if prior_sha256 is not None:
+            return {
+                "runId": state["runId"],
+                "status": "already-bound",
+                "manifestSha256": manifest_sha256,
+                "sourceInventorySha256": inventory_sha256,
+                "sourceCount": total,
+            }
+
+        artifacts.update({
+            "manifestSha256": manifest_sha256,
+            "sourceInventorySha256": inventory_sha256,
+            "manifestEvidenceRecovery": "offline-authoring-full-revalidation",
+            "manifestEvidenceRecoveredAt": _utc_now(),
+        })
+        _write_unlocked(path, state)
+        return {
+            "runId": state["runId"],
+            "status": "recovered",
+            "manifestSha256": manifest_sha256,
+            "sourceInventorySha256": inventory_sha256,
+            "sourceCount": total,
+        }
+
+
+def _offline_authoring_validation_message() -> str:
+    return (
+        "Offline Authoring validation passed after full-inventory conversion, current "
+        "structural validation, and resolved review checks. Sentinel and Advanced Hunting "
+        "runtime validation was not run; this result is not runtime/XDR-qualified."
+    )
+
+
 def _current_runtime_status(
     solution: Path,
     profile: str,
@@ -1558,8 +2008,13 @@ def _complete_runtime_pending_stage(
     status, message, runtime_evidence = _current_runtime_status(
         solution, state["context"]["workflowProfile"], record
     )
-    if status not in {"passed", "environment-blocked", "source-waived"}:
+    if status not in {"passed", "environment-blocked", "source-waived", "not-run"}:
         return state
+    if status == "not-run":
+        try:
+            _validate_offline_authoring_gates(solution, state_path, state, record=record)
+        except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
+            return state
     if status == "source-waived":
         _validate_source_waiver_conversion_gates(solution, state_path, state)
         whitelist = runtime_evidence.get("sourceWhitelist") or []
@@ -1576,6 +2031,11 @@ def _complete_runtime_pending_stage(
         if status in {"environment-blocked", "source-waived"}
         else {}
     )
+    if status == "not-run":
+        artifacts = {
+            "runtimeStatus": "not-run",
+            "validationMode": "offline-authoring",
+        }
     if status == "source-waived":
         artifacts.update(_source_whitelist_stage_artifacts(runtime_evidence))
         artifacts["sourceRuntimeWhitelistRawStatus"] = "failed"
@@ -1584,7 +2044,11 @@ def _complete_runtime_pending_stage(
         "validation",
         state_path,
         status="passed",
-        message=message,
+        message=(
+            _offline_authoring_validation_message()
+            if status == "not-run"
+            else message
+        ),
         artifacts=artifacts,
         evidence=None,
     )
@@ -1980,8 +2444,29 @@ def run_yolo_authoring(solution: str | Path) -> dict[str, Any]:
                     root, state["context"]["workflowProfile"], new_record
                 )
                 if validation_status == "not-run":
-                    validation_status = "blocked"
-            if validation_status == "environment-blocked":
+                    try:
+                        _validate_offline_authoring_gates(
+                            root,
+                            state_path,
+                            state,
+                            record=new_record,
+                        )
+                    except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as exc:
+                        validation_status = "blocked"
+                        message = str(exc)
+                    else:
+                        message = _offline_authoring_validation_message()
+            offline_authoring = (
+                validation_status == "not-run"
+                and state["context"]["workflowProfile"] == "authoring"
+            )
+            if offline_authoring:
+                final_status = "passed"
+                final_artifacts = {
+                    "runtimeStatus": "not-run",
+                    "validationMode": "offline-authoring",
+                }
+            elif validation_status == "environment-blocked":
                 final_status = "passed"
                 final_artifacts = {"runtimeStatus": "environment-blocked"}
             elif validation_status == "source-waived":
@@ -2035,6 +2520,7 @@ def initialize_workflow(
     workspace_resource_id: str | None = None,
     workspace_customer_id: str | None = None,
     version_bump: str | None = None,
+    target_version: str | None = None,
     workflow_profile: str | None = None,
     yolo: bool | None = None,
     campaign_id: str | None = None,
@@ -2045,6 +2531,10 @@ def initialize_workflow(
         raise ValueError(f"solution folder does not exist: {root}")
     if version_bump not in (None, "none", "patch", "minor", "major"):
         raise ValueError("version bump must be none, patch, minor, or major")
+    if target_version is not None:
+        validate_v31_target_version(target_version)
+        if version_bump not in (None, "none"):
+            raise ValueError("target version cannot be combined with a version bump")
     if workflow_profile is None:
         raise ValueError(
             "workflow profile selection is required: choose authoring or qualification"
@@ -2091,6 +2581,7 @@ def initialize_workflow(
         ),
         "targetContextLocked": bool(target),
         "versionBump": version_bump,
+        "targetVersion": target_version,
     }
     if new_run:
         if requested_run_id(root):
@@ -2106,6 +2597,7 @@ def initialize_workflow(
                 root, tenant_id=tenant_id, subscription_id=subscription_id,
                 workspace_resource_id=workspace_resource_id,
                 workspace_customer_id=workspace_customer_id, version_bump=version_bump,
+                target_version=target_version,
                 workflow_profile=workflow_profile, yolo=yolo, campaign_id=campaign_id,
             )
     existing_path = existing_artifact_path(root, STATE_FILE_NAME)
@@ -2122,6 +2614,10 @@ def initialize_workflow(
                     "--campaign-id to link it conservatively"
                 )
             context = state["context"]
+            if target_version is not None and context.get("versionBump") not in (None, "none"):
+                raise ValueError(
+                    "target version cannot be combined with the workflow's selected version bump"
+                )
             for key, value in requested_context.items():
                 if key == "targetContextLocked":
                     continue
@@ -2229,6 +2725,7 @@ def initialize_workflow(
                 workspace_resource_id=workspace_resource_id,
                 workspace_customer_id=workspace_customer_id,
                 version_bump=version_bump,
+                target_version=target_version,
                 workflow_profile=workflow_profile,
                 yolo=True,
                 campaign_id=campaign_id,
@@ -2418,6 +2915,8 @@ def _validate_packaging_evidence(
             or report.get("workflowRunId") != state.get("runId")
             or report.get("requestedVersionBump") != attempt.get("requestedVersionBump")
             or report.get("effectiveVersionBump") != attempt.get("effectiveVersionBump")
+            or report.get("requestedTargetVersion") != attempt.get("requestedTargetVersion")
+            or report.get("effectiveTargetVersion") != attempt.get("effectiveTargetVersion")
         ):
             raise ValueError("V3.1 package report is stale or belongs to another workflow attempt")
         input_after = (report.get("packageInputs") or {}).get("after") or {}
@@ -2648,15 +3147,1026 @@ def _archive_package_evidence(
     return archived
 
 
+def _validate_historical_package_receipt(
+    solution: Path,
+    state: dict[str, Any],
+    successful: dict[str, Any],
+    expected_version: str,
+) -> dict[str, Any]:
+    report_reference = successful.get("packageReport")
+    if not isinstance(report_reference, str) or not report_reference:
+        raise ValueError("prior V3.1 package report reference is missing")
+    report_path = resolve_artifact_reference(solution, report_reference)
+    if not report_path.is_file():
+        raise ValueError("prior V3.1 package report is missing")
+    report_bytes = report_path.read_bytes()
+    if hashlib.sha256(report_bytes).hexdigest() != successful.get("packageReportSha256"):
+        raise ValueError("prior V3.1 package report is stale or modified")
+    try:
+        report = json.loads(report_bytes)
+    except json.JSONDecodeError as exc:
+        raise ValueError("prior V3.1 package report is invalid JSON") from exc
+    package_inputs = report.get("packageInputs") or {}
+    if (
+        report.get("status") != "passed"
+        or report.get("packager") != "V3.1"
+        or report.get("workflowRunId") != state.get("runId")
+        or report.get("packageAttemptId") != successful.get("attemptId")
+        or report.get("version") != expected_version
+        or successful.get("version") != expected_version
+        or report.get("packageArtifactsSha256") != successful.get("packageArtifactsSha256")
+        or (package_inputs.get("after") or {}).get("sha256")
+        != successful.get("packageInputSha256")
+    ):
+        raise ValueError(
+            "prior package receipt is not a successful V3.1 build for this workflow run, "
+            "version, attempt, and input identity"
+        )
+    return report
+
+
+def _release_notes_refresh_proposal(
+    solution: Path,
+    *,
+    release_date: str,
+    change_history: str,
+) -> tuple[Path, str, str]:
+    version = solution_data_version(solution)
+    if not version or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError("current solution package version must use X.Y.Z format")
+    try:
+        parsed_date = datetime.strptime(release_date, "%d-%m-%Y")
+    except ValueError as exc:
+        raise ValueError("release date must be a valid DD-MM-YYYY date") from exc
+    if parsed_date.strftime("%d-%m-%Y") != release_date:
+        raise ValueError("release date must use DD-MM-YYYY format")
+    if not change_history.strip() or "|" in change_history or "\n" in change_history or "\r" in change_history:
+        raise ValueError("release history must be one non-empty Markdown table cell")
+    path = solution / "ReleaseNotes.md"
+    if not path.is_file():
+        raise ValueError("solution ReleaseNotes.md is missing")
+    original = path.read_bytes()
+    try:
+        text = original.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("ReleaseNotes.md must be UTF-8") from exc
+    lines = text.splitlines(keepends=True)
+
+    def table_cells(line: str) -> list[str] | None:
+        stripped = line.strip()
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            return None
+        return [cell.strip() for cell in stripped[1:-1].split("|")]
+
+    expected_header = [
+        "**Version**",
+        "**Date Modified (DD-MM-YYYY)**",
+        "**Change History**",
+    ]
+    header_index = next(
+        (index for index, line in enumerate(lines) if table_cells(line) == expected_header),
+        None,
+    )
+    if header_index is None or header_index + 1 >= len(lines):
+        raise ValueError("ReleaseNotes.md does not have the required three-column table header")
+    separator_cells = table_cells(lines[header_index + 1])
+    if (
+        separator_cells is None
+        or len(separator_cells) != 3
+        or any(not re.fullmatch(r":?-{3,}:?", cell) for cell in separator_cells)
+    ):
+        raise ValueError("ReleaseNotes.md table separator is invalid")
+
+    versions: list[tuple[int, int, int]] = []
+    seen: set[str] = set()
+    for line in lines[header_index + 2:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        cells = table_cells(line)
+        if cells is None or len(cells) != 3:
+            raise ValueError("ReleaseNotes.md contains a row that is not exactly three columns")
+        if not cells[0]:
+            continue
+        if not re.fullmatch(r"\d+\.\d+\.\d+", cells[0]):
+            raise ValueError("ReleaseNotes.md contains an invalid semantic version")
+        if cells[0] in seen:
+            raise ValueError("ReleaseNotes.md contains a duplicate version")
+        seen.add(cells[0])
+        try:
+            date_value = datetime.strptime(cells[1], "%d-%m-%Y")
+        except ValueError as exc:
+            raise ValueError("ReleaseNotes.md contains an invalid DD-MM-YYYY date") from exc
+        if date_value.strftime("%d-%m-%Y") != cells[1] or not cells[2]:
+            raise ValueError("ReleaseNotes.md contains an invalid date or empty change history")
+        versions.append(tuple(int(part) for part in cells[0].split(".")))
+    if versions != sorted(versions, reverse=True):
+        raise ValueError("ReleaseNotes.md versions are not in descending order")
+    new_version = tuple(int(part) for part in version.split("."))
+    if version in seen or (versions and new_version <= versions[0]):
+        raise ValueError(
+            "same-release notes refresh requires the current package version to be absent "
+            "and newer than the existing release notes"
+        )
+
+    newline = "\r\n" if "\r\n" in text else "\n"
+    row = f"| {version} | {release_date} | {change_history.strip()} |{newline}"
+    updated_lines = lines[:header_index + 2] + [row] + lines[header_index + 2:]
+    updated = "".join(updated_lines)
+    if not text.endswith(("\n", "\r")) and updated.endswith(("\n", "\r")):
+        updated = updated.rstrip("\r\n")
+    return (
+        path,
+        hashlib.sha256(original).hexdigest(),
+        hashlib.sha256(updated.encode("utf-8")).hexdigest(),
+    )
+
+
+def _identity_from_file_hashes(files: dict[str, str]) -> str:
+    canonical = json.dumps(
+        [
+            {"path": name, "sha256": digest}
+            for name, digest in sorted(files.items(), key=lambda item: Path(item[0]))
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _validate_package_input_file_manifest(
+    value: Any,
+    *,
+    expected_sha256: str,
+    expected_file_count: int | None = None,
+    label: str,
+) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} has no complete per-file package-input manifest")
+    files: dict[str, str] = {}
+    for name, digest in value.items():
+        if (
+            not isinstance(name, str)
+            or not name
+            or name.replace("\\", "/") != name
+            or Path(name).is_absolute()
+            or ".." in Path(name).parts
+            or Path(name).as_posix() != name
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", digest)
+        ):
+            raise ValueError(f"{label} contains an invalid package-input manifest entry")
+        files[name] = digest
+    if (
+        not files
+        or _identity_from_file_hashes(files) != expected_sha256
+        or (expected_file_count is not None and len(files) != expected_file_count)
+    ):
+        raise ValueError(
+            f"{label} per-file manifest does not match its receipt-bound package-input identity"
+        )
+    return dict(sorted(files.items(), key=lambda item: Path(item[0])))
+
+
+def _legacy_baseline_evidence(
+    solution: Path,
+    evidence_reference: str | Path,
+    *,
+    expected_current_sha256: str,
+    current_files: dict[str, str],
+    expected_prior_sha256: str,
+    expected_prior_file_count: int | None,
+    expected_evidence_sha256: str | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    reference = str(evidence_reference).replace("\\", "/")
+    evidence_path = content_path(solution, reference)
+    if evidence_path.is_symlink() or not evidence_path.is_file():
+        raise ValueError("legacy baseline evidence is missing or unsafe")
+    evidence_bytes = evidence_path.read_bytes()
+    evidence_sha256 = hashlib.sha256(evidence_bytes).hexdigest()
+    if expected_evidence_sha256 and evidence_sha256 != expected_evidence_sha256:
+        raise ValueError("legacy baseline evidence changed after the rebuild plan")
+    try:
+        evidence = json.loads(evidence_bytes)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError("legacy baseline evidence is not valid JSON") from exc
+    current_sha256 = _identity_from_file_hashes(current_files)
+    changes = evidence.get("changedInputs") if isinstance(evidence, dict) else None
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("priorReceiptIdentity") != expected_prior_sha256
+        or evidence.get("currentIdentity") != expected_current_sha256
+        or current_sha256 != expected_current_sha256
+        or evidence.get("currentFileCount") != len(current_files)
+        or (
+            expected_prior_file_count is not None
+            and evidence.get("priorFileCount") != expected_prior_file_count
+        )
+        or not isinstance(evidence.get("priorFileCount"), int)
+        or isinstance(evidence.get("priorFileCount"), bool)
+        or not isinstance(evidence.get("currentFileCount"), int)
+        or isinstance(evidence.get("currentFileCount"), bool)
+        or not isinstance(changes, list)
+        or not changes
+    ):
+        raise ValueError(
+            "legacy baseline evidence is not bound to the successful receipt and current input backup"
+        )
+
+    baseline = dict(current_files)
+    recorded_changes: dict[str, tuple[str | None, str | None]] = {}
+    for change in changes:
+        if not isinstance(change, dict):
+            raise ValueError("legacy baseline evidence has an invalid changed-input record")
+        name = change.get("path")
+        before = change.get("beforeSha256")
+        after = change.get("currentSha256")
+        if (
+            not isinstance(name, str)
+            or not name
+            or name.replace("\\", "/") != name
+            or Path(name).is_absolute()
+            or ".." in Path(name).parts
+            or Path(name).as_posix() != name
+            or name in recorded_changes
+            or (before is not None and (
+                not isinstance(before, str) or not re.fullmatch(r"[a-f0-9]{64}", before)
+            ))
+            or (after is not None and (
+                not isinstance(after, str) or not re.fullmatch(r"[a-f0-9]{64}", after)
+            ))
+            or before == after
+            or current_files.get(name) != after
+            or (name not in current_files and after is not None)
+            or name.casefold().endswith("releasenotes.md")
+        ):
+            raise ValueError("legacy baseline evidence has an invalid or out-of-scope changed input")
+        recorded_changes[name] = (before, after)
+        if before is None:
+            baseline.pop(name, None)
+        else:
+            baseline[name] = before
+
+    baseline = dict(sorted(baseline.items(), key=lambda item: Path(item[0])))
+    actual_changes = {
+        name: (baseline.get(name), current_files.get(name))
+        for name in sorted(set(baseline) | set(current_files), key=Path)
+        if baseline.get(name) != current_files.get(name)
+    }
+    if (
+        recorded_changes != actual_changes
+        or len(baseline) != evidence["priorFileCount"]
+        or _identity_from_file_hashes(baseline) != expected_prior_sha256
+    ):
+        raise ValueError(
+            "legacy baseline evidence does not reconstruct the complete successful "
+            "package-input manifest"
+        )
+    return baseline, {
+        "path": reference,
+        "sha256": evidence_sha256,
+    }
+
+
+def _same_version_rebuild_scope(
+    baseline_files: dict[str, str],
+    current_files: dict[str, str],
+    approved_changes: dict[str, Any],
+) -> dict[str, str | None]:
+    actual_changes = {
+        name: current_files.get(name)
+        for name in sorted(set(baseline_files) | set(current_files), key=Path)
+        if baseline_files.get(name) != current_files.get(name)
+    }
+    if not actual_changes:
+        raise ValueError("same-version rebuild requires actual package-input changes")
+    if any(name.casefold().endswith("releasenotes.md") for name in actual_changes):
+        raise ValueError("same-version content rebuild does not permit any ReleaseNotes change")
+    if set(approved_changes) != set(actual_changes):
+        missing = sorted(set(actual_changes) - set(approved_changes))
+        unchanged_or_extra = sorted(set(approved_changes) - set(actual_changes))
+        details = []
+        if missing:
+            details.append(f"unapproved actual changes: {', '.join(missing)}")
+        if unchanged_or_extra:
+            details.append(
+                "approved paths that are unchanged or not package inputs: "
+                + ", ".join(unchanged_or_extra)
+            )
+        raise ValueError(
+            "same-version rebuild changed-input scope must exactly match the "
+            "successful receipt baseline (" + "; ".join(details) + ")"
+        )
+    if approved_changes != actual_changes:
+        raise ValueError(
+            "same-version rebuild approved path hashes do not match the exact "
+            "receipt-to-current input diff"
+        )
+    return actual_changes
+
+
+def _validate_release_notes_refresh_inputs(
+    solution: Path,
+    action: dict[str, Any],
+    current_identity: str,
+) -> None:
+    if action.get("actionType") != "release-notes-refresh":
+        return
+    notes_path = action.get("releaseNotesPath")
+    before = action.get("packageInputFilesBefore")
+    if not isinstance(notes_path, str) or not isinstance(before, dict):
+        raise ValueError("ReleaseNotes refresh action is missing its bound input manifest")
+    if (
+        not all(
+            isinstance(name, str)
+            and isinstance(digest, str)
+            and re.fullmatch(r"[a-f0-9]{64}", digest)
+            for name, digest in before.items()
+        )
+        or notes_path not in before
+        or before.get(notes_path) != action.get("releaseNotesOriginalSha256")
+    ):
+        raise ValueError("ReleaseNotes refresh baseline manifest is invalid")
+    current = package_input_file_hashes(solution)
+    if set(current) != set(before):
+        raise ValueError("package inventory changed during ReleaseNotes refresh")
+    changed = [name for name in current if current[name] != before[name]]
+    if changed != [notes_path]:
+        raise ValueError(
+            "ReleaseNotes refresh permits only the exact planned ReleaseNotes.md change"
+        )
+    if current[notes_path] != action.get("releaseNotesExpectedSha256"):
+        raise ValueError("ReleaseNotes.md does not match the exact approved refresh")
+    expected_files = dict(before)
+    expected_files[notes_path] = action["releaseNotesExpectedSha256"]
+    expected_identity = _identity_from_file_hashes(expected_files)
+    if (
+        expected_identity != action.get("packageInputSha256")
+        or current_identity != expected_identity
+    ):
+        raise ValueError("ReleaseNotes refresh package-input identity is stale or mismatched")
+
+
+def _validate_same_version_content_rebuild_inputs(
+    solution: Path,
+    action: dict[str, Any],
+    current_identity: str,
+    current_version: str | None,
+    successful: dict[str, Any],
+    legacy_baseline_evidence: str | Path | None = None,
+) -> None:
+    if action.get("actionType") != "same-version-content-rebuild":
+        return
+    target_version = action.get("targetVersion")
+    files = action.get("packageInputFilesBefore")
+    approved_changes = action.get("approvedChangedInputs")
+    backup_root = action.get("inputBackupRoot")
+    historical_evidence = action.get("historicalEvidence")
+    if (
+        not isinstance(target_version, str)
+        or target_version != current_version
+        or target_version != successful.get("version")
+        or not isinstance(files, dict)
+        or not isinstance(approved_changes, dict)
+        or not approved_changes
+        or not isinstance(backup_root, str)
+        or not backup_root
+        or Path(backup_root).is_absolute()
+        or ".." in Path(backup_root).parts
+        or not isinstance(historical_evidence, dict)
+    ):
+        raise ValueError(
+            "same-version rebuild is missing its exact current version or input backup binding"
+        )
+    if (
+        not all(
+            isinstance(name, str)
+            and isinstance(digest, str)
+            and re.fullmatch(r"[a-f0-9]{64}", digest)
+            for name, digest in files.items()
+        )
+        or package_input_file_hashes(solution) != files
+        or _identity_from_file_hashes(files) != action.get("packageInputSha256")
+        or current_identity != action.get("packageInputSha256")
+        or action.get("basePackageInputSha256") != successful.get("packageInputSha256")
+        or current_identity == successful.get("packageInputSha256")
+        or action.get("priorPackageAttemptId") != successful.get("attemptId")
+        or action.get("priorPackageReportSha256") != successful.get("packageReportSha256")
+    ):
+        raise ValueError(
+            "same-version rebuild inputs changed or no longer match the explicit approval"
+        )
+    archived_report_reference = historical_evidence.get("packageReport")
+    if not isinstance(archived_report_reference, str):
+        raise ValueError("same-version rebuild is missing its archived prior package report")
+    archived_report_path = content_path(solution, archived_report_reference)
+    if (
+        archived_report_path.is_symlink()
+        or not archived_report_path.is_file()
+        or hashlib.sha256(archived_report_path.read_bytes()).hexdigest()
+        != action.get("priorPackageReportSha256")
+    ):
+        raise ValueError("archived prior V3.1 package report is missing or modified")
+    try:
+        archived_report = json.loads(archived_report_path.read_bytes())
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError("archived prior V3.1 package report is invalid") from exc
+    if (
+        archived_report.get("packager") != "V3.1"
+        or archived_report.get("workflowRunId") != action.get("runId")
+        or archived_report.get("packageAttemptId") != action.get("priorPackageAttemptId")
+        or archived_report.get("version") != target_version
+        or (archived_report.get("packageInputs") or {}).get("after", {}).get("sha256")
+        != action.get("basePackageInputSha256")
+    ):
+        raise ValueError("archived prior V3.1 receipt does not match the rebuild plan")
+    package_inputs = archived_report.get("packageInputs") or {}
+    prior_inputs = package_inputs.get("after") or {}
+    if prior_inputs.get("sha256") != action.get("basePackageInputSha256"):
+        raise ValueError("archived prior V3.1 receipt has a mismatched input identity")
+    baseline_manifest = prior_inputs.get("files")
+    evidence_binding = action.get("legacyBaselineEvidence")
+    evidence_reference: str | Path | None = None
+    expected_evidence_sha256: str | None = None
+    if evidence_binding is not None:
+        if (
+            not isinstance(evidence_binding, dict)
+            or not isinstance(evidence_binding.get("path"), str)
+            or not isinstance(evidence_binding.get("sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", evidence_binding["sha256"])
+        ):
+            raise ValueError("same-version rebuild legacy baseline evidence binding is invalid")
+        evidence_reference = evidence_binding["path"]
+        expected_evidence_sha256 = evidence_binding["sha256"]
+        if (
+            legacy_baseline_evidence is not None
+            and str(legacy_baseline_evidence).replace("\\", "/")
+            != evidence_binding["path"]
+        ):
+            raise ValueError(
+                "legacy baseline evidence differs from the evidence selected by the rebuild plan"
+            )
+    elif legacy_baseline_evidence is not None:
+        evidence_reference = legacy_baseline_evidence
+
+    if baseline_manifest is not None:
+        if evidence_reference is not None:
+            raise ValueError(
+                "legacy baseline evidence is only accepted when the successful receipt "
+                "does not contain a per-file manifest"
+            )
+        baseline_files = _validate_package_input_file_manifest(
+            baseline_manifest,
+            expected_sha256=action["basePackageInputSha256"],
+            expected_file_count=prior_inputs.get("fileCount"),
+            label="archived successful V3.1 receipt",
+        )
+    else:
+        if evidence_reference is None:
+            raise ValueError(
+                "legacy successful V3.1 receipt has no per-file package-input baseline; "
+                "provide exact receipt-bound --legacy-baseline-evidence or preserve a "
+                "baseline manifest"
+            )
+        baseline_files, recovered_binding = _legacy_baseline_evidence(
+            solution,
+            evidence_reference,
+            expected_current_sha256=action["packageInputSha256"],
+            current_files=files,
+            expected_prior_sha256=action["basePackageInputSha256"],
+            expected_prior_file_count=prior_inputs.get("fileCount"),
+            expected_evidence_sha256=expected_evidence_sha256,
+        )
+        if evidence_binding and recovered_binding != evidence_binding:
+            raise ValueError("legacy baseline evidence binding does not match the rebuild plan")
+
+    approved_changes = {
+        name: digest
+        for name, digest in approved_changes.items()
+        if isinstance(name, str)
+    }
+    if len(approved_changes) != len(action.get("approvedChangedInputs") or {}):
+        raise ValueError("same-version rebuild approved input paths are invalid")
+    if any(
+        digest is not None
+        and (
+            not isinstance(digest, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", digest)
+        )
+        for digest in approved_changes.values()
+    ):
+        raise ValueError("same-version rebuild approved input hashes are invalid")
+    _same_version_rebuild_scope(baseline_files, files, approved_changes)
+
+    recorded_hashes = archived_report.get("packageArtifactHashes") or {}
+    for name in ("mainTemplate", "createUiDefinition", "testParameters", "zip"):
+        reference = historical_evidence.get(name)
+        if not isinstance(reference, str):
+            raise ValueError(f"same-version rebuild is missing archived {name} evidence")
+        archived_artifact = content_path(solution, reference)
+        if (
+            archived_artifact.is_symlink()
+            or not archived_artifact.is_file()
+            or hashlib.sha256(archived_artifact.read_bytes()).hexdigest()
+            != recorded_hashes.get(name)
+        ):
+            raise ValueError(f"archived prior V3.1 package artifact is missing or modified: {name}")
+    for relative, digest in files.items():
+        if Path(relative).is_absolute() or ".." in Path(relative).parts:
+            raise ValueError("same-version rebuild input manifest contains an unsafe path")
+        backup = content_path(solution, f"{backup_root}/{relative}")
+        if (
+            backup.is_symlink()
+            or not backup.is_file()
+            or hashlib.sha256(backup.read_bytes()).hexdigest() != digest
+        ):
+            raise ValueError(
+                f"same-version rebuild input backup is missing or modified: {relative}"
+            )
+
+
+def verify_same_version_content_rebuild(
+    solution: str | Path,
+    *,
+    legacy_baseline_evidence: str | Path | None = None,
+) -> dict[str, Any]:
+    """Read-only verification of a pending or completed same-version rebuild."""
+    root = Path(solution).expanduser().resolve()
+    _state_path, state = _load(root)
+    package_state = state.get("packaging") or {}
+    pending = package_state.get("pendingReleaseAction") or {}
+    completed_action = None
+    successful = package_state.get("lastSuccessful") or {}
+    if pending.get("actionType") == "same-version-content-rebuild":
+        action = pending
+        prior_successful = successful
+        receipt_verified = False
+    else:
+        actions = package_state.get("releaseActions") or []
+        action = next((
+            item for item in reversed(actions)
+            if item.get("actionType") == "same-version-content-rebuild"
+            and item.get("status") == "consumed"
+            and item.get("packageInputSha256") == successful.get("packageInputSha256")
+            and item.get("targetVersion") == successful.get("version")
+        ), None)
+        if action is None:
+            raise ValueError(
+                "selected run has no pending or successfully consumed same-version rebuild"
+            )
+        completed_action = action
+        last_consumed = package_state.get("lastConsumedAction") or {}
+        if (
+            successful.get("packageSucceeded") is not True
+            or successful.get("effectiveVersionBump") != "none"
+            or successful.get("attemptId") != last_consumed.get("attemptId")
+            or successful.get("packageInputSha256") != last_consumed.get("packageInputSha256")
+            or last_consumed.get("packageSucceeded") is not True
+        ):
+            raise ValueError("completed same-version rebuild is not linked to its consumed V3.1 receipt")
+        receipt_path = resolve_artifact_reference(root, successful.get("packageReport"))
+        if (
+            receipt_path.is_symlink()
+            or not receipt_path.is_file()
+            or hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+            != successful.get("packageReportSha256")
+        ):
+            raise ValueError("completed same-version V3.1 receipt is missing or modified")
+        try:
+            receipt = json.loads(receipt_path.read_bytes())
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError("completed same-version V3.1 receipt is invalid") from exc
+        current_files = package_input_file_hashes(root)
+        current_identity = _identity_from_file_hashes(current_files)
+        receipt_inputs = receipt.get("packageInputs") or {}
+        before = receipt_inputs.get("before") or {}
+        after = receipt_inputs.get("after") or {}
+        if (
+            receipt.get("status") != "passed"
+            or receipt.get("packager") != "V3.1"
+            or receipt.get("workflowRunId") != state.get("runId")
+            or receipt.get("packageAttemptId") != successful.get("attemptId")
+            or receipt.get("version") != action.get("targetVersion")
+            or receipt.get("effectiveVersionBump") != "none"
+            or receipt.get("effectiveTargetVersion") is not None
+            or current_identity != action.get("packageInputSha256")
+            or before.get("sha256") != current_identity
+            or after.get("sha256") != current_identity
+            or after.get("fileCount") != len(current_files)
+        ):
+            raise ValueError("completed same-version receipt does not bind the approved current inputs")
+        candidate_manifest = after.get("files")
+        if candidate_manifest is not None and _validate_package_input_file_manifest(
+            candidate_manifest,
+            expected_sha256=current_identity,
+            expected_file_count=len(current_files),
+            label="completed same-version V3.1 receipt",
+        ) != current_files:
+            raise ValueError("completed same-version receipt file manifest differs from current inputs")
+        artifact_hashes = receipt.get("packageArtifactHashes") or {}
+        for name in ("mainTemplate", "createUiDefinition", "testParameters", "zip"):
+            reference = receipt.get(name)
+            if not isinstance(reference, str) or not reference:
+                raise ValueError(f"completed same-version receipt is missing {name}")
+            artifact_path = resolve_artifact_reference(root, reference)
+            if (
+                artifact_path.is_symlink()
+                or not artifact_path.is_file()
+                or hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+                != artifact_hashes.get(name)
+            ):
+                raise ValueError(f"completed same-version package artifact is missing or modified: {name}")
+        archived_report = action.get("historicalEvidence", {}).get("packageReport")
+        prior_successful = {
+            "packageSucceeded": True,
+            "version": action.get("targetVersion"),
+            "packageInputSha256": action.get("basePackageInputSha256"),
+            "attemptId": action.get("priorPackageAttemptId"),
+            "packageReportSha256": action.get("priorPackageReportSha256"),
+            "packageReport": archived_report,
+        }
+        receipt_verified = True
+
+    if successful.get("packageSucceeded") is not True:
+        raise ValueError("same-version rebuild verification requires its successful prior V3.1 receipt")
+    current_identity = package_input_identity(root)["sha256"]
+    _validate_same_version_content_rebuild_inputs(
+        root,
+        action,
+        current_identity,
+        solution_data_version(root),
+        prior_successful,
+        legacy_baseline_evidence,
+    )
+    return {
+        "runId": state.get("runId"),
+        "status": "verified",
+        "targetVersion": action.get("targetVersion"),
+        "packageInputSha256": action.get("packageInputSha256"),
+        "changedInputs": sorted(action.get("approvedChangedInputs") or {}),
+        "receiptVerified": receipt_verified,
+        "packageReport": successful.get("packageReport") if completed_action else None,
+        "stateChanged": False,
+        "workflowCompletionClaimed": False,
+    }
+
+
+def plan_release_notes_refresh(
+    solution: str | Path,
+    *,
+    release_date: str,
+    change_history: str,
+    expected_package_input_sha256: str,
+) -> dict[str, Any]:
+    """Authorize only an exact ReleaseNotes row refresh without incrementing package version."""
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_package_input_sha256 or ""):
+        raise ValueError("expected package input identity must be a lowercase SHA-256")
+    root = Path(solution).expanduser().resolve()
+    with _state_writer_lock(root) as path:
+        loaded_path, state = _load(root)
+        if loaded_path != path:
+            raise ValueError("workflow state selection changed while acquiring its writer lock")
+        if state.get("context", {}).get("profileSelectionConfirmed") is not True:
+            raise ValueError("release-notes refresh requires explicit profile selection")
+        if state.get("context", {}).get("workflowProfile") != "authoring":
+            raise ValueError("same-release ReleaseNotes refresh is supported only for Authoring")
+        if state["stages"]["validation"]["status"] != "passed":
+            raise ValueError("release-notes refresh requires passed Authoring validation")
+        validation_artifacts = state["stages"]["validation"].get("artifacts") or {}
+        if (
+            validation_artifacts.get("validationMode") != "offline-authoring"
+            or validation_artifacts.get("runtimeStatus") != "not-run"
+        ):
+            raise ValueError("release-notes refresh requires current offline Authoring validation")
+        _validate_offline_authoring_gates(root, path, state)
+        if state.get("authoring") and state["authoring"]["status"] != "active":
+            raise ValueError("stopped or conflicted authoring runs cannot refresh release notes")
+        package_state = state.get("packaging") or {}
+        if package_state.get("pendingReleaseAction"):
+            raise ValueError("another package release action is already pending")
+        if (package_state.get("currentAttempt") or {}).get("status") == "running":
+            raise ValueError("cannot plan a ReleaseNotes refresh while V3.1 packaging is running")
+        successful = package_state.get("lastSuccessful") or {}
+        if not successful.get("packageSucceeded"):
+            raise ValueError("ReleaseNotes refresh requires a prior successful V3.1 package")
+        _verify_current_package_state(root, state)
+        files = package_input_file_hashes(root)
+        base_identity = _identity_from_file_hashes(files)
+        if (
+            base_identity != successful.get("packageInputSha256")
+            or base_identity != expected_package_input_sha256
+        ):
+            raise ValueError("package inputs must exactly match the prior successful V3.1 build")
+        current_version = solution_data_version(root)
+        if current_version != successful.get("version"):
+            raise ValueError("same-release notes refresh must retain the last packaged version")
+        notes_path, original_notes_sha, expected_notes_sha = _release_notes_refresh_proposal(
+            root, release_date=release_date, change_history=change_history,
+        )
+        relative_notes = notes_path.relative_to(root).as_posix()
+        expected_files = dict(files)
+        expected_files[relative_notes] = expected_notes_sha
+        expected_identity = _identity_from_file_hashes(expected_files)
+        historical_evidence = _archive_package_evidence(root, successful)
+        selected_at = _utc_now()
+        action = {
+            "actionType": "release-notes-refresh",
+            "versionBump": "none",
+            "basePackageInputSha256": base_identity,
+            "packageInputSha256": expected_identity,
+            "releaseNotesPath": relative_notes,
+            "releaseNotesOriginalSha256": original_notes_sha,
+            "releaseNotesExpectedSha256": expected_notes_sha,
+            "releaseNotesDate": release_date,
+            "releaseNotesVersion": current_version,
+            "releaseNotesChangeHistory": change_history.strip(),
+            "packageInputFilesBefore": files,
+            "selectedAt": selected_at,
+        }
+        package_state = state.setdefault("packaging", {})
+        package_state.setdefault("releaseActions", []).append({
+            **action,
+            "status": "selected",
+            "historicalEvidence": historical_evidence,
+        })
+        package_state["pendingReleaseAction"] = action
+        for name in ("packaging", "deployment", "mockIngestion", "alertParity", "report"):
+            stage = state["stages"][name]
+            if stage["status"] != "notRequired":
+                stage.update({
+                    "status": "blocked",
+                    "completedAt": None,
+                    "message": (
+                        "An explicitly approved same-version ReleaseNotes refresh is pending; "
+                        "only the exact planned ReleaseNotes row may change before V3.1 rebuild."
+                    ),
+                })
+        state["workflowStatus"] = "blocked"
+        _write_unlocked(path, state)
+        return {
+            "runId": state["runId"],
+            "version": current_version,
+            "packageInputSha256Before": base_identity,
+            "packageInputSha256After": expected_identity,
+            "releaseNotesPath": relative_notes,
+            "releaseNotesDate": release_date,
+            "releaseNotesChangeHistory": change_history.strip(),
+            "next": "add the exact approved row to ReleaseNotes.md, then package-v3-1 --version-bump none",
+            "workflowStatus": state["workflowStatus"],
+        }
+
+
+def plan_same_version_content_rebuild(
+    solution: str | Path,
+    *,
+    target_version: str,
+    changed_inputs: list[str],
+    expected_package_input_sha256: str,
+    legacy_baseline_evidence: str | Path | None = None,
+) -> dict[str, Any]:
+    """Authorize one exact-input V3.1 rebuild without changing the solution version."""
+    validate_v31_target_version(target_version)
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_package_input_sha256 or ""):
+        raise ValueError("expected package input identity must be a lowercase SHA-256")
+
+    root = Path(solution).expanduser().resolve()
+    with _state_writer_lock(root) as path:
+        loaded_path, state = _load(root)
+        if loaded_path != path:
+            raise ValueError("workflow state selection changed while acquiring its writer lock")
+        if state.get("context", {}).get("profileSelectionConfirmed") is not True:
+            raise ValueError("same-version rebuild requires explicit profile selection")
+        if state.get("context", {}).get("workflowProfile") != "authoring":
+            raise ValueError("same-version content rebuild is supported only for Authoring")
+        if state["stages"]["validation"]["status"] != "passed":
+            raise ValueError(
+                "same-version content rebuild requires passed Authoring validation"
+            )
+        validation_artifacts = state["stages"]["validation"].get("artifacts") or {}
+        if (
+            validation_artifacts.get("validationMode") != "offline-authoring"
+            or validation_artifacts.get("runtimeStatus") != "not-run"
+        ):
+            raise ValueError(
+                "same-version content rebuild requires current offline Authoring validation"
+            )
+        _validate_offline_authoring_gates(root, path, state)
+        if state.get("authoring") and state["authoring"]["status"] != "active":
+            raise ValueError("stopped or conflicted authoring runs cannot rebuild a package")
+        _yolo_package_readiness(root, path, state)
+        if verify_applied_package_selection(root, str(state.get("runId") or "")):
+            raise ValueError(
+                "same-version content rebuild requires the complete solution package; "
+                "evidence-based package selections are not supported"
+            )
+
+        current_version = solution_data_version(root)
+        if current_version != target_version:
+            raise ValueError(
+                "same-version rebuild target must exactly match the current solution version"
+            )
+        package_state = state.get("packaging") or {}
+        if package_state.get("pendingReleaseAction"):
+            raise ValueError("another package release action is already pending")
+        if (package_state.get("currentAttempt") or {}).get("status") == "running":
+            raise ValueError("cannot plan a same-version rebuild while V3.1 packaging is running")
+        successful = package_state.get("lastSuccessful") or {}
+        if successful.get("packageSucceeded") is not True:
+            raise ValueError(
+                "same-version rebuild requires a prior successful V3.1 package receipt"
+            )
+        if successful.get("effectiveVersionBump") not in {"patch", "minor", "major", "none"}:
+            raise ValueError("prior V3.1 package receipt has no valid version action")
+        historical_report = _validate_historical_package_receipt(
+            root, state, successful, target_version,
+        )
+        last_consumed = package_state.get("lastConsumedAction") or {}
+        if (
+            last_consumed.get("packageSucceeded") is not True
+            or last_consumed.get("attemptId") != successful.get("attemptId")
+            or last_consumed.get("packageInputSha256") != successful.get("packageInputSha256")
+            or last_consumed.get("version") not in (None, target_version)
+        ):
+            raise ValueError(
+                "prior package receipt is not linked to the current run's successful "
+                "consumed-action chain"
+            )
+        prior_identity = successful.get("packageInputSha256")
+        if not isinstance(prior_identity, str) or prior_identity == expected_package_input_sha256:
+            raise ValueError(
+                "same-version content rebuild requires changed package inputs since the "
+                "prior successful V3.1 build"
+            )
+        files = package_input_file_hashes(root)
+        current_identity = _identity_from_file_hashes(files)
+        if (
+            current_identity != expected_package_input_sha256
+            or current_identity == prior_identity
+        ):
+            raise ValueError(
+                "package inputs changed after same-version rebuild approval; refresh status "
+                "and approve the exact current input identity"
+            )
+        package_inputs = historical_report.get("packageInputs") or {}
+        prior_inputs = package_inputs.get("after") or {}
+        if prior_inputs.get("sha256") != prior_identity:
+            raise ValueError("prior successful receipt has a mismatched package-input identity")
+        legacy_evidence_binding = None
+        if prior_inputs.get("files") is None:
+            if legacy_baseline_evidence is None:
+                raise ValueError(
+                    "legacy successful V3.1 receipt has no per-file package-input baseline; "
+                    "provide exact receipt-bound --legacy-baseline-evidence"
+                )
+            baseline_files, legacy_evidence_binding = _legacy_baseline_evidence(
+                root,
+                legacy_baseline_evidence,
+                expected_current_sha256=current_identity,
+                current_files=files,
+                expected_prior_sha256=prior_identity,
+                expected_prior_file_count=prior_inputs.get("fileCount"),
+            )
+        else:
+            if legacy_baseline_evidence is not None:
+                raise ValueError(
+                    "legacy baseline evidence is only accepted for receipts without "
+                    "a per-file manifest"
+                )
+            baseline_files = _validate_package_input_file_manifest(
+                prior_inputs.get("files"),
+                expected_sha256=prior_identity,
+                expected_file_count=prior_inputs.get("fileCount"),
+                label="prior successful V3.1 receipt",
+            )
+        normalized_changed_inputs = [
+            name.replace("\\", "/") if isinstance(name, str) else name
+            for name in changed_inputs
+        ]
+        if (
+            not normalized_changed_inputs
+            or any(not isinstance(name, str) for name in normalized_changed_inputs)
+            or len(set(normalized_changed_inputs)) != len(normalized_changed_inputs)
+            or any(
+                not name
+                or name.replace("\\", "/") != name
+                or Path(name).is_absolute()
+                or ".." in Path(name).parts
+                or Path(name).as_posix() != name
+                for name in normalized_changed_inputs
+            )
+        ):
+            raise ValueError(
+                "same-version rebuild requires a unique, nonempty list of safe package-input paths"
+            )
+        approved_changes = {
+            name: files.get(name) for name in normalized_changed_inputs
+        }
+        _same_version_rebuild_scope(baseline_files, files, approved_changes)
+        if any(
+            action.get("actionType") == "same-version-content-rebuild"
+            and action.get("packageInputSha256") == current_identity
+            for action in package_state.get("releaseActions", [])
+        ):
+            raise ValueError(
+                "a same-version rebuild action was already selected for these package inputs"
+            )
+
+        historical_evidence = _archive_package_evidence(root, successful)
+        backup_id = str(uuid.uuid4())
+        backup_root = (
+            path.parent / "Reports" / "package-history" / backup_id / "input-backup"
+        )
+        current_files = package_input_file_hashes(root)
+        if current_files != files:
+            raise ValueError("package inputs changed while the rebuild backup was prepared")
+        for relative, digest in files.items():
+            source = content_path(root, relative)
+            if source.is_symlink() or not source.is_file():
+                raise ValueError(f"package input cannot be backed up safely: {relative}")
+            if hashlib.sha256(source.read_bytes()).hexdigest() != digest:
+                raise ValueError(f"package input changed while backing up: {relative}")
+            destination = backup_root.joinpath(*Path(relative).parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+                raise ValueError(f"package input backup verification failed: {relative}")
+        if package_input_file_hashes(root) != files:
+            raise ValueError("package inputs changed while the rebuild backup was prepared")
+        relative_backup_root = backup_root.relative_to(root).as_posix()
+        historical_evidence["inputBackupRoot"] = relative_backup_root
+
+        selected_at = _utc_now()
+        action = {
+            "actionType": "same-version-content-rebuild",
+            "versionBump": "none",
+            "runId": state["runId"],
+            "targetVersion": target_version,
+            "basePackageInputSha256": prior_identity,
+            "packageInputSha256": current_identity,
+            "packageInputFilesBefore": files,
+            "approvedChangedInputs": approved_changes,
+            "priorPackageAttemptId": successful["attemptId"],
+            "priorPackageReportSha256": successful["packageReportSha256"],
+            "inputBackupRoot": relative_backup_root,
+            "backupId": backup_id,
+            "selectedAt": selected_at,
+            "historicalEvidence": historical_evidence,
+        }
+        if legacy_evidence_binding is not None:
+            action["legacyBaselineEvidence"] = legacy_evidence_binding
+        release_action = {
+            **action,
+            "status": "selected",
+            "historicalEvidence": historical_evidence,
+        }
+        package_state.setdefault("releaseActions", []).append(release_action)
+        package_state["pendingReleaseAction"] = action
+        for name in ("packaging", "deployment", "mockIngestion", "alertParity", "report"):
+            stage = state["stages"][name]
+            if stage["status"] != "notRequired":
+                stage.update({
+                    "status": "blocked",
+                    "completedAt": None,
+                    "message": (
+                        "An explicitly approved same-version content rebuild is pending; "
+                        "the exact backed-up package inputs and current offline Authoring "
+                        "gates must remain unchanged."
+                    ),
+                })
+        state["workflowStatus"] = "blocked"
+        _write_unlocked(path, state)
+        return {
+            "runId": state["runId"],
+            "version": target_version,
+            "priorPackageInputSha256": prior_identity,
+            "packageInputSha256": current_identity,
+            "approvedChangedInputs": action["approvedChangedInputs"],
+            "inputBackupRoot": relative_backup_root,
+            "historicalEvidence": historical_evidence,
+            "legacyBaselineEvidence": legacy_evidence_binding,
+            "next": "package-v3-1 --version-bump none",
+            "workflowStatus": state["workflowStatus"],
+        }
+
+
 def plan_new_package_release(
     solution: str | Path,
     *,
-    version_bump: str,
+    version_bump: str | None = None,
+    target_version: str | None = None,
     expected_package_input_sha256: str,
 ) -> dict[str, Any]:
     """Explicitly reopen a stale package stage for one versioned V3.1 release action."""
-    if version_bump not in {"patch", "minor", "major"}:
-        raise ValueError("new package release action must be patch, minor, or major")
+    if (version_bump is None) == (target_version is None):
+        raise ValueError("select exactly one version bump or target version")
+    if target_version is not None:
+        validate_v31_target_version(target_version)
+        version_bump = "none"
+        action_type = "target-version"
+    else:
+        if version_bump not in {"patch", "minor", "major"}:
+            raise ValueError("new package release action must be patch, minor, or major")
+        action_type = "version-bump"
     if not re.fullmatch(r"[a-f0-9]{64}", expected_package_input_sha256 or ""):
         raise ValueError("expected package input identity must be a lowercase SHA-256")
 
@@ -2692,7 +4202,18 @@ def plan_new_package_release(
             and validation_status == "passed"
             and state["stages"]["conversion"]["status"] == "passed"
         )
-        first_release_ready = partial_release_ready or complete_release_ready
+        validation_artifacts = state["stages"]["validation"].get("artifacts") or {}
+        offline_authoring_ready = (
+            state["context"].get("workflowProfile") == "authoring"
+            and validation_status == "passed"
+            and validation_artifacts.get("runtimeStatus") == "not-run"
+            and validation_artifacts.get("validationMode") == "offline-authoring"
+        )
+        if offline_authoring_ready:
+            _validate_offline_authoring_gates(root, path, state)
+        first_release_ready = (
+            partial_release_ready or complete_release_ready or offline_authoring_ready
+        )
         _yolo_package_readiness(
             root,
             path,
@@ -2716,6 +4237,11 @@ def plan_new_package_release(
             raise ValueError(
                 "package inputs changed after release action selection; refresh status "
                 "and explicitly select an action for the current input identity"
+            )
+        if target_version is not None and solution_data_version(root) == target_version:
+            raise ValueError(
+                "target version already matches the solution; a new release action must "
+                "change the version"
             )
 
         package_state = state.get("packaging")
@@ -2748,8 +4274,8 @@ def plan_new_package_release(
         if prior is None and not first_release_ready:
             raise ValueError(
                 "first release planning without a prior successful V3.1 package requires "
-                "a fresh applied complete selection with passed validation, or an eligible "
-                "partial selection with blocked validation"
+                "fresh passed validation with an applied complete selection or explicit "
+                "offline Authoring evidence, or an eligible partial selection with blocked validation"
             )
         if prior and current_identity == prior.get("packageInputSha256"):
             raise ValueError(
@@ -2768,7 +4294,18 @@ def plan_new_package_release(
             )
         if any(
             item.get("packageInputSha256") == current_identity
-            and item.get("versionBump") == version_bump
+            and (
+                (
+                    action_type == "target-version"
+                    and item.get("actionType") == "target-version"
+                    and item.get("targetVersion") == target_version
+                )
+                or (
+                    action_type == "version-bump"
+                    and item.get("versionBump") == version_bump
+                    and item.get("actionType") != "target-version"
+                )
+            )
             for item in package_state["releaseActions"]
         ):
             raise ValueError("this explicit release action was already consumed for these inputs")
@@ -2777,18 +4314,29 @@ def plan_new_package_release(
         historical_evidence = (
             _archive_package_evidence(root, prior) if prior else {}
         )
-        package_state["releaseActions"].append({
+        selected_action = {
             "versionBump": version_bump,
             "packageInputSha256": current_identity,
             "selectedAt": selected_at,
             "status": "selected",
             "historicalEvidence": historical_evidence,
-        })
-        package_state["pendingReleaseAction"] = {
+        }
+        pending_action = {
             "versionBump": version_bump,
             "packageInputSha256": current_identity,
             "selectedAt": selected_at,
         }
+        if target_version is not None:
+            selected_action.update({
+                "actionType": action_type,
+                "targetVersion": target_version,
+            })
+            pending_action.update({
+                "actionType": action_type,
+                "targetVersion": target_version,
+            })
+        package_state["releaseActions"].append(selected_action)
+        package_state["pendingReleaseAction"] = pending_action
         for name in ("packaging", "deployment", "mockIngestion", "alertParity", "report"):
             stage = state["stages"][name]
             if stage["status"] != "notRequired":
@@ -2806,6 +4354,7 @@ def plan_new_package_release(
         return {
             "runId": state["runId"],
             "versionBump": version_bump,
+            "targetVersion": target_version,
             "packageInputSha256": current_identity,
             "selectedAt": selected_at,
             "next": _next_stage_name(state),
@@ -2817,11 +4366,17 @@ def package_workflow_v3_1(
     solution: str | Path,
     *,
     requested_version_bump: str,
+    requested_target_version: str | None = None,
     toolkit_root: str | Path | None = None,
+    legacy_baseline_evidence: str | Path | None = None,
 ) -> dict[str, Any]:
     """Package one current workflow attempt and persist fresh, hash-bound evidence."""
     if requested_version_bump not in {"none", "patch", "minor", "major"}:
         raise ValueError("version bump must be none, patch, minor, or major")
+    if requested_target_version is not None:
+        validate_v31_target_version(requested_target_version)
+        if requested_version_bump != "none":
+            raise ValueError("target version cannot be combined with a version bump")
     root = Path(solution).expanduser().resolve()
     with _state_writer_lock(root) as path:
         loaded_path, state = _load(root)
@@ -2848,6 +4403,15 @@ def package_workflow_v3_1(
                 "workflow packaging requires passed validation or a fresh, applied "
                 "partial package selection with all exclusions accounted for"
             )
+        validation_artifacts = state["stages"]["validation"].get("artifacts") or {}
+        offline_authoring_package = (
+            state["context"].get("workflowProfile") == "authoring"
+            and validation_status == "passed"
+            and validation_artifacts.get("runtimeStatus") == "not-run"
+            and validation_artifacts.get("validationMode") == "offline-authoring"
+        )
+        if offline_authoring_package:
+            _validate_offline_authoring_gates(root, path, state)
         _yolo_package_readiness(
             root,
             path,
@@ -2896,6 +4460,60 @@ def package_workflow_v3_1(
             raise ValueError("workflow packaging is blocked by unfinished prerequisites")
 
         inputs = package_input_identity(root)
+        package_state = state.get("packaging") or {}
+        pending_release = package_state.get("pendingReleaseAction") or {}
+        notes_refresh = pending_release.get("actionType") == "release-notes-refresh"
+        same_version_rebuild = (
+            pending_release.get("actionType") == "same-version-content-rebuild"
+        )
+        if legacy_baseline_evidence is not None and not same_version_rebuild:
+            raise ValueError(
+                "--legacy-baseline-evidence is only valid for a pending same-version rebuild"
+            )
+        if notes_refresh and not offline_authoring_package:
+            raise ValueError(
+                "same-release ReleaseNotes refresh requires offline Authoring validation; "
+                "Qualification must use its runtime-bound release gates"
+            )
+        if same_version_rebuild and not offline_authoring_package:
+            raise ValueError(
+                "same-version content rebuild requires offline Authoring validation; "
+                "Qualification must use its runtime-bound release gates"
+            )
+        if same_version_rebuild and selection_evidence:
+            raise ValueError(
+                "same-version content rebuild requires the complete solution package; "
+                "evidence-based package selections are not supported"
+            )
+        if notes_refresh and requested_version_bump != "none":
+            raise ValueError(
+                "approved same-release ReleaseNotes refresh must be rebuilt with "
+                "--version-bump none"
+            )
+        if same_version_rebuild and (
+            requested_version_bump != "none" or requested_target_version is not None
+        ):
+            raise ValueError(
+                "approved same-version content rebuild must use "
+                "--version-bump none without --target-version"
+            )
+        successful_package = package_state.get("lastSuccessful") or {}
+        current_successful_no_bump_receipt = bool(
+            successful_package.get("packageSucceeded") is True
+            and successful_package.get("effectiveVersionBump") == "none"
+            and successful_package.get("packageInputSha256") == inputs["sha256"]
+            and (package_state.get("lastConsumedAction") or {}).get("effectiveVersionBump") == "none"
+            and any(
+                action.get("actionType") in {
+                    "release-notes-refresh", "same-version-content-rebuild",
+                }
+                and action.get("status") == "consumed"
+                and action.get("packageInputSha256") == inputs["sha256"]
+                for action in package_state.get("releaseActions", [])
+            )
+        )
+        if current_successful_no_bump_receipt:
+            _verify_current_package_state(root, state)
         if campaign_budget:
             prior_package_attempts = package_history(
                 root, campaign_budget["campaignId"],
@@ -2909,12 +4527,26 @@ def package_workflow_v3_1(
                 prior_after = (
                     last_consumed["finish"].get("completionMetadata") or {}
                 ).get("packageInputSha256After")
-                if prior_after == inputs["sha256"] and requested_version_bump != "none":
+                if (
+                    not (notes_refresh or same_version_rebuild)
+                    and not current_successful_no_bump_receipt
+                    and prior_after == inputs["sha256"]
+                    and (
+                        requested_version_bump != "none"
+                        or requested_target_version is not None
+                    )
+                ):
                     raise ValueError(
                         "a campaign version action was already consumed for unchanged "
-                        "package inputs; use --version-bump none"
+                        "package inputs; rebuild with --version-bump none"
                     )
-                if prior_after != inputs["sha256"] and requested_version_bump == "none":
+                if (
+                    not (notes_refresh or same_version_rebuild)
+                    and not current_successful_no_bump_receipt
+                    and prior_after != inputs["sha256"]
+                    and requested_version_bump == "none"
+                    and requested_target_version is None
+                ):
                     raise ValueError(
                         "campaign package inputs changed after the consumed version action; "
                         "select an explicit new version bump"
@@ -2929,10 +4561,31 @@ def package_workflow_v3_1(
         }
         package_state.setdefault("releaseActions", [])
         package_state.setdefault("pendingReleaseAction", None)
+        pending_release = package_state.get("pendingReleaseAction")
+        notes_refresh = bool(
+            pending_release
+            and pending_release.get("actionType") == "release-notes-refresh"
+        )
+        same_version_rebuild = bool(
+            pending_release
+            and pending_release.get("actionType") == "same-version-content-rebuild"
+        )
         previous = package_state.get("lastSuccessful")
         previous_successful = previous
         last_consumed = package_state.get("lastConsumedAction") or {}
-        pending_release = package_state.get("pendingReleaseAction")
+        if notes_refresh:
+            _validate_release_notes_refresh_inputs(
+                root, pending_release, inputs["sha256"],
+            )
+        if same_version_rebuild:
+            _validate_same_version_content_rebuild_inputs(
+                root,
+                pending_release,
+                inputs["sha256"],
+                solution_data_version(root),
+                previous or {},
+                legacy_baseline_evidence,
+            )
         failed_consumed_retry = (
             last_consumed.get("bumpConsumed") is True
             and last_consumed.get("packageSucceeded") is False
@@ -2947,6 +4600,14 @@ def package_workflow_v3_1(
             if pending_release and (
                 pending_release.get("packageInputSha256") != inputs["sha256"]
                 or pending_release.get("versionBump") != requested_version_bump
+                or (
+                    pending_release.get("actionType") == "target-version"
+                    and pending_release.get("targetVersion") != requested_target_version
+                )
+                or (
+                    pending_release.get("actionType") != "target-version"
+                    and requested_target_version is not None
+                )
             ):
                 raise ValueError(
                     "package input identity or version action differs from the explicitly "
@@ -2955,6 +4616,14 @@ def package_workflow_v3_1(
         elif pending_release and (
             pending_release.get("packageInputSha256") != inputs["sha256"]
             or pending_release.get("versionBump") != requested_version_bump
+            or (
+                pending_release.get("actionType") == "target-version"
+                and pending_release.get("targetVersion") != requested_target_version
+            )
+            or (
+                pending_release.get("actionType") != "target-version"
+                and requested_target_version is not None
+            )
         ):
             raise ValueError(
                 "pending release action no longer matches changed package inputs"
@@ -2962,19 +4631,58 @@ def package_workflow_v3_1(
         if (
             previous is not None
             and inputs["sha256"] == previous.get("packageInputSha256")
-            and requested_version_bump != "none"
+            and (
+                requested_version_bump != "none"
+                or requested_target_version is not None
+            )
         ):
             raise ValueError(
                 "a V3.1 package already exists for unchanged inputs; use "
-                "--version-bump none for a repeat build"
+                "--version-bump none without --target-version for a repeat build"
             )
         if failed_consumed_retry and requested_version_bump != "none":
             raise ValueError(
                 "the selected release action was consumed by a failed build; retry "
                 "with --version-bump none for the matching package inputs"
             )
+        effective_target_version = None
+        if pending_release and pending_release.get("actionType") == "target-version":
+            if requested_target_version != pending_release.get("targetVersion"):
+                raise ValueError(
+                    "package target version differs from the explicitly selected release action"
+                )
+            effective_target_version = pending_release["targetVersion"]
+        elif requested_target_version is not None:
+            selected_target = state["context"].get("targetVersion")
+            selected_bump = state["context"].get("versionBump")
+            if selected_bump not in (None, "none"):
+                raise ValueError(
+                    "target version cannot be combined with the workflow's selected version bump"
+                )
+            if selected_target not in (None, requested_target_version):
+                raise ValueError(
+                    "requested target version differs from the workflow's selected target"
+                )
+            if previous is None and solution_data_version(root) == requested_target_version:
+                raise ValueError(
+                    "target version already matches the solution; a new release action must "
+                    "change the version"
+                )
+            effective_target_version = requested_target_version
+        elif (
+            previous is None
+            and state["context"].get("targetVersion") is not None
+            and not failed_consumed_retry
+        ):
+            raise ValueError(
+                "the workflow selected a target version; package with the same "
+                "--target-version and --version-bump none"
+            )
+
         if (
-            requested_version_bump == "none"
+            not notes_refresh
+            and not pending_release
+            and requested_version_bump == "none"
             and last_consumed.get("bumpConsumed") is True
         ):
             if inputs["sha256"] != last_consumed.get("packageInputSha256"):
@@ -2982,6 +4690,8 @@ def package_workflow_v3_1(
                     "package inputs changed after the consumed version action; "
                     "select an explicit new version bump"
                 )
+            effective_bump = "none"
+        elif notes_refresh:
             effective_bump = "none"
         elif pending_release:
             effective_bump = pending_release["versionBump"]
@@ -2994,6 +4704,8 @@ def package_workflow_v3_1(
                 )
             if selected_bump is None:
                 state["context"]["versionBump"] = requested_version_bump
+            if effective_target_version is not None and state["context"].get("targetVersion") is None:
+                state["context"]["targetVersion"] = effective_target_version
             effective_bump = requested_version_bump
         elif requested_version_bump == "none":
             raise ValueError(
@@ -3024,7 +4736,10 @@ def package_workflow_v3_1(
             "status": "running",
             "requestedVersionBump": requested_version_bump,
             "effectiveVersionBump": effective_bump,
+            "requestedTargetVersion": requested_target_version,
+            "effectiveTargetVersion": effective_target_version,
             "bumpConsumed": False,
+            "targetConsumed": False,
             "packageInputSha256": inputs["sha256"],
             "packageReportSha256": None,
             "startedAt": started_at,
@@ -3047,6 +4762,8 @@ def package_workflow_v3_1(
                         "packageInputSha256": inputs["sha256"],
                         "requestedVersionBump": requested_version_bump,
                         "effectiveVersionBump": effective_bump,
+                        "requestedTargetVersion": requested_target_version,
+                        "effectiveTargetVersion": effective_target_version,
                     },
                     completion_metadata=package_receipt_details,
                 )
@@ -3075,6 +4792,7 @@ def package_workflow_v3_1(
                     result = package_solution_v3_1(
                         root,
                         version_bump=effective_bump,
+                        target_version=effective_target_version,
                         toolkit_root=toolkit_root,
                         requested_version_bump=requested_version_bump,
                         package_attempt_id=attempt_id,
@@ -3085,11 +4803,19 @@ def package_workflow_v3_1(
                     )
                 except BaseException:
                     version_after_failure = solution_data_version(root)
-                    consumed_on_failure = version_bump_was_consumed(
-                        version_before, version_after_failure, effective_bump,
+                    consumed_on_failure = _version_action_was_consumed(
+                        version_before,
+                        version_after_failure,
+                        effective_bump,
+                        effective_target_version,
                     )
                     package_receipt_details.update({
                         "bumpConsumed": consumed_on_failure,
+                        "targetConsumed": (
+                            effective_target_version is not None
+                            and consumed_on_failure
+                        ),
+                        "targetVersion": effective_target_version,
                         "packageInputSha256After": (
                             package_input_identity(root)["sha256"]
                             if consumed_on_failure else inputs["sha256"]
@@ -3098,9 +4824,18 @@ def package_workflow_v3_1(
                     raise
                 else:
                     package_receipt_details.update({
-                        "bumpConsumed": version_bump_was_consumed(
-                            version_before, solution_data_version(root), effective_bump,
+                        "bumpConsumed": _version_action_was_consumed(
+                            version_before,
+                            solution_data_version(root),
+                            effective_bump,
+                            effective_target_version,
                         ),
+                        "targetConsumed": (
+                            effective_target_version is not None
+                            and solution_data_version(root) == effective_target_version
+                            and version_before != effective_target_version
+                        ),
+                        "targetVersion": effective_target_version,
                         "packageInputSha256After": package_input_identity(root)["sha256"],
                     })
                     report_for_receipt = json.loads(
@@ -3120,10 +4855,55 @@ def package_workflow_v3_1(
             input_after = (report_inputs.get("after") or {}).get("sha256")
             if not input_after:
                 raise ValueError("V3.1 package report has no post-build package input identity")
+            if notes_refresh:
+                current_after = package_input_identity(root)["sha256"]
+                _validate_release_notes_refresh_inputs(
+                    root, pending_release, current_after,
+                )
+                if (
+                    input_after != current_after
+                    or report.get("version") != pending_release.get("releaseNotesVersion")
+                    or solution_data_version(root) != pending_release.get("releaseNotesVersion")
+                    or report.get("effectiveVersionBump") != "none"
+                ):
+                    raise ValueError(
+                        "V3.1 receipt does not bind the exact approved same-version "
+                        "ReleaseNotes refresh"
+                    )
+            if same_version_rebuild:
+                current_after = package_input_identity(root)["sha256"]
+                _validate_same_version_content_rebuild_inputs(
+                    root,
+                    pending_release,
+                    current_after,
+                    solution_data_version(root),
+                    successful_package,
+                    legacy_baseline_evidence,
+                )
+                if (
+                    input_after != current_after
+                    or report.get("version") != pending_release.get("targetVersion")
+                    or solution_data_version(root) != pending_release.get("targetVersion")
+                    or report.get("effectiveVersionBump") != "none"
+                    or report.get("effectiveTargetVersion") is not None
+                ):
+                    raise ValueError(
+                        "V3.1 receipt does not bind the exact approved same-version "
+                        "content rebuild"
+                    )
+            if effective_target_version is not None and (
+                report.get("version") != effective_target_version
+                or solution_data_version(root) != effective_target_version
+                or report.get("effectiveTargetVersion") != effective_target_version
+            ):
+                raise ValueError(
+                    "V3.1 receipt does not bind the explicitly selected target version"
+                )
             current_attempt = package_state["currentAttempt"]
             current_attempt.update({
                 "status": "passed",
                 "bumpConsumed": True,
+                "targetConsumed": effective_target_version is not None,
                 "packageInputSha256": input_after,
                 "packageReportSha256": report_hash,
                 "completedAt": _utc_now(),
@@ -3131,6 +4911,9 @@ def package_workflow_v3_1(
             package_state["lastConsumedAction"] = {
                 "requestedVersionBump": requested_version_bump,
                 "effectiveVersionBump": effective_bump,
+                "requestedTargetVersion": requested_target_version,
+                "effectiveTargetVersion": effective_target_version,
+                "targetConsumed": effective_target_version is not None,
                 "bumpConsumed": True,
                 "packageInputSha256": input_after,
                 "attemptId": attempt_id,
@@ -3153,6 +4936,11 @@ def package_workflow_v3_1(
                 "packageInputSha256": input_after,
                 "packageReportSha256": report_hash,
             })
+            if requested_target_version is not None or effective_target_version is not None:
+                artifacts.update({
+                    "requestedTargetVersion": requested_target_version,
+                    "effectiveTargetVersion": effective_target_version,
+                })
             if selection_evidence:
                 artifacts.update({
                     "selectionPlan": selection_evidence["planPath"],
@@ -3194,8 +4982,11 @@ def package_workflow_v3_1(
                 package_state["lastSuccessful"] = previous_successful
                 current_attempt = package_state["currentAttempt"]
                 version_after = solution_data_version(root)
-                consumed = version_bump_was_consumed(
-                    version_before, version_after, effective_bump
+                consumed = _version_action_was_consumed(
+                    version_before,
+                    version_after,
+                    effective_bump,
+                    effective_target_version,
                 )
                 if consumed:
                     try:
@@ -3206,12 +4997,20 @@ def package_workflow_v3_1(
                         package_state["lastConsumedAction"] = {
                             "requestedVersionBump": requested_version_bump,
                             "effectiveVersionBump": effective_bump,
+                            "requestedTargetVersion": requested_target_version,
+                            "effectiveTargetVersion": effective_target_version,
+                            "targetConsumed": (
+                                effective_target_version is not None and consumed
+                            ),
                             "bumpConsumed": True,
                             "packageInputSha256": input_after_failure,
                             "attemptId": attempt_id,
                             "packageSucceeded": False,
                         }
                         current_attempt["bumpConsumed"] = True
+                        current_attempt["targetConsumed"] = (
+                            effective_target_version is not None
+                        )
                         current_attempt["packageInputSha256"] = input_after_failure
                         if pending_release:
                             package_state["pendingReleaseAction"] = None
@@ -3257,8 +5056,11 @@ def package_workflow_v3_1(
             package_state["lastSuccessful"] = previous_successful
             current_attempt = package_state["currentAttempt"]
             version_after = solution_data_version(root)
-            consumed = version_bump_was_consumed(
-                version_before, version_after, effective_bump
+            consumed = _version_action_was_consumed(
+                version_before,
+                version_after,
+                effective_bump,
+                effective_target_version,
             )
             if consumed:
                 try:
@@ -3269,12 +5071,20 @@ def package_workflow_v3_1(
                     package_state["lastConsumedAction"] = {
                         "requestedVersionBump": requested_version_bump,
                         "effectiveVersionBump": effective_bump,
+                        "requestedTargetVersion": requested_target_version,
+                        "effectiveTargetVersion": effective_target_version,
+                        "targetConsumed": (
+                            effective_target_version is not None and consumed
+                        ),
                         "bumpConsumed": True,
                         "packageInputSha256": input_after_failure,
                         "attemptId": attempt_id,
                         "packageSucceeded": False,
                     }
                     current_attempt["bumpConsumed"] = True
+                    current_attempt["targetConsumed"] = (
+                        effective_target_version is not None
+                    )
                     current_attempt["packageInputSha256"] = input_after_failure
                     if pending_release:
                         package_state["pendingReleaseAction"] = None
@@ -3331,6 +5141,27 @@ def workflow_status(solution: str | Path) -> dict[str, Any]:
     partial_package_summary = None
     packaging_stage = (state.get("stages") or {}).get("packaging") or {}
     packaging_artifacts = packaging_stage.get("artifacts") or {}
+    validation_stage = (state.get("stages") or {}).get("validation") or {}
+    validation_artifacts = validation_stage.get("artifacts") or {}
+    offline_authoring_marker = (
+        state.get("context", {}).get("workflowProfile") == "authoring"
+        and validation_stage.get("status") == "passed"
+        and validation_artifacts.get("runtimeStatus") == "not-run"
+        and validation_artifacts.get("validationMode") == "offline-authoring"
+    )
+    runtime_report_directory = report_directory(solution)
+    offline_runtime_reports = tuple(
+        runtime_report_directory / f"runtime-validation.{provider}.json"
+        for provider in (
+            "triage-mcp",
+            "azure-monitor-sdk",
+            "log-analytics-cli",
+            "graph",
+        )
+    )
+    offline_authoring = offline_authoring_marker and not any(
+        report_path.is_file() for report_path in offline_runtime_reports
+    )
     if (
         packaging_stage.get("status") == "passed"
         and packaging_artifacts.get("selectionOutcome") == "partial-package-validated"
@@ -3358,7 +5189,9 @@ def workflow_status(solution: str | Path) -> dict[str, Any]:
         "packageFreshness": freshness,
         "runtimeAssessment": {
             "runtimeStatus": (
-                "passed"
+                "not-run"
+                if offline_authoring
+                else "passed"
                 if runtime_evidence.get("passed")
                 else "source-waived"
                 if runtime_evidence.get("sourceStatus") == "source-waived"
@@ -3439,26 +5272,46 @@ def invalidate_scoped_completion(solution: str | Path) -> None:
 def invalidate_runtime_completion(
     solution: str | Path,
     changed_queries: list[str],
+    *,
+    reason: str | None = None,
 ) -> None:
-    """Keep historical reports, but block passed validation after KQL changes."""
-    if not changed_queries or not existing_artifact_path(solution, STATE_FILE_NAME).is_file():
+    """Block completed validation when current query or post-offline evidence changes."""
+    if (
+        (not changed_queries and not reason)
+        or not existing_artifact_path(solution, STATE_FILE_NAME).is_file()
+    ):
         return
     with _state_writer_lock(solution) as path:
         loaded_path, state = _load(solution)
         if loaded_path != path:
             raise ValueError("workflow state selection changed while acquiring its writer lock")
+        validation = state["stages"]["validation"]
+        offline_validation = (
+            validation["status"] == "passed"
+            and (validation.get("artifacts") or {}).get("runtimeStatus") == "not-run"
+            and (validation.get("artifacts") or {}).get("validationMode") == "offline-authoring"
+        )
+        if reason and not offline_validation:
+            return
         affected = STAGES[2:]
         if not any(
             state["stages"][name]["status"] not in {"pending", "notRequired"}
             for name in affected
         ):
             return
-        names = ", ".join(sorted(set(changed_queries)))
-        message = (
-            "A converted Advanced Hunting query changed; previous runtime evidence is "
-            "historical and must not be reused. Rerun the complete Sentinel and Advanced "
-            f"Hunting query families against the exact current queries. Changed outputs: {names}"
-        )
+        if reason:
+            message = (
+                "Runtime validation is not complete: "
+                + reason
+                + " Reconcile the current complete provider evidence before completing Validation."
+            )
+        else:
+            names = ", ".join(sorted(set(changed_queries)))
+            message = (
+                "A converted Advanced Hunting query changed; previous runtime evidence is "
+                "historical and must not be reused. Rerun the complete Sentinel and Advanced "
+                f"Hunting query families against the exact current queries. Changed outputs: {names}"
+            )
         for name in affected:
             current = state["stages"][name]
             if current["status"] not in {"pending", "notRequired"}:
@@ -3708,6 +5561,21 @@ def _complete_workflow_stage_unlocked(
                     "environment-blocked: "
                     + "; ".join(runtime_evidence["currentQueryFailures"])
                 )
+        elif runtime_status == "not-run":
+            if final_artifacts.get("validationMode") != "offline-authoring":
+                raise ValueError(
+                    "runtimeStatus=not-run requires the explicit offline-authoring validation mode"
+                )
+            _validate_offline_authoring_gates(
+                Path(solution).expanduser().resolve(),
+                path,
+                state,
+            )
+            final_artifacts = {
+                "runtimeStatus": "not-run",
+                "validationMode": "offline-authoring",
+            }
+            message = _offline_authoring_validation_message()
         else:
             if not runtime_evidence["passed"]:
                 raise ValueError(

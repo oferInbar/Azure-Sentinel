@@ -562,7 +562,7 @@ resolution or copy platform-specific metadata across incompatible contracts.
 | Standard schema resolution | `catalog.py` contains a finite table/rename catalog; `convert_query` applies token replacements. No general authoritative source/target schema resolver is implemented. | Resolve documented schemas and table-scoped lineage automatically; retain surface, source, and confidence evidence. |
 | Mixed-query time columns | Native-only catalog queries may rename `TimeGenerated`; mixed native/passthrough queries preserve it and request review. | Resolve each reference against its actual table/alias, not a whole-query rename or a customer schema question. |
 | Custom logs | `_CL` recognition identifies names, not a complete schema. | Infer only from actual available connector/DCR/table metadata; report missing/conflicting evidence explicitly. |
-| Runtime validation declined | YAML generation is possible without runtime access; existing structural/review checks and workflow gates remain. No general no-runtime completion/waiver mode is introduced here. | Show the disclosure below and specific checks. Any new optional-validation state/gate behavior requires a separate implementation decision. |
+| Runtime validation declined | Offline Authoring can complete Validation only with current full-inventory conversion, structural success, resolved technical findings and hash-bound review decisions. It records `runtimeStatus=not-run` and is not runtime/XDR qualification. Existing runtime reports are never discarded or overridden. Qualification still requires its exact locked target and complete runtime/schema/consent evidence. | Show the disclosure below. Preserve unexecuted, blocked, failed, and review-pending results; a review acceptance is not runtime verification. |
 | Entity equivalence | Documented identifier mappings and conservative proofs exist; unsupported mappings produce diagnostics. | Explain the exact retained identifiers, actual field loss, or proven equivalence; distinguish converter proof limits from target-contract limits. |
 | Best-effort entity assumptions | Available unsupported entity values can use a deterministic supported candidate, remain in custom details, and carry hash-bound pending review while structural/read-only runtime tests continue. | Never auto-accept or claim parity; human review remains required before V3.1 packaging/deployment. Other technical and review gates remain unchanged. |
 | General semantic uncertainty and batch review | Best-effort continuation is limited to specific entity-mapping cases. There is no general assumption-driven candidate workflow or batch accept/change/exclude interface. | For defensible uncertain mappings, generate a documented candidate and hash-bound assumption for later human review without per-rule pauses. Support scoped accept, change-and-regenerate, or reasoned exclusion while retaining every object and disposition in inventory/provenance. Acceptance does not prove runtime correctness or parity. |
@@ -574,13 +574,20 @@ When runtime validation is declined, the review UI should say:
 > KQL has not been validated because this migration runs without runtime validation. Enable full validation, or review/accept the specific migration checks below.
 
 This is approved presentation policy, not a claim that an “Enable full
-validation” control or a new acceptance mechanism exists. Continue reporting
-actual schema/static results separately; do not relabel not-run, blocked,
-failed, or `needsReview` results as success. Acceptance of a supported,
-specific migration review item is not KQL execution, syntax verification,
-deployment readiness, or alert parity. The existing Authoring
-`runtimeStatus=environment-blocked` exception requires its stated evidence;
-declining runtime checks is not that exception.
+validation” control exists. Offline Authoring's explicit
+`validationMode=offline-authoring` route is permitted only after fresh full-inventory
+conversion and structural validation, with all technical findings and
+hash-bound review decisions resolved. It records runtime as not run, does not
+dispatch Sentinel or Advanced Hunting queries, and cannot replace persisted
+runtime reports. Current report failures and stale or unresolved evidence keep
+the stage blocked. A provider report recorded after offline completion reopens
+Validation and downstream gates for reevaluation. This is not runtime/XDR
+qualification; Qualification retains its complete runtime, schema, consent,
+target, and execution gates. Acceptance of a supported, specific migration
+review item is not KQL execution, syntax verification, deployment readiness,
+or alert parity. The separate Authoring `runtimeStatus=environment-blocked`
+exception still requires its stated provider/environment evidence and may not
+conceal an exact-query failure.
 
 ### Worked review: Local Admin Group Changes
 
@@ -1009,6 +1016,45 @@ interactive accept/reject decision experience are not implemented by this
 package itself; follow the agent capabilities actually available and never
 claim these pending orchestration features ran when they did not.
 
+For offline Authoring, pass Validation only when the persisted discovery and
+full-solution conversion stages are current, every source rule and generated
+detection is present, structural validation succeeds for the complete
+inventory, and technical findings plus hash-bound review decisions are
+resolved. The stage records `runtimeStatus=not-run` with
+`validationMode=offline-authoring`; this is authoring-only and explicitly not
+runtime/XDR qualification. The route dispatches no queries. Existing runtime
+reports—including optional Advanced Hunting results—cannot be replaced by
+offline evidence; preserve and resolve their findings through the normal
+runtime gates. No consent means no optional Advanced Hunting dispatch.
+
+For an existing Authoring run whose passed Conversion stage predates
+`manifestSha256`, recover that exact run's evidence before completing
+Validation; do not reconvert, edit workflow state by hand, or create a
+replacement run just to repair the receipt:
+
+```powershell
+sentinel-xdr-migration workflow-recover-conversion-evidence `
+  --solution "Solutions\<solution>" `
+  --run-id "<existing-authoring-run-id>"
+sentinel-xdr-migration workflow-complete-stage `
+  --solution "Solutions\<solution>" `
+  --run-id "<existing-authoring-run-id>" `
+  --stage validation `
+  --status passed `
+  --artifact runtimeStatus=not-run `
+  --artifact validationMode=offline-authoring
+```
+
+Recovery is permitted only for a missing digest with the exact current run
+manifest reference. It rechecks the complete recursive source inventory,
+conversion results, generated-target provenance and hash-bound review state,
+and full-solution structural validation before persisting the digest and
+inventory binding. Any existing digest mismatch, scoped/changed manifest,
+inventory drift, missing target, technical finding, or unresolved review
+blocks recovery. The command does not modify source or generated detections.
+If Validation is not already running, start it after recovery and before the
+completion command.
+
 ### Opt-in full-inventory YOLO authoring
 
 For resumable local authoring with a frozen recursive source-rule denominator,
@@ -1390,6 +1436,155 @@ changed input hash invalidates a pending choice. If a build consumes the
 selected version but fails, a retry may use `--version-bump none` only for the
 matching post-build inputs. Existing technical and unresolved entity-review
 gates remain mandatory.
+
+For the first V3.1 package of an offline Authoring run initialized with
+`--version-bump none`, use the same explicit release-plan command with the
+current package-input hash from `workflow-status` and select the intended
+`patch`, `minor`, or `major` action. The offline validation record must be
+current and bound to the complete inventory before this action is eligible;
+Qualification continues to require its runtime-bound validation and selection
+evidence.
+
+An explicit target version may be selected instead of a bump when the release
+must move directly to a particular supported V3.1 version. Targets must be
+canonical numeric `major.minor.patch` versions in the inclusive range
+`>=3.1.0` and `<4.0.0` (for example, `3.999.999`); the target does not have to
+be the next consecutive version. Select the exact target at initialization, or
+bind it to the current package-input hash when planning a later release. Use
+`--version-bump none` with `--target-version`; a non-`none` bump and target
+cannot be combined:
+
+```powershell
+sentinel-xdr-migration workflow-init `
+  --solution "Solutions\<solution>" `
+  --workflow-profile authoring `
+  --version-bump none `
+  --target-version 3.1.2
+
+sentinel-xdr-migration package-v3-1 `
+  --solution "Solutions\<solution>" `
+  --version-bump none `
+  --target-version 3.1.2
+```
+
+For a later release after inputs change, use
+`workflow-plan-package-release --target-version <version>` with the current
+input hash, then package with the same target. The V3.1 backend writes the
+approved target to solution data and metadata. If packaging fails after that
+version write, retry with `--version-bump none` and no target only when the
+post-write input identity still matches; this rebuild does not change the
+version again. Existing hash, approval, campaign, and packaging gates still
+apply. This target route does not change independently authored Custom
+Detection versions or the ReleaseNotes-only refresh workflow.
+
+For an offline Authoring run whose package is already at the approved version
+but whose release-note row was omitted, use the same-release refresh route
+instead of choosing another patch/minor/major bump. It requires a current
+successful V3.1 receipt, current full offline validation, and a clean package
+input hash. The plan records the exact approved date and change-history text,
+hashes every current package input, archives the old package evidence, and
+expects only `ReleaseNotes.md` to change. Add the exact planned row immediately
+below the ReleaseNotes table separator, then rebuild with `--version-bump none`.
+Header labels and order are checked as trimmed Markdown table cells; existing
+column-alignment whitespace and release-history bytes are preserved:
+
+```
+
+For a later, explicitly approved **non-ReleaseNotes** content correction that
+must keep the already packaged solution version, use
+`workflow-plan-same-version-content-rebuild`. This separate Authoring-only route
+requires the exact current full package-input hash, the unchanged current
+solution version, a successful V3.1 receipt from the selected run, and passed
+current full-inventory offline conversion/review/structural gates. List each
+approved changed input with `--changed-input`; ReleaseNotes paths are rejected.
+The plan archives the old V3.1 receipt/artifacts and a hash-verified snapshot of
+the current package inputs. The actual V3.1 build must use `--version-bump none`
+without `--target-version`; it cannot change the solution version or substitute
+for Qualification runtime gates. Every retry still runs V3.1 and must match the
+same plan and inputs.
+
+New V3.1 receipts include a complete per-file hash manifest for the successful
+post-build package inputs. The planner derives the actual additions, removals,
+and modifications by comparing that receipt-bound baseline with the current
+input tree; the `--changed-input` set must match exactly. Unchanged declarations,
+unlisted edits, and any ReleaseNotes change are rejected. For an older successful
+receipt without a per-file manifest, planning fails closed unless
+`--legacy-baseline-evidence` identifies a comparison JSON that reconstructs the
+complete prior manifest and whose canonical aggregate SHA-256 exactly matches
+the successful receipt. The evidence binds the prior receipt identity, current
+input identity, file counts, and each changed path's before/current hashes.
+New plans persist the evidence path and digest and recheck it on dispatch,
+receipt acceptance, and retries. A pre-existing legacy plan without this binding
+must pass the same `--legacy-baseline-evidence` path to each `package-v3-1`
+attempt; no workflow state or historical receipt is rewritten.
+If no exact baseline can be reconstructed, use the ordinary explicit
+new-release workflow rather than weakening the same-version gate.
+
+```powershell
+sentinel-xdr-migration workflow-plan-same-version-content-rebuild `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --target-version 3.1.2 `
+  --expected-package-input-sha256 "<current-package-input-sha256>" `
+  --changed-input "XDR Detections\<rule>.yaml"
+
+sentinel-xdr-migration package-v3-1 `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --version-bump none
+```
+
+For a legacy successful receipt, add the same solution-relative evidence path
+to the plan command and, for a pre-existing plan, to every package attempt:
+
+```powershell
+sentinel-xdr-migration workflow-plan-same-version-content-rebuild `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --target-version 3.1.2 `
+  --expected-package-input-sha256 "<current-package-input-sha256>" `
+  --changed-input "XDR Detections\<rule>.yaml" `
+  --legacy-baseline-evidence "Logs\sentinel-xdr-migration\<run-id>\same-version-content-rebuild\receipt-current-input-comparison.json"
+
+sentinel-xdr-migration package-v3-1 `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --version-bump none `
+  --legacy-baseline-evidence "Logs\sentinel-xdr-migration\<run-id>\same-version-content-rebuild\receipt-current-input-comparison.json"
+
+sentinel-xdr-migration workflow-verify-same-version-content-rebuild `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --legacy-baseline-evidence "Logs\sentinel-xdr-migration\<run-id>\same-version-content-rebuild\receipt-current-input-comparison.json"
+```
+
+The verification command is read-only and proves package scope/receipt
+integrity only; it does not mark the workflow complete or replace local suite
+validation.
+
+```powershell
+sentinel-xdr-migration workflow-plan-release-notes-refresh `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --release-date "12-10-2026" `
+  --change-history "Approved release-note text" `
+  --expected-package-input-sha256 "<current-package-input-sha256>"
+
+sentinel-xdr-migration package-v3-1 `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --version-bump none
+```
+
+The packaging gate verifies the exact approved row hash and rejects any other
+input, inventory, or ReleaseNotes change. V3.1 runs again and must produce a
+new receipt for the updated inputs; the old package is historical evidence,
+not relabeled. The package version and consumed patch action are not changed
+or consumed again. This route is Authoring-only; it does not satisfy or bypass
+Qualification runtime, target, consent, or deployment gates. If the previous
+package receipt is missing, stale, or no longer matches the complete current
+input tree, use the ordinary explicit new-release workflow rather than this
+same-version route.
 
 For item-level failures in a complete run, use
 `package-selection-plan --solution ... --run-id ...` to inspect every current

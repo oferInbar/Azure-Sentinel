@@ -837,6 +837,11 @@ def _run_html(report: dict[str, Any]) -> str:
             "Pending" if status == "pending" and stage.get("attempts") != 0
             else "Source waived — not fully runtime-qualified"
             if name == "validation" and runtime_status == "source-waived"
+            else "Passed — offline Authoring; runtime not run"
+            if name == "validation"
+            and runtime_status == "not-run"
+            and (stage.get("artifacts") or {}).get("validationMode") == "offline-authoring"
+            and status == "passed"
             else _status_label(status)
         )
         stage_html.append(f'<li class="stage {_text(status)}">{_text(label)}: {_text(display_status)}</li>')
