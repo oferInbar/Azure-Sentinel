@@ -6,9 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,62 +18,15 @@ from .artifacts import artifact_path, migrate_legacy_artifact, write_json_artifa
 from .converter import validate_document, xdr_detection_files
 from .content_paths import detection_reference
 from .deployment import DEPLOYMENT_ENDPOINT, _deployment_token, _graph_request
-from .graph_client_config import azure_cli_credential
-from .onboarding import _state_dir
+from .arm_client import _arm_request, _arm_token, _sentinel_rule_url
 from .target_context import require_locked_target
 
-ARM_SCOPE = "https://management.azure.com/.default"
-SENTINEL_ALERT_RULE_API_VERSION = "2024-03-01"
 STATE_FILE_NAME = "alert-parity-state.json"
 REPORT_FILE_NAME = "alert-parity-report.json"
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _arm_token(state_dir: str | Path | None = None) -> str:
-    return azure_cli_credential(
-        state_root=_state_dir(state_dir)
-    ).get_token(ARM_SCOPE).token
-
-
-def _arm_request(
-    method: str,
-    url: str,
-    token: str,
-    body: dict[str, Any] | None = None,
-) -> tuple[int, dict[str, Any]]:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8") if body is not None else None,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        method=method,
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=90) as response:
-            content = response.read().decode("utf-8")
-            return response.status, json.loads(content) if content else {}
-    except urllib.error.HTTPError as exc:
-        content = exc.read().decode("utf-8", errors="replace")
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            parsed = {"error": {"message": content[:4000]}}
-        return exc.code, parsed
-
-
-def _sentinel_rule_url(workspace_resource_id: str, rule_id: str) -> str:
-    workspace = workspace_resource_id.rstrip("/")
-    encoded_id = urllib.parse.quote(rule_id, safe="")
-    return (
-        "https://management.azure.com"
-        f"{workspace}/providers/Microsoft.SecurityInsights/alertRules/{encoded_id}"
-        f"?api-version={SENTINEL_ALERT_RULE_API_VERSION}"
-    )
 
 
 def _error_message(response: dict[str, Any]) -> str:

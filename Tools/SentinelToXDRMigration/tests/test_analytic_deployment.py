@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,6 +42,25 @@ def document() -> dict:
 
 
 class AnalyticDeploymentTests(unittest.TestCase):
+    def test_analytic_and_parity_imports_work_in_either_order(self) -> None:
+        package_root = Path(__file__).resolve().parents[1]
+        for imports in (
+            "from sentinel_xdr_migration import analytic_deployment, alert_parity, arm_client\n"
+            "assert analytic_deployment._arm_request is arm_client._arm_request\n"
+            "assert alert_parity._arm_request is arm_client._arm_request",
+            "from sentinel_xdr_migration import alert_parity, analytic_deployment, arm_client\n"
+            "assert analytic_deployment._arm_request is arm_client._arm_request\n"
+            "assert alert_parity._arm_request is arm_client._arm_request",
+        ):
+            with self.subTest(imports=imports):
+                subprocess.run(
+                    [sys.executable, "-c", imports],
+                    cwd=package_root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
     def test_payload_is_disabled_and_preserves_source_metadata(self) -> None:
         payload = analytic_rule_payload(document())
 

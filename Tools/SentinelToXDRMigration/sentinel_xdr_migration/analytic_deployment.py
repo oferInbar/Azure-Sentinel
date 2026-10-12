@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .artifacts import artifact_path, write_json_artifact
-from .alert_parity import _arm_request, _arm_token, _sentinel_rule_url
+from .arm_client import _arm_request, _arm_token, _sentinel_rule_url
 from .converter import analytic_rule_files, iso_duration, solution_paths
 from .target_context import require_locked_target
 
