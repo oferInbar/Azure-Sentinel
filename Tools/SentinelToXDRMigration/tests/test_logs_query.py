@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import tempfile
 import unittest
 import uuid
@@ -25,6 +26,7 @@ from azure.core.rest import HttpRequest
 
 from sentinel_xdr_migration import cli
 from sentinel_xdr_migration.artifacts import create_run, report_directory
+from sentinel_xdr_migration.graph_client_config import configure_azure_cli_profile
 from sentinel_xdr_migration.logs_query import (
     LogsQueryFailure,
     azure_cli_credential,
@@ -335,38 +337,93 @@ class LogsQueryExecutionTests(unittest.TestCase):
         self.assertEqual(0, result["rowCount"])
 
     def test_credential_construction_is_pinned_and_does_not_launch_login(self):
-        credential = azure_cli_credential(TARGET)
-        self.assertEqual(TENANT, credential.tenant_id)
-        self.assertIsNone(credential.subscription)
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp) / "state"
+            profile = str((Path(temp) / "isolated-cli").resolve())
+            configure_azure_cli_profile(state, profile)
+            observations = []
+
+            def construct(*, tenant_id, subscription=None, process_timeout=10):
+                def get_token(*scopes, **kwargs):
+                    observations.append((scopes, kwargs, os.environ.get("AZURE_CONFIG_DIR")))
+                    return SimpleNamespace(token="mock-token", expires_on=4070908800)
+
+                return SimpleNamespace(
+                    tenant_id=tenant_id,
+                    subscription=subscription,
+                    _process_timeout=process_timeout,
+                    get_token=mock.Mock(side_effect=get_token),
+                )
+
+            with (
+                mock.patch("azure.identity.AzureCliCredential", side_effect=construct) as constructor,
+                mock.patch("sentinel_xdr_migration.logs_query._state_dir", return_value=state),
+            ):
+                previous_profile = os.environ.get("AZURE_CONFIG_DIR")
+                credential = azure_cli_credential(TARGET)
+                constructor.assert_called_once_with(tenant_id=TENANT, subscription=None)
+                self.assertEqual(TENANT, credential.tenant_id)
+                self.assertIsNone(credential.subscription)
+                self.assertEqual(10, credential._process_timeout)
+                credential.get_token("https://api.loganalytics.io/.default")
+                self.assertEqual(
+                    [(("https://api.loganalytics.io/.default",), {}, profile)],
+                    observations,
+                )
+                self.assertEqual(previous_profile, os.environ.get("AZURE_CONFIG_DIR"))
 
     def test_logs_query_bearer_policy_uses_tenant_pinned_cli_without_subscription_flag(self):
-        credential = azure_cli_credential(TARGET)
-        client = logs_query_client(credential, retry_total=0)
-        policy = client._query_op._config.authentication_policy
-        request = PipelineRequest(
-            HttpRequest("POST", "https://api.loganalytics.io/v1/workspaces/query"),
-            PipelineContext(None),
-        )
-        token_json = '{"accessToken":"mock-token","expiresOn":"2099-01-01 00:00:00.000000"}'
-        try:
+        calls = []
+
+        class OfflineCliCredential:
+            def __init__(self, *, tenant_id, subscription=None, process_timeout=10):
+                self.tenant_id = tenant_id
+                self.subscription = subscription
+                self._process_timeout = process_timeout
+
+            def get_token_info(self, *scopes, options=None):
+                # Record the CLI-shaped contract without invoking SDK auth or a process.
+                command = ["account", "get-access-token", "--output", "json", "--resource",
+                           scopes[0].removesuffix("/.default")]
+                if self.tenant_id:
+                    command.extend(["--tenant", self.tenant_id])
+                if self.subscription:
+                    command.extend(["--subscription", self.subscription])
+                calls.append((scopes, options, command, self._process_timeout))
+                return SimpleNamespace(
+                    token="mock-token", expires_on=4070908800, refresh_on=None,
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
             with (
-                mock.patch(
-                    "azure.identity._credentials.azure_cli._run_command",
-                    return_value=token_json,
-                ) as run_cli,
-                mock.patch.object(
-                    credential,
-                    "get_token_info",
-                    wraps=credential.get_token_info,
-                ) as get_token_info,
+                mock.patch("azure.identity.AzureCliCredential", side_effect=OfflineCliCredential) as constructor,
+                mock.patch("sentinel_xdr_migration.logs_query._state_dir", return_value=Path(temp)),
             ):
-                policy.on_request(request)
-            get_token_info.assert_called_once()
-        finally:
-            client.close()
+                credential = azure_cli_credential(TARGET)
+                constructor.assert_called_once_with(tenant_id=TENANT, subscription=None)
+                client = logs_query_client(credential, retry_total=0)
+                policy = client._query_op._config.authentication_policy
+                request = PipelineRequest(
+                    HttpRequest("POST", "https://api.loganalytics.io/v1/workspaces/query"),
+                    PipelineContext(None),
+                )
+                try:
+                    with mock.patch.object(
+                        credential, "get_token_info", wraps=credential.get_token_info,
+                    ) as get_token_info:
+                        policy.on_request(request)
+                        get_token_info.assert_called_once_with(
+                            "https://api.loganalytics.io/.default", options={},
+                        )
+                finally:
+                    client.close()
 
         self.assertEqual("Bearer mock-token", request.http_request.headers["Authorization"])
-        command = run_cli.call_args.args[0]
+        self.assertEqual(1, len(calls))
+        scopes, options, command, process_timeout = calls[0]
+        self.assertEqual(("https://api.loganalytics.io/.default",), scopes)
+        self.assertEqual({}, options)
+        self.assertEqual(10, process_timeout)
         self.assertIn("--tenant", command)
         self.assertIn(TENANT, command)
         self.assertNotIn("--subscription", command)

@@ -109,6 +109,29 @@ class WorkflowTests(unittest.TestCase):
                 for name in ("mainTemplate", "createUiDefinition", "testParameters", "zip")
             },
         }
+        selection_plan = kwargs.get("selection_plan")
+        if selection_plan is not None:
+            summary = selection_plan["summary"]
+            report.update({
+                "selectionOutcome": (
+                    "partial-package-validated"
+                    if summary["outcome"] == "partial"
+                    else "package-validated"
+                ),
+                "selectionPlanSha256": selection_plan["planSha256"],
+                "selectionSummary": summary,
+                "selectionVerification": {
+                    "planSha256": selection_plan["planSha256"],
+                    "outcome": summary["outcome"],
+                    "analyticRuleIncluded": summary.get("analyticRuleIncluded"),
+                    "xdrDetectionIncluded": summary.get("xdrDetectionIncluded"),
+                    "coverageNumerator": summary.get("coverageNumerator"),
+                    "coverageDenominator": summary.get("coverageDenominator"),
+                    "partialPublicationAllowed": summary.get("partialPublicationAllowed"),
+                    "mainTemplateVerified": True,
+                    "zipVerified": True,
+                },
+            })
         report_path = Path(artifacts["packageReport"])
         report_path.write_text(json.dumps(report), encoding="utf-8")
         artifacts["packageReport"] = str(report_path)
@@ -307,6 +330,21 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertTrue(resumed["context"]["profileSelectionConfirmed"])
 
+    def test_authoring_can_record_tenant_without_qualification_target(self) -> None:
+        tenant_id = "11111111-1111-4111-8111-111111111111"
+        created = initialize_workflow(
+            self.solution,
+            tenant_id=tenant_id,
+            workflow_profile="authoring",
+        )
+
+        context = created["context"]
+        self.assertEqual(tenant_id, context["tenantId"])
+        self.assertIsNone(context.get("subscriptionId"))
+        self.assertIsNone(context.get("workspaceResourceId"))
+        self.assertIsNone(context.get("workspaceCustomerId"))
+        self.assertFalse(context["targetContextLocked"])
+
     def test_stage_gate_requires_dependencies(self) -> None:
         initialize_workflow(self.solution, workflow_profile="authoring")
 
@@ -453,6 +491,120 @@ class WorkflowTests(unittest.TestCase):
                 status="passed",
             )
 
+    def test_partial_qualification_progresses_without_fabricating_full_validation(self) -> None:
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump="patch",
+            workflow_profile="qualification",
+            **self._qualification_args(),
+        )
+        for stage in ("discovery", "conversion"):
+            self._complete_passed_stage(stage)
+        start_workflow_stage(self.solution, "validation")
+        complete_workflow_stage(
+            self.solution,
+            "validation",
+            status="blocked",
+            message="One item failed current runtime validation.",
+            artifacts={"runtimeStatus": "blocked"},
+        )
+        plan = {
+            "planSha256": "a" * 64,
+            "summary": {
+                "outcome": "partial",
+                "coveragePolicy": "strictly-greater-than-50-percent-of-original-sentinel-rules",
+                "originalSourceRuleCount": 1,
+                "originalSourceRuleIds": ["11111111-1111-1111-1111-111111111111"],
+                "validatedMigratedSourceRuleCount": 1,
+                "validatedMigratedSourceRuleIds": ["11111111-1111-1111-1111-111111111111"],
+                "coverageNumerator": 1,
+                "coverageDenominator": 1,
+                "partialPublicationAllowed": True,
+            },
+        }
+        selection = {
+            "plan": plan,
+            "planPath": "Logs/plan.json",
+            "receiptPath": "Logs/applied.json",
+        }
+        with using_run(self.solution, initialized["runId"]), mock.patch.object(
+            workflow_module,
+            "verify_applied_package_selection",
+            return_value=selection,
+        ), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ):
+            result = package_workflow_v3_1(
+                self.solution,
+                requested_version_bump="patch",
+            )
+            with self.assertRaisesRegex(ValueError, "still match the successful V3.1 package"):
+                plan_new_package_release(
+                    self.solution,
+                    version_bump="patch",
+                    expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+                )
+
+            state = workflow_status(self.solution)
+            next_stage = next_workflow_stage(self.solution)
+            started = start_workflow_stage(self.solution, "deployment")
+            complete_workflow_stage(self.solution, "deployment", status="passed")
+            start_workflow_stage(self.solution, "mockIngestion")
+            complete_workflow_stage(self.solution, "mockIngestion", status="passed")
+            start_workflow_stage(self.solution, "alertParity")
+            complete_workflow_stage(self.solution, "alertParity", status="passed")
+            start_workflow_stage(self.solution, "report")
+            complete_workflow_stage(self.solution, "report", status="passed")
+            completed_state = workflow_status(self.solution)
+        self.assertEqual("partial-package-validated", result["selectionOutcome"])
+        self.assertEqual("passed", state["stages"]["packaging"]["status"])
+        self.assertEqual("blocked", state["stages"]["validation"]["status"])
+        self.assertEqual("inProgress", state["workflowStatus"])
+        self.assertEqual("inProgress", result["workflowStatus"])
+        self.assertEqual(plan["planSha256"], state["stages"]["packaging"]["artifacts"]["selectionPlanSha256"])
+        self.assertEqual("partial-package-validated", state["partialSolution"]["status"])
+        self.assertFalse(state["partialSolution"]["fullyRuntimeQualified"])
+        self.assertEqual("deployment", next_stage["next"])
+        self.assertEqual("running", started["status"])
+        self.assertEqual("blocked", completed_state["stages"]["validation"]["status"])
+        self.assertEqual("partialCompleted", completed_state["workflowStatus"])
+        self.assertEqual("passed", completed_state["stages"]["alertParity"]["status"])
+
+    def test_blocked_validation_cannot_package_without_applied_selection(self) -> None:
+        self._create_source_rules()
+        initialize_workflow(self.solution, workflow_profile="authoring")
+        for stage in ("discovery", "conversion"):
+            self._complete_passed_stage(stage)
+        start_workflow_stage(self.solution, "validation")
+        complete_workflow_stage(
+            self.solution,
+            "validation",
+            status="blocked",
+            message="Runtime evidence is incomplete.",
+            artifacts={"runtimeStatus": "blocked"},
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires passed validation"):
+            package_workflow_v3_1(
+                self.solution,
+                requested_version_bump="none",
+            )
+
+    def test_yolo_readiness_never_uses_partial_selection_exception(self) -> None:
+        state = {
+            "authoring": {"status": "active"},
+            "stages": {"validation": {"status": "blocked"}},
+        }
+        with self.assertRaisesRegex(ValueError, "existing validation stage to pass"):
+            _yolo_package_readiness(
+                self.solution,
+                self.solution / "workflow-state.json",
+                state,
+                allow_partial_selection=True,
+            )
+
     def test_old_report_is_not_relabelled_as_v3_1(self) -> None:
         initialize_workflow(self.solution, workflow_profile="authoring")
         for stage in ("discovery", "conversion", "validation"):
@@ -537,6 +689,344 @@ class WorkflowTests(unittest.TestCase):
                 "patch",
                 state["packaging"]["lastConsumedAction"]["effectiveVersionBump"],
             )
+
+    def test_initial_none_action_can_plan_first_partial_release(self) -> None:
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump="none",
+            workflow_profile="qualification",
+            **self._qualification_args(),
+        )
+        self._complete_passed_stage("discovery")
+        self._complete_passed_stage("conversion")
+        start_workflow_stage(self.solution, "validation")
+        complete_workflow_stage(
+            self.solution,
+            "validation",
+            status="blocked",
+            message="An excluded detection failed current validation.",
+            artifacts={"runtimeStatus": "blocked"},
+        )
+        plan = {
+            "planSha256": "b" * 64,
+            "summary": {
+                "outcome": "partial",
+                "coveragePolicy": "strictly-greater-than-50-percent-of-original-sentinel-rules",
+                "originalSourceRuleCount": 3,
+                "originalSourceRuleIds": [
+                    "11111111-1111-1111-1111-111111111111",
+                    "22222222-2222-2222-2222-222222222222",
+                    "33333333-3333-3333-3333-333333333333",
+                ],
+                "validatedMigratedSourceRuleCount": 2,
+                "validatedMigratedSourceRuleIds": [
+                    "11111111-1111-1111-1111-111111111111",
+                    "22222222-2222-2222-2222-222222222222",
+                ],
+                "coverageNumerator": 2,
+                "coverageDenominator": 3,
+                "partialPublicationAllowed": True,
+            },
+        }
+        selection = {
+            "plan": plan,
+            "planPath": "Logs/plan.json",
+            "receiptPath": "Logs/applied.json",
+        }
+        with using_run(self.solution, initialized["runId"]), mock.patch.object(
+            workflow_module,
+            "verify_applied_package_selection",
+            return_value=selection,
+        ), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ) as package:
+            with self.assertRaisesRegex(ValueError, "differs from the workflow's selected action"):
+                package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="patch",
+                )
+            before_plan = workflow_status(self.solution)
+            self.assertEqual("none", before_plan["context"]["versionBump"])
+            self.assertIsNone((before_plan.get("packaging") or {}).get("pendingReleaseAction"))
+            self.assertEqual(0, package.call_count)
+
+            identity = package_input_identity(self.solution)["sha256"]
+            self.assertEqual(0, cli_module.main([
+                "workflow-plan-package-release",
+                "--solution", str(self.solution),
+                "--run-id", initialized["runId"],
+                "--version-bump", "patch",
+                "--expected-package-input-sha256", identity,
+            ]))
+            after_plan = workflow_status(self.solution)
+            self.assertEqual("none", after_plan["context"]["versionBump"])
+            self.assertEqual("patch", after_plan["packaging"]["pendingReleaseAction"]["versionBump"])
+            self.assertEqual(identity, after_plan["packaging"]["pendingReleaseAction"]["packageInputSha256"])
+            self.assertEqual("packaging", next_workflow_stage(self.solution)["next"])
+            self.assertEqual(identity, package_input_identity(self.solution)["sha256"])
+            self.assertEqual({}, after_plan["packaging"]["releaseActions"][-1]["historicalEvidence"])
+
+            packaged = package_workflow_v3_1(
+                self.solution,
+                requested_version_bump="patch",
+            )
+
+        final = workflow_status(self.solution)
+        self.assertEqual("patch", packaged["effectiveVersionBump"])
+        self.assertEqual("none", final["context"]["versionBump"])
+        self.assertEqual(identity, final["packaging"]["lastConsumedAction"]["packageInputSha256"])
+        self.assertEqual("consumed", final["packaging"]["releaseActions"][-1]["status"])
+        self.assertIsNone(final["packaging"]["pendingReleaseAction"])
+
+    def _assert_initial_none_action_can_plan_first_complete_release(
+        self,
+        rule_count: int,
+    ) -> None:
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump="none",
+            workflow_profile="qualification",
+            **self._qualification_args(),
+        )
+        self._complete_passed_stage("discovery")
+        self._complete_passed_stage("conversion")
+        self._create_runtime_evidence()
+        self._complete_passed_stage("validation")
+        rule_ids = [
+            f"00000000-0000-0000-0000-{index:012d}"
+            for index in range(1, rule_count + 1)
+        ]
+        summary = {
+            "outcome": "complete",
+            "coveragePolicy": "strictly-greater-than-50-percent-of-original-sentinel-rules",
+            "originalSourceRuleCount": rule_count,
+            "originalSourceRuleIds": rule_ids,
+            "validatedMigratedSourceRuleCount": rule_count,
+            "validatedMigratedSourceRuleIds": rule_ids,
+            "coverageNumerator": rule_count,
+            "coverageDenominator": rule_count,
+            "partialPublicationAllowed": True,
+            "analyticRuleIncluded": rule_count,
+            "xdrDetectionIncluded": rule_count,
+        }
+        plan = {"planSha256": "c" * 64, "summary": summary}
+        selection = {
+            "plan": plan,
+            "planPath": "Logs/plan.json",
+            "receiptPath": "Logs/applied.json",
+        }
+
+        with using_run(self.solution, initialized["runId"]), mock.patch.object(
+            workflow_module,
+            "verify_applied_package_selection",
+            return_value=selection,
+        ), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ) as package:
+            with self.assertRaisesRegex(ValueError, "differs from the workflow's selected action"):
+                package_workflow_v3_1(self.solution, requested_version_bump="patch")
+            package.assert_not_called()
+
+            identity = package_input_identity(self.solution)["sha256"]
+            self.assertEqual(0, cli_module.main([
+                "workflow-plan-package-release",
+                "--solution", str(self.solution),
+                "--run-id", initialized["runId"],
+                "--version-bump", "patch",
+                "--expected-package-input-sha256", identity,
+            ]))
+            planned = workflow_status(self.solution)
+            self.assertEqual("none", planned["context"]["versionBump"])
+            self.assertEqual(
+                "patch",
+                planned["packaging"]["pendingReleaseAction"]["versionBump"],
+            )
+            self.assertEqual(
+                identity,
+                planned["packaging"]["pendingReleaseAction"]["packageInputSha256"],
+            )
+            self.assertEqual("packaging", next_workflow_stage(self.solution)["next"])
+
+            result = package_workflow_v3_1(
+                self.solution,
+                requested_version_bump="patch",
+            )
+
+        final = workflow_status(self.solution)
+        self.assertEqual("patch", result["effectiveVersionBump"])
+        self.assertEqual("none", final["context"]["versionBump"])
+        self.assertEqual("passed", final["stages"]["validation"]["status"])
+        self.assertEqual("passed", final["stages"]["packaging"]["status"])
+        self.assertEqual("consumed", final["packaging"]["releaseActions"][-1]["status"])
+
+    def test_initial_none_action_plans_first_complete_21_rule_release(self) -> None:
+        self._assert_initial_none_action_can_plan_first_complete_release(21)
+
+    def test_initial_none_action_plans_first_complete_15_rule_release(self) -> None:
+        self._assert_initial_none_action_can_plan_first_complete_release(15)
+
+    def test_first_release_requires_current_applied_complete_selection_and_exact_hash(self) -> None:
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump="none",
+            workflow_profile="qualification",
+            **self._qualification_args(),
+        )
+        self._complete_passed_stage("discovery")
+        self._complete_passed_stage("conversion")
+        self._create_runtime_evidence()
+        self._complete_passed_stage("validation")
+        current_hash = package_input_identity(self.solution)["sha256"]
+
+        with using_run(self.solution, initialized["runId"]), mock.patch.object(
+            workflow_module,
+            "verify_applied_package_selection",
+            return_value=None,
+        ):
+            with self.assertRaisesRegex(ValueError, "first release planning without a prior"):
+                plan_new_package_release(
+                    self.solution,
+                    version_bump="patch",
+                    expected_package_input_sha256=current_hash,
+                )
+
+        rule_ids = ["11111111-1111-1111-1111-111111111111"]
+        selection = {
+            "plan": {
+                "planSha256": "d" * 64,
+                "summary": {
+                    "outcome": "complete",
+                    "originalSourceRuleCount": 1,
+                    "originalSourceRuleIds": rule_ids,
+                    "validatedMigratedSourceRuleCount": 1,
+                    "validatedMigratedSourceRuleIds": rule_ids,
+                    "coverageNumerator": 1,
+                    "coverageDenominator": 1,
+                    "partialPublicationAllowed": True,
+                },
+            },
+            "planPath": "Logs/plan.json",
+            "receiptPath": "Logs/applied.json",
+        }
+        state_path = Path(workflow_status(self.solution)["statePath"])
+        before = state_path.read_bytes()
+        with using_run(self.solution, initialized["runId"]), mock.patch.object(
+            workflow_module,
+            "verify_applied_package_selection",
+            return_value=selection,
+        ):
+            with self.assertRaisesRegex(ValueError, "package inputs changed after release action selection"):
+                plan_new_package_release(
+                    self.solution,
+                    version_bump="patch",
+                    expected_package_input_sha256="0" * 64,
+                )
+        self.assertEqual(before, state_path.read_bytes())
+
+    def test_consumed_initial_release_cannot_be_replanned_and_retries_with_none(self) -> None:
+        data_path = self.solution / "Data" / "Solution_Sample.json"
+        data_path.parent.mkdir(parents=True)
+        data_path.write_text(
+            json.dumps({"Name": "Sample", "Version": "1.2.3"}),
+            encoding="utf-8",
+        )
+        initialized = initialize_workflow(
+            self.solution,
+            version_bump="none",
+            workflow_profile="qualification",
+            **self._qualification_args(),
+        )
+        self._complete_passed_stage("discovery")
+        self._complete_passed_stage("conversion")
+        self._create_runtime_evidence()
+        self._complete_passed_stage("validation")
+        rule_ids = ["11111111-1111-1111-1111-111111111111"]
+        selection = {
+            "plan": {
+                "planSha256": "e" * 64,
+                "summary": {
+                    "outcome": "complete",
+                    "originalSourceRuleCount": 1,
+                    "originalSourceRuleIds": rule_ids,
+                    "validatedMigratedSourceRuleCount": 1,
+                    "validatedMigratedSourceRuleIds": rule_ids,
+                    "coverageNumerator": 1,
+                    "coverageDenominator": 1,
+                    "partialPublicationAllowed": True,
+                    "analyticRuleIncluded": 1,
+                    "xdrDetectionIncluded": 1,
+                },
+            },
+            "planPath": "Logs/plan.json",
+            "receiptPath": "Logs/applied.json",
+        }
+
+        def fail_after_consuming_initial_action(solution: Path, **_kwargs: str) -> dict:
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            data["Version"] = "1.2.4"
+            data_path.write_text(json.dumps(data), encoding="utf-8")
+            raise RuntimeError("synthetic first-build failure after version update")
+
+        with using_run(self.solution, initialized["runId"]), mock.patch.object(
+            workflow_module,
+            "verify_applied_package_selection",
+            return_value=selection,
+        ), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ):
+            identity = package_input_identity(self.solution)["sha256"]
+            plan_new_package_release(
+                self.solution,
+                version_bump="patch",
+                expected_package_input_sha256=identity,
+            )
+
+        with using_run(self.solution, initialized["runId"]), mock.patch.object(
+            workflow_module,
+            "verify_applied_package_selection",
+            return_value=selection,
+        ), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=fail_after_consuming_initial_action,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "first-build failure"):
+                package_workflow_v3_1(
+                    self.solution,
+                    requested_version_bump="patch",
+                )
+            consumed = workflow_status(self.solution)["packaging"]["lastConsumedAction"]
+            self.assertTrue(consumed["bumpConsumed"])
+            self.assertFalse(consumed["packageSucceeded"])
+
+            with self.assertRaisesRegex(ValueError, "initial version action was consumed by a failed build"):
+                plan_new_package_release(
+                    self.solution,
+                    version_bump="patch",
+                    expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
+                )
+
+        with using_run(self.solution, initialized["runId"]), mock.patch.object(
+            workflow_module,
+            "verify_applied_package_selection",
+            return_value=selection,
+        ), mock.patch.object(
+            workflow_module,
+            "package_solution_v3_1",
+            side_effect=self._mock_v3_1_package,
+        ) as package:
+            retry = package_workflow_v3_1(
+                self.solution,
+                requested_version_bump="none",
+            )
+            self.assertEqual("none", retry["effectiveVersionBump"])
+            package.assert_called_once()
 
     def test_stale_package_status_is_read_only_and_new_release_preserves_history(self) -> None:
         run_id = self._prepare_workflow_for_package("none")
@@ -1240,6 +1730,138 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual("active", refreshed["status"])
         self.assertEqual(0, refreshed["environmentErrorCount"])
         self.assertEqual("passed", stored["results"][0]["validationStatus"])
+
+    def test_yolo_identityinfo_failure_is_nonblocking_but_not_runtime_passed(self) -> None:
+        _, record = self._run_yolo(count=1)
+        run = self.solution / "Logs" / "sentinel-xdr-migration" / record["runId"]
+        self._runtime_reports(record)
+        triage_path = run / "runtime-validation.triage-mcp.json"
+        source_report = json.loads(triage_path.read_text(encoding="utf-8"))
+        diagnostic = (
+            "'summarize' operator: Failed to resolve table or column "
+            "expression named 'IdentityInfo'"
+        )
+        source_report.update({
+            "querySurface": "microsoft-sentinel-triage",
+            "familyComplete": True,
+        })
+        source_report["results"][0].update({
+            "status": "failed",
+            "statusCode": 400,
+            "failureKind": "query",
+            "partial": False,
+            "error": {
+                "code": "BadArgumentError",
+                "message": diagnostic,
+                "innererror": {
+                    "code": "SEM0100",
+                    "message": diagnostic,
+                },
+            },
+        })
+        raw_before = json.dumps(source_report, sort_keys=True).encode()
+        triage_path.write_bytes(raw_before)
+
+        graph_path = run / "runtime-validation.graph.json"
+        graph_report = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_report.update({
+            "querySurface": "defender-advanced-hunting",
+            "familyComplete": True,
+        })
+        graph_report["results"][0]["schema"] = [
+            {"name": "Timestamp", "type": "DateTime"}
+        ]
+        graph_path.write_text(json.dumps(graph_report), encoding="utf-8")
+
+        with using_run(self.solution, record["runId"]):
+            refreshed = refresh_yolo_authoring(self.solution)
+            stored = read_authoring_contract(self.solution)
+            evidence = workflow_module._current_runtime_status(
+                self.solution, "authoring", stored
+            )[2]
+        result = stored["results"][0]
+        self.assertEqual("active", refreshed["status"])
+        self.assertEqual("passed", workflow_status(self.solution)["stages"]["validation"]["status"])
+        self.assertEqual("source-waived", workflow_status(self.solution)["stages"]["validation"]["artifacts"]["runtimeStatus"])
+        self.assertFalse(evidence["passed"])
+        self.assertEqual("source-waived", evidence["sourceStatus"])
+        self.assertTrue(any(
+            finding["kind"] == "error"
+            and finding["unresolved"] is False
+            and "IdentityInfo" in finding["message"]
+            for finding in result["findings"]
+        ))
+        self.assertEqual(raw_before, triage_path.read_bytes())
+        self.assertEqual("failed", json.loads(triage_path.read_text())["results"][0]["status"])
+
+    def test_direct_yolo_source_waiver_rejects_changed_target_review_state(self) -> None:
+        _, record = self._run_yolo(count=1)
+        run = self.solution / "Logs" / "sentinel-xdr-migration" / record["runId"]
+        self._runtime_reports(record)
+        triage_path = run / "runtime-validation.triage-mcp.json"
+        source_report = json.loads(triage_path.read_text(encoding="utf-8"))
+        diagnostic = (
+            "'summarize' operator: Failed to resolve table or column "
+            "expression named 'IdentityInfo'"
+        )
+        source_report.update({
+            "querySurface": "microsoft-sentinel-triage",
+            "familyComplete": True,
+        })
+        source_report["results"][0].update({
+            "status": "failed",
+            "statusCode": 400,
+            "failureKind": "query",
+            "partial": False,
+            "error": {
+                "code": "BadArgumentError",
+                "message": diagnostic,
+                "innererror": {"code": "SEM0100", "message": diagnostic},
+            },
+        })
+        triage_path.write_text(json.dumps(source_report), encoding="utf-8")
+        graph_path = run / "runtime-validation.graph.json"
+        graph_report = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_report.update({
+            "querySurface": "defender-advanced-hunting",
+            "familyComplete": True,
+        })
+        graph_report["results"][0]["schema"] = [
+            {"name": "Timestamp", "type": "DateTime"}
+        ]
+        graph_path.write_text(json.dumps(graph_report), encoding="utf-8")
+
+        target = Path(record["results"][0]["target"]["path"])
+        target_path = self.solution / target
+        target_document = yaml.safe_load(target_path.read_text(encoding="utf-8"))
+        target_query = target_document["properties"]["queryCondition"]["queryText"]
+        target_document["contentProvenance"]["conversion"].update({
+            "reviewRequired": True,
+            "errors": ["new current-target conversion error"],
+        })
+        target_path.write_text(yaml.safe_dump(target_document), encoding="utf-8")
+        self.assertEqual(
+            target_query,
+            yaml.safe_load(target_path.read_text(encoding="utf-8"))[
+                "properties"
+            ]["queryCondition"]["queryText"],
+        )
+
+        with using_run(self.solution, record["runId"]):
+            start_workflow_stage(self.solution, "validation")
+            with self.assertRaisesRegex(ValueError, "generated target hash is stale"):
+                complete_workflow_stage(
+                    self.solution,
+                    "validation",
+                    status="passed",
+                    artifacts={"runtimeStatus": "source-waived"},
+                )
+            complete_workflow_stage(
+                self.solution,
+                "validation",
+                status="blocked",
+                message="The generated target changed and must be refreshed.",
+            )
 
     def test_yolo_sdk_source_family_rejects_stale_query_hash(self) -> None:
         _, record = self._run_yolo(count=1)

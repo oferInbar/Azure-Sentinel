@@ -25,6 +25,10 @@
     Ignored evidence parent under .script/local-validation/Logs in the toolkit checkout.
     A unique run folder stores complete TypeScript JSON results and child output logs.
 
+.PARAMETER PackageReportPath
+    Exact V3.1 packaging report under the selected solution. When supplied, the runner
+    requires validation-only mode and emits hash-bound evidence for that package.
+
 .PARAMETER VersionBump
     How to increment the version. Options: patch (default), minor, major.
 
@@ -80,7 +84,9 @@ param(
 
     [string]$ValidationSkip = "kql,detection-schema,non-ascii,arm-ttk",
 
-    [string]$ReleaseNotes = ""
+    [string]$ReleaseNotes = "",
+
+    [string]$PackageReportPath
 )
 
 # =============================================================================
@@ -92,6 +98,7 @@ $ErrorActionPreference = "Stop"
 # The toolkit root is anchored to this script, never to the caller's current directory.
 $toolkitRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../.."))
 $toolkitRoot = $toolkitRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+. (Join-Path $PSScriptRoot "validation-binding.ps1")
 $pathComparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
 $ContentRoot = if ($ContentRoot) { [System.IO.Path]::GetFullPath($ContentRoot) } else { $toolkitRoot }
 $ContentRoot = $ContentRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
@@ -180,6 +187,25 @@ if (-not $solutionPath.StartsWith($solutionsPrefix, $pathComparison) -or
     ((Get-Item $solutionPath).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
     Write-Host "❌ Invalid solution folder: '$solutionPath'. Expected an existing folder directly under '$solutionsRoot'." -ForegroundColor Red
     exit 2
+}
+
+if ($PackageReportPath) {
+    if (-not $SkipPackaging -or $SkipValidation) {
+        Write-Host "❌ -PackageReportPath requires validation-only mode: pass -SkipPackaging and do not pass -SkipValidation." -ForegroundColor Red
+        exit 2
+    }
+    try {
+        $null = Get-ValidationV31PackageEvidence `
+            -SolutionPath $solutionPath `
+            -PackageReportPath $PackageReportPath
+        $PackageReportPath = Resolve-ValidationEvidencePath `
+            -Root $solutionPath `
+            -Reference $PackageReportPath
+    }
+    catch {
+        Write-Host "❌ V3.1 package evidence is invalid: $($_.Exception.Message)" -ForegroundColor Red
+        exit 2
+    }
 }
 
 $dataPath = Join-Path $solutionPath "Data"
@@ -272,6 +298,9 @@ $reportMeta = @{
     ReleaseNotesUpdated = $false
     ReleaseNotesText    = $ReleaseNotes
     EvidenceRunPath     = $evidenceRunPath
+    ValidationBindingPath = $null
+    ValidationBindingSha256 = $null
+    ValidationBindingResult = $null
 }
 
 # =============================================================================
@@ -391,6 +420,27 @@ if (-not $SkipPackaging -and $overallSuccess) {
 # =============================================================================
 # STEP 2: RUN LOCAL VALIDATIONS
 # =============================================================================
+
+$validationEvidenceBefore = $null
+$validationEvidenceCaptureError = $null
+if ($PackageReportPath) {
+    try {
+        $validationEvidenceBefore = Get-ValidationEvidenceSnapshot `
+            -ToolkitRoot $toolkitRoot `
+            -ContentRoot $ContentRoot `
+            -SolutionPath $solutionPath `
+            -PackageReportPath $PackageReportPath
+    }
+    catch {
+        $validationEvidenceCaptureError = $_.Exception.Message
+        $overallSuccess = $false
+        $null = $reportEntries.Add(@{
+            Step = 4; Name = "Validation Evidence Integrity"; Status = "failed"
+            Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
+            Errors = @("Could not capture V3.1 validation evidence before validation: $validationEvidenceCaptureError")
+        })
+    }
+}
 
 if (-not $SkipValidation) {
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
@@ -1502,6 +1552,48 @@ if (-not $SkipValidation) {
     Write-Host ""
 }
 
+if ($PackageReportPath -and $null -ne $validationEvidenceBefore) {
+    try {
+        $validationEvidenceAfter = Get-ValidationEvidenceSnapshot `
+            -ToolkitRoot $toolkitRoot `
+            -ContentRoot $ContentRoot `
+            -SolutionPath $solutionPath `
+            -PackageReportPath $PackageReportPath
+        $validationBinding = Complete-ValidationEvidenceBinding `
+            -Before $validationEvidenceBefore `
+            -After $validationEvidenceAfter `
+            -ValidationEntries @($reportEntries) `
+            -PackagingSkipped ([bool]$SkipPackaging) `
+            -ValidationSkipped ([bool]$SkipValidation) `
+            -EvidenceRunPath $evidenceRunPath
+        $bindingReceipt = Write-ValidationEvidenceBinding `
+            -EvidenceRunPath $evidenceRunPath `
+            -Binding $validationBinding
+        $reportMeta.ValidationBindingPath = $bindingReceipt.path
+        $reportMeta.ValidationBindingSha256 = $bindingReceipt.sha256
+        $reportMeta.ValidationBindingResult = $validationBinding.validationResult
+        if ($validationBinding.validationResult -ne "PASSED") {
+            $overallSuccess = $false
+            $null = $reportEntries.Add(@{
+                Step = 4; Name = "Validation Evidence Integrity"; Status = "failed"
+                Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
+                Errors = @($validationBinding.issues)
+            })
+        }
+    }
+    catch {
+        $overallSuccess = $false
+        $null = $reportEntries.Add(@{
+            Step = 4; Name = "Validation Evidence Integrity"; Status = "failed"
+            Passed = 0; Failed = 1; Skipped = 0; FileCount = 0
+            Errors = @("Could not complete V3.1 validation evidence: $($_.Exception.Message)")
+        })
+    }
+}
+elseif ($PackageReportPath -and $validationEvidenceCaptureError) {
+    $reportMeta.ValidationBindingResult = "FAILED"
+}
+
 # =============================================================================
 # APPLY FILE UPDATES (only if all validations passed)
 # =============================================================================
@@ -1632,6 +1724,14 @@ function Write-BuildReport {
     Add-Line "Date: $dateStr"
     Add-Line "Duration: $durationStr"
     Add-Line "Result: $(if ($Success) { 'PASSED' } else { 'FAILED' })"
+    if ($Meta.ValidationBindingPath) {
+        Add-Line "Validation binding: $($Meta.ValidationBindingPath)"
+        Add-Line "Validation binding SHA256: $($Meta.ValidationBindingSha256)"
+        Add-Line "Validation binding result: $($Meta.ValidationBindingResult)"
+    }
+    elseif ($Meta.ValidationBindingResult) {
+        Add-Line "Validation binding result: $($Meta.ValidationBindingResult)"
+    }
     Add-Line ""
 
     # --- STEP 1: PACKAGING ---

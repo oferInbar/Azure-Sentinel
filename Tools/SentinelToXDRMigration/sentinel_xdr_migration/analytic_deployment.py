@@ -86,9 +86,25 @@ def deploy_analytic_rules(
     workspace_resource_id = target["workspaceResourceId"]
     output.mkdir(parents=True, exist_ok=True)
 
-    token = _arm_token()
     results: list[dict[str, Any]] = []
     source_files = analytic_rule_files(root)
+    from .packaging_selection import current_applied_package_selection
+
+    applied_selection = current_applied_package_selection(root)
+    if applied_selection is not None:
+        selected_paths = {
+            str(value).replace("\\", "/").casefold()
+            for value in (applied_selection["plan"].get("selection") or {}).get(
+                "analyticRules", []
+            )
+        }
+        source_by_path = {
+            path.relative_to(root).as_posix().casefold(): path for path in source_files
+        }
+        if not selected_paths or not selected_paths.issubset(source_by_path):
+            raise ValueError("current applied package selection has missing Analytic Rule files")
+        source_files = [source_by_path[path] for path in sorted(selected_paths)]
+    token = _arm_token()
     for source_path in source_files:
         result: dict[str, Any] = {
             "source": str(source_path),
@@ -142,6 +158,19 @@ def deploy_analytic_rules(
         "failed": sum(not item["success"] for item in results),
         "results": results,
     }
+    if applied_selection is not None:
+        report["qualificationScope"] = {
+            "kind": "applied-package-selection",
+            "planSha256": applied_selection["plan"].get("planSha256"),
+            "outcome": (applied_selection["plan"].get("summary") or {}).get("outcome"),
+            "selectedAnalyticRulePaths": sorted(
+                str(value).replace("\\", "/")
+                for value in (applied_selection["plan"].get("selection") or {}).get(
+                    "analyticRules", []
+                )
+            ),
+            "coverage": applied_selection["plan"].get("summary"),
+        }
     report["reportPath"] = str(report_path)
     write_json_artifact(root, report_path, report)
     return report

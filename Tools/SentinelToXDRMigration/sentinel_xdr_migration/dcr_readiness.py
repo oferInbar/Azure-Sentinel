@@ -12,7 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from .artifacts import artifact_path, write_json_artifact
+from .artifacts import (
+    artifact_path,
+    resolve_artifact_reference,
+    write_json_artifact,
+)
 from .logs_query import (
     azure_cli_credential,
     execute_workspace_query,
@@ -76,6 +80,7 @@ def _build_local_plan(solution: Path, target: Mapping[str, str]) -> dict[str, An
     if root not in sys.path:
         sys.path.insert(0, root)
     from Tools.SolutionMigration.resolve_ingestion_contracts import build_plan
+    from .packaging_selection import current_applied_package_selection
 
     locked = {
         field: str(target[field])
@@ -86,7 +91,17 @@ def _build_local_plan(solution: Path, target: Mapping[str, str]) -> dict[str, An
             "workspaceCustomerId",
         )
     }
-    return build_plan(solution, locked)
+    selection = current_applied_package_selection(solution)
+    if selection is None:
+        return build_plan(solution, locked)
+    plan = selection["plan"]
+    selection_path = resolve_artifact_reference(solution, selection["planPath"])
+    return build_plan(
+        solution,
+        locked,
+        selection_plan_path=selection_path,
+        expected_selection_plan_sha256=plan["planSha256"],
+    )
 
 
 def _fingerprint(value: Any) -> str:

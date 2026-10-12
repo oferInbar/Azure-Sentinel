@@ -86,6 +86,49 @@ and its routed reports through the established deterministic tools.
 Offline conversion and structural validation must remain available when
 runtime providers are unavailable.
 
+## Proactive progression and advance permissions
+
+For migration-related lab reads, follow the canonical workflow's reusable lab
+read approval: ask once across all selected solutions, reuse the recorded
+approval while the lab definition is unchanged, and preserve current per-run
+target/query bindings. Do not repeatedly request approval for individual
+read-only preflight or access checks covered by it. Authentication, consent,
+role changes, and resource writes remain separately gated.
+
+As soon as a solution is selected for migration, identify the expected actions
+for its explicitly selected profile and gather permission requirements and
+bounded advance approvals as early as possible. When coordinating multiple
+solutions, cover every selected solution rather than waiting for each one to
+reach the same permission gate separately. Follow the canonical workflow and
+existing consent tools; do not introduce new stages or approval mechanisms.
+
+Present the exact solution/run, locked target, query families, action groups,
+resource identities, caps, and available evidence. Request approval for the
+largest currently bound scope, allowing the user to narrow or decline it.
+Distinguish permission requirements, configured permissions, effective access,
+and user authorization; requesting permission does not prove it was granted.
+Unresolved identities, payloads, or caps remain provisional and cannot be
+included as approved scope.
+
+Keep read-only runtime consent, interactive authentication, Entra admin consent,
+role changes, and environment writes separate. Advance planning consent never
+replaces explicit approval before sign-in or the immediate exact-scope approval
+before a resource write. Do not perform Qualification-only actions for an
+Authoring run or treat a profile selection as consent.
+
+Repeatedly reassess each selected solution's next gated step after stage
+completion, new evidence, approval, or a dependency change. Execute already
+approved runnable steps and promptly surface the exact approval request or
+concrete blocker needed to advance. Continue independent approved work for
+other solutions when one is blocked. Do not remain silently idle at an
+approval gate or wait for the user to ask for status.
+
+Retain blockers and resume when their prerequisites change; do not repeat
+unchanged failed queries, duplicate workers, or rerun successful batches without
+a reason. Report completed, running, approval-needed, and blocked work
+distinctly. Missing evidence stays unknown, and progression never bypasses
+review, runtime/schema, packaging, authentication, or write gates.
+
 ## Migration workflow
 
 1. Run `workflow-status` first. If no state exists, or
@@ -152,6 +195,19 @@ runtime providers are unavailable.
 
    This reusable configuration is cross-solution; workflow state still records
    the confirmed workspace for each individual run.
+   During initial Qualification preflight, show the locked workspace name,
+   customer-ID GUID, and ARM resource ID and ask the user to confirm that it is
+   the primary Microsoft Sentinel workspace in Defender XDR for the Advanced
+   Hunting caller. Record the confirmation in the run's preflight evidence;
+   do not infer it from Azure CLI configuration or a successful sign-in.
+   Microsoft Graph `security/runHuntingQuery` uses the caller's primary workspace
+   when `workspaceId` is omitted and can fall back to it when an explicit
+   workspace is unavailable or inaccessible. A mismatch or unknown setting
+   blocks default-workspace execution, not independent source-query work.
+   Never change the primary setting or retarget automatically. Confirmation is
+   not automated response-target, permission, runtime, or schema verification;
+   reconfirm after a target, caller, or primary-setting change. See the
+   [Graph API reference](https://learn.microsoft.com/en-us/graph/api/security-security-runhuntingquery?view=graph-rest-1.0).
    If the locked ARM path becomes unavailable, run only:
 
    ```powershell
@@ -239,6 +295,15 @@ report paths.
 Use `sentinel-xdr-solution-deployer` only after the packaging gate passes.
 Verify both Azure RBAC and Graph scopes. A successful write without live read
 verification remains blocked.
+
+For approved lab deployment, follow the canonical repeatable create-or-update
+policy: do not add a separate mandatory pre-creation existence check. The
+Sentinel alert-rule route uses deterministic-ID `PUT`; the current Graph
+deployer still requires an exact-ID `GET` to choose `POST` versus `PATCH` and
+then verifies by read-back. A standalone exact-rule preflight is optional
+diagnostic evidence, but its Graph reads are currently bundled into the
+preflight command and may block. Do not call arbitrary Graph `POST` idempotent,
+bypass the supported route, or overwrite uncertain/unowned content.
 
 ## Live alert parity
 

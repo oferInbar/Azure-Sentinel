@@ -5,10 +5,14 @@ description: Deploy and verify Sentinel Analytic Rules and Defender XDR Custom D
 
 # Deploy Sentinel and XDR detections safely
 
-Use this skill only after conversion, runtime validation, and packaging have
-passed. Deployment is a write operation and always requires explicit user
-approval for the exact subscription, resource group, workspace, solution, and
-deployment mode.
+Use this skill only after full validation and packaging have passed, or after
+the canonical workflow has accepted a fresh, applied partial package meeting
+the strict over-50% threshold. For a partial package, deploy only the exact
+selected AR/CD content bound by its current package-selection plan; excluded
+items remain visible but are not deployment failures for that selected scope.
+Deployment is a write operation and always requires explicit user approval for
+the exact subscription, resource group, workspace, solution, and deployment
+mode.
 
 ## Modes
 
@@ -32,13 +36,33 @@ conditional prerequisites are proven, absent, or unknown. Include:
 7. explicitly owned cleanup/deletion, listing exact resources and ownership
    evidence while excluding pre-existing or unowned resources.
 
-Use unselected structured choices: **Approve all currently bounded and
-available components**, **Select components**, **Revise the plan**, or
-**Decline advance consent**. “Approve all” is an explicit choice, never a
-default. Ask again only if the target, plan identity, action/resource families,
-payload, caps, package flags, or cleanup ownership changes. Missing or unknown
-scope is provisional, not unlimited; denial does not block independent
-read-only validation.
+Show a structured consent form with **Approve the broadest currently bounded
+and available scope** preselected as the suggested default, plus **Select
+components**, **Revise the plan**, and **Decline advance consent**. This default
+is only a proposal. Display each proposed component, cap, exact target,
+resource family, and package flag/value before asking the user to submit.
+Require affirmative submission/confirmation of the displayed scope before
+recording consent; a preselected choice alone, cancellation/closure, decline,
+or missing response records no approval. Permit narrowing, revision, or
+decline.
+
+The suggested broad scope includes only components supported by the current
+consent CLI and fully bound to current evidence. If available, it can include
+the disabled Sentinel-AR/Graph-CD pair and separate later
+`fullPackageAcceptance`. For package acceptance, show every exact current
+package-selection flag and its boolean value. If the plan exposes five valid
+flags and the broad proposal selects all five, list each flag by name with
+`true`; never hide selections behind an “all” label or invent flags. Do not
+silently include unknown/provisional ingestion, DCR/DCE, custom-table,
+parity, or cleanup scopes. If the broadest scope cannot be fully bound, suggest
+only the largest valid bounded subset and explicitly list unavailable or
+excluded groups with reasons.
+
+Persist only the exact, affirmatively submitted component and flag selection
+after verifying it against the current plan. Ask again only if the target,
+plan identity, action/resource families, payload, caps, package flags, or
+cleanup ownership changes. Missing or unknown scope is provisional, not
+unlimited; denial does not block independent read-only validation.
 
 The current CLI can persist consent for the direct disabled AR/CD pair,
 `fullPackageAcceptance`, `mockTelemetryIngestion`, `fallbackDcr`,
@@ -57,7 +81,9 @@ write approval. None implies another.
 ### Package acceptance
 
 Validate and optionally deploy `Package\mainTemplate.json` as a complete
-solution:
+solution package. For a partial package, V3.1 has already restricted that
+template to the validated selected content; never repopulate it by scanning
+excluded YAML.
 
 - `DeployAnalyticsRule=true` selects Sentinel Analytic Rule content.
 - `DeployCustomDetection=true` selects both Defender XDR Custom Detection
@@ -87,9 +113,40 @@ Require a new approval if any operation expands beyond the batch. Missing or
 stale planning consent, permissions, or successful preflight does not
 substitute for the immediate gate.
 
+### Repeatable rule deployment in a lab
+
+Do not require a separate pre-deployment check for whether every Sentinel
+Analytic Rule or Custom Detection already exists. For the same reviewed
+identities and locked, approved non-production target, the Sentinel command
+uses `PUT` on the deterministic alert-rule resource ID to create or update the
+rule idempotently for the same ID and payload; rules remain disabled.
+The alert-rule-template API is a catalog read surface, not a resource created
+by this deployment command.
+
+The current Graph deployer derives `xdr-<source-rule-GUID>` and internally
+`GET`s that exact ID, `POST`s only when it is absent, or `PATCH`es when present,
+then performs required read-back verification. This is repeatable at the
+supported CLI workflow level for the reviewed ID; it is not a guarantee that
+arbitrary Graph `POST` calls are idempotent. The separate
+`preflight-deployment` exact-rule read is an optional diagnostic, not proof of
+ownership or deployment readiness. The Graph deployment command still
+requires its own `GET`; the current preflight also performs exact-ID reads and
+can block on a denied read. These backend checks cannot be skipped by changing
+instructions. Do not bypass them with direct API calls or blindly retry an
+ambiguous write. If an existing ID has uncertain ownership or content, stop
+for maintainer review rather than overwriting it.
+
+This repeatability applies only to the exact reviewed solution content in the
+locked approved lab, under the existing exact-scope approval, permission,
+disabled-state, and verification gates. It does not authorize production
+writes, changes to unrelated resources, or overwriting enabled or
+unowned content.
+
 ### Alert-parity preparation
 
-Deploy both sides of every reviewed pair disabled:
+Deploy each selected reviewed pair disabled. For an applied partial package,
+the deterministic deployment commands consume the selection-bound source and
+Custom Detection lists, not every file in their folders:
 
 ```powershell
 sentinel-xdr-migration deploy-analytic-rules `
@@ -115,7 +172,8 @@ Before any write:
    for those exact values and the listed writes.
 4. Confirm every Custom Detection YAML has `properties.status: disabled`.
 5. Stop on unresolved conversion review, invalid KQL, missing entity mappings,
-   duplicate IDs, or count mismatches.
+   duplicate IDs, or count mismatches within the exact selected scope. Excluded
+   item failures remain separately reported and do not expand the deploy set.
 6. Never infer permission from Entra Global Administrator. Verify Azure RBAC
    and Microsoft Graph Custom Detection scopes separately.
 7. Ask before launching interactive authentication.

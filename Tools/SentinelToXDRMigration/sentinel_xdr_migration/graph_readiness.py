@@ -25,8 +25,17 @@ from .graph_auth import (
     GRAPH_RESOURCE,
     GRAPH_RESOURCE_DEFAULT_SCOPE,
     credential_token_scope,
+    delegated_graph_claim_diagnostics,
+    delegated_scope_diagnostics,
 )
-from .onboarding import _state_dir
+from .onboarding import GRAPH_CLIENT_ID, _state_dir
+from .graph_client_config import (
+    azure_cli_credential,
+    azure_cli_profile,
+    configured_azure_cli_profile,
+    graph_auth_record_path,
+    resolve_graph_client_id,
+)
 from .target_context import require_locked_target
 
 AZURE_CLI_GRAPH_SCOPE = GRAPH_RESOURCE_DEFAULT_SCOPE
@@ -208,6 +217,9 @@ def _claim_permissions(claims: dict[str, Any] | None) -> dict[str, Any]:
             "grantType": "unknown",
             "claimType": "malformed",
             "permissions": {},
+            "delegatedScopeDiagnostics": delegated_scope_diagnostics(
+                scopes, (WRITE_SCOPE,)
+            ),
         }
     if not scopes_present and not roles_present:
         return {
@@ -215,11 +227,27 @@ def _claim_permissions(claims: dict[str, Any] | None) -> dict[str, Any]:
             "grantType": "unknown",
             "claimType": "missing",
             "permissions": {},
+            "delegatedScopeDiagnostics": delegated_scope_diagnostics(
+                None, (WRITE_SCOPE,)
+            ),
         }
 
+    delegated_scope_diagnostics_value = delegated_scope_diagnostics(
+        scopes if scopes_present else None,
+        (WRITE_SCOPE,),
+    )
+    if delegated_scope_diagnostics_value["claimStatus"] == "malformed":
+        return {
+            "status": "unknown",
+            "grantType": "unknown",
+            "claimType": "malformed",
+            "permissions": {},
+            "delegatedScopeDiagnostics": delegated_scope_diagnostics_value,
+        }
     delegated_scopes = {
-        value.casefold() for value in scopes.split()
-    } if scopes_valid else set()
+        value.casefold()
+        for value in delegated_scope_diagnostics_value["actualScopeNames"]
+    }
     application_roles = {
         value.casefold() for value in roles
     } if roles_valid else set()
@@ -233,12 +261,11 @@ def _claim_permissions(claims: dict[str, Any] | None) -> dict[str, Any]:
     else:
         grant_type = "application"
         claim_type = "roles"
-    grant_present = required in delegated_scopes or required in application_roles
+    grant_present = required in delegated_scopes
     permissions = {
         "customdetection.read.all": (
             "present-in-token"
             if "customdetection.read.all" in delegated_scopes
-            or "customdetection.read.all" in application_roles
             else "not-present-in-token"
         ),
         required: "present-in-token" if grant_present else "not-present-in-token",
@@ -248,6 +275,7 @@ def _claim_permissions(claims: dict[str, Any] | None) -> dict[str, Any]:
         "grantType": grant_type,
         "claimType": claim_type,
         "permissions": permissions,
+        "delegatedScopeDiagnostics": delegated_scope_diagnostics_value,
     }
 
 
@@ -298,16 +326,25 @@ def _get_cached_credential(
 
     state_root = _state_dir(state_dir)
     if auth_method == "azure-cli":
-        from azure.identity import AzureCliCredential
-
-        return AzureCliCredential(tenant_id=tenant_id)
+        if resolve_graph_client_id(
+            state_root, "customDetection"
+        ) != GRAPH_CLIENT_ID:
+            return None
+        return azure_cli_credential(
+            tenant_id=tenant_id, state_root=state_root
+        )
     if auth_method in {"device-code", "browser"}:
-        if not (state_root / AUTH_RECORD_NAME).is_file():
+        client_id = resolve_graph_client_id(state_root, "customDetection")
+        record_path = graph_auth_record_path(
+            state_root, "customDetection", client_id, AUTH_RECORD_NAME
+        )
+        if not record_path.is_file():
             return None
         return _deployment_credential(
             state_root,
             auth_method=auth_method,
             tenant_id=tenant_id,
+            client_id=client_id,
         )
     raise ValueError("auth_method must be explicitly set to azure-cli, device-code, or browser")
 
@@ -315,7 +352,13 @@ def _get_cached_credential(
 def _token_diagnostics(
     claims: dict[str, Any] | None,
     target_tenant_id: str,
+    required_scope: str = WRITE_SCOPE,
 ) -> dict[str, Any]:
+    graph_claims = delegated_graph_claim_diagnostics(
+        claims,
+        tenant_id=target_tenant_id,
+        required_scopes=(required_scope,),
+    )
     if claims is None:
         return {
             "tenantMatch": "unknown",
@@ -324,28 +367,15 @@ def _token_diagnostics(
                 "status": "unknown",
                 "delegatedScopes": "unknown",
                 "applicationRoles": "unknown",
+                "delegatedScopeDiagnostics": graph_claims["delegatedScopes"],
             },
+            "delegatedScopeDiagnostics": graph_claims["delegatedScopes"],
             "managementPermissionGrant": {
                 "status": "unknown",
                 "grantType": "unknown",
                 "claimType": "unknown",
             },
         }
-    claim_tenant = claims.get("tid")
-    tenant_match = (
-        claim_tenant.casefold() == target_tenant_id.casefold()
-        if isinstance(claim_tenant, str)
-        else None
-    )
-    audience = claims.get("aud")
-    graph_audiences = {
-        GRAPH_RESOURCE.casefold(),
-        GRAPH_AUDIENCE_CLAIM.casefold(),
-    }
-    if isinstance(audience, str):
-        graph_audience = audience.casefold() in graph_audiences
-    else:
-        graph_audience = None
     claim_info = _claim_permissions(claims)
     permissions = dict(claim_info["permissions"])
     permissions["status"] = claim_info["status"]
@@ -354,17 +384,17 @@ def _token_diagnostics(
         else "malformed" if claim_info["claimType"] == "malformed"
         else "not-present"
     )
+    permissions["delegatedScopeDiagnostics"] = graph_claims["delegatedScopes"]
     permissions["applicationRoles"] = (
         "present" if claim_info["claimType"] in {"roles", "scp+roles"}
         else "malformed" if claim_info["claimType"] == "malformed"
         else "not-present"
     )
     return {
-        "tenantMatch": tenant_match if tenant_match is not None else "unknown",
-        "graphAudience": (
-            graph_audience if graph_audience is not None else "unknown"
-        ),
+        "tenantMatch": graph_claims["tenantMatch"],
+        "graphAudience": graph_claims["graphAudience"],
         "permissions": permissions,
+        "delegatedScopeDiagnostics": graph_claims["delegatedScopes"],
         "managementPermissionGrant": {
             "status": claim_info["status"],
             "grantType": claim_info["grantType"],
@@ -394,13 +424,44 @@ def preflight_deployment(
 
     root = Path(solution).expanduser().resolve()
     target = require_locked_target(root, materialize_missing=False)
-    dcr_permission_preflight = preflight_dcr_permissions(
-        root,
-        target,
-        auth_method=auth_method,
-    )
+    state_root = _state_dir(state_dir)
+    client_id = resolve_graph_client_id(state_root, "customDetection")
+    azure_config_dir = configured_azure_cli_profile(state_root)
+    with azure_cli_profile(azure_config_dir):
+        dcr_permission_preflight = preflight_dcr_permissions(
+            root,
+            target,
+            auth_method=auth_method,
+        )
     output = root / "XDR Detections"
     files = xdr_detection_files(output)
+    from .packaging_selection import current_applied_package_selection
+
+    applied_selection = current_applied_package_selection(root)
+    qualification_scope = None
+    if applied_selection is not None:
+        selected_paths = {
+            str(value).replace("\\", "/").casefold()
+            for value in (applied_selection["plan"].get("selection") or {}).get(
+                "xdrDetections", []
+            )
+        }
+        files_by_path = {
+            path.relative_to(root).as_posix().casefold(): path for path in files
+        }
+        if not selected_paths or not selected_paths.issubset(files_by_path):
+            raise ValueError("current applied package selection has missing Custom Detection files")
+        files = [
+            files_by_path[path]
+            for path in sorted(selected_paths)
+        ]
+        qualification_scope = {
+            "kind": "applied-package-selection",
+            "planSha256": applied_selection["plan"].get("planSha256"),
+            "outcome": (applied_selection["plan"].get("summary") or {}).get("outcome"),
+            "selectedDetectionPaths": sorted(selected_paths),
+            "coverage": applied_selection["plan"].get("summary"),
+        }
     report: dict[str, Any] = {
         "status": "unknown",
         "provider": "microsoft-graph-beta",
@@ -410,6 +471,8 @@ def preflight_deployment(
         },
         "authentication": {
             "method": auth_method,
+            "clientId": client_id if auth_method in {"device-code", "browser"} else None,
+            "azureConfigDir": azure_config_dir if auth_method == "azure-cli" else None,
             "status": "not-attempted",
             "requestedScope": None,
             "tenantMatch": "unknown",
@@ -466,6 +529,7 @@ def preflight_deployment(
             },
         },
         "payloadReadiness": [],
+        "qualificationScope": qualification_scope,
         "readChecks": [],
         "dcrPermissionPreflight": dcr_permission_preflight,
         "deploymentPlanning": build_deployment_plan(
@@ -532,6 +596,16 @@ def preflight_deployment(
         report["deploymentReadiness"] = "action-required"
         return report
 
+    if auth_method == "azure-cli" and client_id != GRAPH_CLIENT_ID:
+        report["authentication"]["status"] = "action-required"
+        report["authentication"]["action"] = (
+            "The configured custom Graph client is not used by Azure CLI "
+            "authentication. Run setup-deployment with device-code or browser."
+        )
+        report["status"] = "action-required"
+        report["deploymentReadiness"] = "action-required"
+        return report
+
     if len(valid_payloads) > max_detections:
         report["authentication"]["status"] = "not-attempted"
         report["readChecks"].append(
@@ -562,7 +636,10 @@ def preflight_deployment(
             return report
         try:
             write_request_scope = credential_token_scope(auth_method, WRITE_SCOPE)
-            access_token = credential.get_token(write_request_scope).token
+            with azure_cli_profile(
+                azure_config_dir if auth_method == "azure-cli" else None
+            ):
+                access_token = credential.get_token(write_request_scope).token
             token_scope = (
                 "resource-default" if auth_method == "azure-cli" else "write"
             )
@@ -600,7 +677,10 @@ def preflight_deployment(
                 return report
             try:
                 read_request_scope = credential_token_scope(auth_method, READ_SCOPE)
-                access_token = credential.get_token(read_request_scope).token
+                with azure_cli_profile(
+                    azure_config_dir if auth_method == "azure-cli" else None
+                ):
+                    access_token = credential.get_token(read_request_scope).token
                 token_scope = "read"
             except Exception as read_error:
                 report["authentication"]["status"] = "action-required"
@@ -627,7 +707,12 @@ def preflight_deployment(
         return report
 
     claims = _token_claims(access_token)
-    token_info = _token_diagnostics(claims, target["tenantId"])
+    required_scope = READ_SCOPE if token_scope == "read" else WRITE_SCOPE
+    token_info = _token_diagnostics(
+        claims,
+        target["tenantId"],
+        required_scope=required_scope,
+    )
     auth_report = report["authentication"]
     auth_report.update(
         {
@@ -649,6 +734,7 @@ def preflight_deployment(
             "tenantMatch": token_info["tenantMatch"],
             "graphAudience": token_info["graphAudience"],
             "tokenPermissionClaims": token_info["permissions"],
+            "delegatedScopeDiagnostics": token_info["delegatedScopeDiagnostics"],
             "writeScopeAcquisition": {
                 "status": (
                     "resource-token-acquired"
@@ -679,12 +765,12 @@ def preflight_deployment(
             **grant,
             "credentialRequestScope": auth_report["requestedScope"],
             "reason": (
-                "CustomDetection.ReadWrite.All is present in a delegated scope "
-                "or application role claim; token claims do not prove tenant "
+                "CustomDetection.ReadWrite.All is present in the delegated scp "
+                "claim; token claims do not prove tenant "
                 "consent, effective user role, Defender XDR RBAC, or write authorization."
                 if grant["status"] == "ready"
-                else "The token has valid permission claims but does not contain "
-                "CustomDetection.ReadWrite.All."
+                else "The token does not contain the required delegated "
+                "CustomDetection.ReadWrite.All scope."
                 if grant["status"] == "missing"
                 else "The token permission claims are missing or malformed; "
                 "the management permission grant cannot be determined."
@@ -696,11 +782,15 @@ def preflight_deployment(
         if isinstance(token_info["permissions"], dict)
         else "unknown"
     )
-    if token_info["tenantMatch"] is not True or token_info["graphAudience"] is not True:
+    if (
+        token_info["tenantMatch"] is not True
+        or token_info["graphAudience"] is not True
+        or token_info["delegatedScopeDiagnostics"]["status"] != "satisfied"
+    ):
         auth_report["status"] = "blocked"
         auth_report["reason"] = (
-            "Cached access token tenant or Graph audience could not be confirmed "
-            "against the locked Qualification target."
+            "Cached access token tenant, Graph audience, or required delegated "
+            "scopes could not be confirmed against the locked Qualification target."
         )
         report["status"] = "blocked"
         report["deploymentReadiness"] = "blocked"

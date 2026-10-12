@@ -112,8 +112,10 @@ class ArtifactTests(unittest.TestCase):
             document[field] = f"Package\\{name}"
         report = artifact_path(self.solution, "packaging.v3_1.json")
         report.write_text(json.dumps(document))
+        state = workflow_status(self.solution)
+        state["stages"]["validation"]["status"] = "passed"
         _validate_packaging_evidence(
-            workflow_status(self.solution),
+            state,
             {"packager": "V3.1", "packageReport": "Logs\\sentinel-xdr-migration\\packaging.v3_1.json"},
             self.solution,
         )
@@ -122,17 +124,41 @@ class ArtifactTests(unittest.TestCase):
 
     def test_serialization_preserves_identity_and_error_semantics(self):
         message = f"Provider cannot read {self.solution}/private/file"
+        query = (
+            'DeviceProcessEvents\n'
+            '| where NewProcessName endswith "\\\\\\\\certutil.exe"\n'
+            '| extend SourcePath = "C:\\\\\\\\Program Files\\\\\\\\source\\\\\\\\agent.exe"\n'
+            '| join kind=inner (DeviceNetworkEvents | project DeviceId, RemoteUrl) on DeviceId\n'
+            '| where RemoteUrl contains "https://example.test/source?mode=join"\n'
+            '| project DeviceId, SourcePath'
+        )
         value = portable_artifact(self.solution, {
             "solution": str(self.solution),
             "source": str(self.solution / "Analytic Rules" / "Nested Rule.yaml"),
+            "sourceReference": {"source": "Analytic Rules\\Nested Rule.yaml"},
             "context": {"workspaceResourceId": "/subscriptions/id/resourceGroups/rg", "tenantId": "tenant"},
-            "error": message, "query": 'print Path="/home/example"',
+            "error": message,
+            "query": 'print Path="/home/example"',
+            "queries": {"source": query, "converted": query},
+            "errorDetails": {"message": message, "source": "C:\\provider\\error"},
+            "artifacts": {
+                "manifest": str(self.solution / "Logs" / "manifest.json"),
+            },
             "access_token": "secret", "details": "Bearer eySecret.token.value https://example/?sig=secret&se=secret",
         })
         self.assertEqual(".", value["solution"])
         self.assertEqual("Analytic Rules/Nested Rule.yaml", value["source"])
+        self.assertEqual(
+            "Analytic Rules/Nested Rule.yaml",
+            value["sourceReference"]["source"],
+        )
         self.assertEqual(message, value["error"])
         self.assertEqual('print Path="/home/example"', value["query"])
+        self.assertEqual(query, value["queries"]["source"])
+        self.assertEqual(query, value["queries"]["converted"])
+        self.assertEqual(message, value["errorDetails"]["message"])
+        self.assertEqual("C:\\provider\\error", value["errorDetails"]["source"])
+        self.assertEqual("Logs/manifest.json", value["artifacts"]["manifest"])
         self.assertEqual("tenant", value["context"]["tenantId"])
         self.assertNotIn("secret", json.dumps(value))
         self.assertNotIn("eySecret", value["details"])

@@ -31,7 +31,13 @@ unchanged; do not repeat the same broad question later.
 
 The target-specific DCR permission preflight in this skill runs at the
 beginning of the optional testing extension, before fixture generation or
-ingestion.
+ingestion. This preflight is required for the ingestion permission/resource
+checks, not as a separate gate to determine whether an AR or CD already
+exists. Its exact-ID Graph reads are currently bundled into the same CLI
+preflight and cannot be skipped independently; a denied/unknown result remains
+a backend limitation until that check is separated. Do not ignore a blocked
+preflight to proceed; making that bundled check optional requires a maintainer
+change to the backend.
 
 ## Workspace identity contract
 
@@ -113,12 +119,30 @@ are conditional or currently unsupported:
 7. explicitly owned cleanup/deletion with exact ownership evidence, resource
    list, cap, and exclusions.
 
-Offer unselected structured choices: **Approve all currently bounded and
-available components**, **Select components**, **Revise the plan**, or
-**Decline advance consent**. “Approve all” is a direct user choice, not a
-default. Unknown or provisional scope remains unapproved; revise or defer it
-instead of widening to an unlimited scope. Prior DCR/DCE consent does not
-approve ingestion, parity enablement, package installation, or cleanup.
+Present **Approve the broadest currently bounded and available scope** as the
+preselected suggested action, with **Select components**, **Revise the plan**,
+and **Decline advance consent** also available. The preselection is not
+approval. Before submission, show every selected component, cap, target,
+resource family, and package flag/value. Require affirmative submission or
+confirmation of that exact display; a preselected choice without submission,
+cancel/close, decline, or absent response must record no consent. Users may
+narrow, revise, or decline.
+
+Suggest only currently supported components whose complete scope is bound to
+the plan. If available, this may select the disabled Sentinel-AR/Graph-CD pair
+and the distinct later `fullPackageAcceptance` component. Show all package
+selection flags individually with their exact values; when a plan exposes five
+valid flags and the broad proposal sets them all true, display each named flag
+as `true`. Never infer or invent package flags. Unknown/provisional ingestion,
+DCR/DCE, table creation, parity, or cleanup remains excluded unless that
+component is itself fully bounded, supported, and explicitly displayed.
+Where the broadest set cannot be fully bound, suggest only the largest valid
+bounded subset and identify every unavailable/excluded action group and why.
+
+Only the exact affirmative submission may be persisted, after checking all
+components and flag values against the current plan. Prior DCR/DCE consent
+does not approve ingestion, parity enablement, package installation, or
+cleanup.
 
 Disabled Sentinel alert rules and Graph Custom Detections are an explicit
 pair-first component with an approved upper-bound cap. Full-package
@@ -351,27 +375,39 @@ extension. A user request such as “test this AR and CD” is sufficient. Do no
 ask the user to run commands or provide paths already present in the solution,
 scenario manifest, qualification target, or generated contract.
 
-Before fixture preparation, build a complete no-write plan from the current
-recursive source-rule inventory and locked target:
+Before fixture preparation, retain the complete recursive source-rule
+inventory for accounting and build a no-write plan for the current approved
+Qualification scope. For a partial package, the currently applied
+evidence-based package-selection plan is authoritative: plan fixtures and
+ingestion only for its selected, validated AR/CD pairs. Do not let excluded
+rule failures block selected-subset progress, but preserve their identities
+and reasons as excluded evidence and never claim full-inventory qualification.
+Use the exact plan hash reported by `workflow-status`:
 
 ```powershell
 python Tools\SolutionMigration\resolve_ingestion_contracts.py `
   --solution "Solutions\<solution>" `
   --target-context "Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\qualification-target.json" `
+  --selection-plan "Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\package-selection-plan.json" `
+  --expected-selection-plan-sha256 "<current-applied-plan-sha256>" `
   --output "Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\<version>\ingestion-contract-plan.json"
 ```
 
-Keep the complete inventory and target hashes with the run evidence. The
-planner groups only identical registered table schema/transform contracts and
-preserves each AR/CD source file and query hash. Unknown or multi-table
-lineage and complex scenarios remain blocked for review; the plan neither
-generates fixtures nor calls Azure. Before requesting any ingestion approval,
-rerun it with `--expected-inventory-sha256` and `--expected-target-sha256`
-from the reviewed plan and a new `--output` filename so the reviewed plan is
-preserved. Stop if it returns `stale-plan`. Then use the
+The selected plan must be freshly applied, run-bound, and meet the canonical
+strictly-over-50% validated migrated-detection threshold. The planner still
+accounts for the full original inventory, marks unselected rules as
+not-selected, and records the exact selection-plan hash and scope. It groups
+only identical registered table schema/transform contracts and preserves each
+selected AR/CD source file and query hash. Unknown or multi-table lineage and
+complex scenarios remain blocked for review; the plan neither generates
+fixtures nor calls Azure. Before requesting any ingestion approval, rerun it
+with the reviewed inventory, target, and selection-plan hashes and a new
+`--output` filename so the reviewed plan is preserved. Stop if it returns
+`stale-plan`. Then use the
 no-write `azure-monitor-logs-ingestion resolve --check-existing` for each
-registered table group in the same locked workspace, recording one report per
-table. Do not treat either plan as write approval.
+registered table group required by the selected fixtures in the same locked
+workspace, recording one report per table. Do not treat either plan as write
+approval. A complete package follows the existing full valid inventory path.
 
 ### DCR preference and permission preflight
 

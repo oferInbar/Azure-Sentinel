@@ -144,22 +144,30 @@ azure-monitor-logs-ingestion run `
 
 For a solution-wide Qualification plan, enumerate every recursive source
 Analytic Rule and pair it to its converted Custom Detection before generating
-rule-specific fixtures:
+rule-specific fixtures. For a partial package, keep that complete inventory
+for accounting but plan only the selected, validated pairs by supplying the
+fresh applied selection plan and hash:
 
 ```powershell
 python Tools\SolutionMigration\resolve_ingestion_contracts.py `
   --solution "Solutions\<solution>" `
   --target-context "Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\qualification-target.json" `
+  --selection-plan "Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\package-selection-plan.json" `
+  --expected-selection-plan-sha256 "<current-applied-plan-sha256>" `
   --output "Solutions\<solution>\Logs\sentinel-xdr-migration\<run-id>\<version>\ingestion-contract-plan.json"
 ```
 
 The plan groups rules only when their registered table schema/transform
 fingerprints match, and records rule/detection file and query hashes plus the
-exact locked target. It performs no Azure calls or writes and does not generate
-scenarios. Before write approval, rerun with the original plan's
+exact locked target. Partial selection still reports the original full
+inventory, selected scope, coverage, and excluded rule identities/reasons; it
+does not mark unselected rules as qualified. The applied selection must satisfy
+the canonical strict over-50% validated migrated-detection threshold. The plan
+performs no Azure calls or writes and does not generate scenarios. Before write
+approval, rerun with the original plan's
 `--expected-inventory-sha256` and `--expected-target-sha256`; a changed source
-inventory or target returns `stale-plan`. Select a new output path for each
-plan; existing plan files are never overwritten.
+inventory, target, or applied selection returns `stale-plan`. Select a new
+output path for each plan; existing plan files are never overwritten.
 
 Adding a registered table requires a reviewed writable input schema,
 destination schema, deterministic transform, Microsoft output stream,

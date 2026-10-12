@@ -226,26 +226,387 @@ def _value(document: dict[str, Any], name: str) -> Any:
 
 
 def _xdr_references(solution: Path, document: dict[str, Any]) -> list[Path]:
-    values = _value(document, "XDR Detections")
-    if values is None:
-        values = _value(document, "Custom Detections")
-    if values is None:
+    keys = [
+        key for key in ("XDR Detections", "Custom Detections")
+        if any(name.casefold() == key.casefold() for name in document)
+    ]
+    if len(keys) > 1:
+        raise ValueError("solution data has ambiguous XDR Detection selection arrays")
+    if not keys:
+        folder = solution / "XDR Detections"
+        discovered = [
+            path for path in folder.rglob("*")
+            if path.is_file() and path.suffix.casefold() in {".yaml", ".yml"}
+        ] if folder.is_dir() else []
+        if discovered:
+            raise ValueError(
+                "solution data is missing an explicit XDR Detections array; "
+                "folder discovery is not a package-selection policy"
+            )
         return []
+    values = _value(document, keys[0])
     if not isinstance(values, list):
         raise ValueError("solution data XDR Detections must be an array")
 
     references: list[Path] = []
+    seen: set[str] = set()
     for value in values:
         if not isinstance(value, str) or not value.strip():
             raise ValueError("solution data contains an invalid XDR Detection reference")
         normalized = value.replace("\\", "/")
-        if not normalized.startswith("XDR Detections/"):
+        parts = normalized.split("/")
+        if (
+            not normalized.startswith("XDR Detections/")
+            or any(part in {"", ".", ".."} for part in parts)
+            or normalized.startswith("/")
+            or re.match(r"^[A-Za-z]:", normalized)
+        ):
             raise ValueError("XDR references must be under XDR Detections, never Logs or Reports")
         candidate = content_path(solution, normalized)
         if not candidate.is_file():
             raise ValueError(f"referenced XDR Detection does not exist: {candidate}")
-        references.append(candidate.resolve())
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(solution.resolve()) or candidate.is_symlink():
+            raise ValueError(f"XDR Detection reference resolves outside the solution: {value!r}")
+        key = resolved.as_posix().casefold()
+        if key in seen:
+            raise ValueError(f"duplicate XDR Detection reference: {value!r}")
+        seen.add(key)
+        references.append(resolved)
     return references
+
+
+def _verify_package_selection(
+    solution: Path,
+    selection_plan: dict[str, Any],
+    template: dict[str, Any],
+    zip_path: Path,
+) -> dict[str, Any]:
+    from .packaging_selection import _partial_coverage_allowed
+
+    plan_sha = selection_plan.get("planSha256")
+    if not isinstance(plan_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", plan_sha):
+        raise ValueError("package selection evidence has no valid plan SHA-256")
+    expected = selection_plan.get("selection") or {}
+    summary = selection_plan.get("summary") or {}
+    if summary.get("outcome") == "partial" and not _partial_coverage_allowed(summary):
+        raise ValueError(
+            "partial package selection does not meet the strict over-50% "
+            "validated migrated-detection coverage policy"
+        )
+    if summary.get("outcome") == "blocked":
+        raise ValueError("blocked package selection cannot be packaged")
+    data = _read_json(_solution_data_file(solution / "Data"))
+    current = {
+        "analyticRules": _value(data, "Analytic Rules") or _value(data, "Analytics Rules") or [],
+        "xdrDetections": _value(data, "XDR Detections") or _value(data, "Custom Detections") or [],
+    }
+    normalized_expected = {
+        "analyticRules": [str(value).replace("\\", "/") for value in expected.get("analyticRules", [])],
+        "xdrDetections": [str(value).replace("\\", "/") for value in expected.get("xdrDetections", [])],
+    }
+    if current != normalized_expected:
+        raise RuntimeError("solution-data selections differ from the applied package selection plan")
+
+    def resources(document: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        found: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+        def visit(template: Any, inherited_variables: dict[str, Any] | None = None) -> None:
+            if not isinstance(template, dict):
+                return
+            variables = dict(inherited_variables or {})
+            template_variables = template.get("variables")
+            if isinstance(template_variables, dict):
+                variables.update(template_variables)
+            entries = template.get("resources")
+            if isinstance(entries, dict):
+                entries = [
+                    ({**entry, "name": entry.get("name", name)} if isinstance(entry, dict) else entry)
+                    for name, entry in entries.items()
+                ]
+            if isinstance(entries, list):
+                for resource in entries:
+                    if not isinstance(resource, dict):
+                        continue
+                    found.append((resource, variables))
+                    properties = resource.get("properties")
+                    if isinstance(properties, dict):
+                        visit(properties.get("template"), variables)
+                        visit(properties.get("mainTemplate"), variables)
+            visit(template.get("template"), variables)
+            visit(template.get("mainTemplate"), variables)
+
+        visit(document)
+        return found
+
+    def exact_token(value: Any, identifier: str) -> bool:
+        if not isinstance(value, str):
+            return False
+        return re.search(
+            rf"(?<![0-9a-f]){re.escape(identifier)}(?![0-9a-f])",
+            value.casefold(),
+        ) is not None
+
+    guid_token = re.compile(
+        r"(?i)(?<![0-9a-f])[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?![0-9a-f])"
+    )
+    variable_reference = re.compile(
+        r"variables\(\s*['\"]([^'\"]+)['\"]\s*\)(?:\.([A-Za-z_][A-Za-z0-9_]*))?"
+    )
+    deployment_reference = re.compile(
+        r"resourceId\(\s*['\"]Microsoft\.Resources/deployments['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)",
+        re.IGNORECASE,
+    )
+
+    def variable_value(variables: dict[str, Any], name: str, field: str | None) -> Any:
+        value = next(
+            (item for key, item in variables.items() if key.casefold() == name.casefold()),
+            None,
+        )
+        if field is None or not isinstance(value, dict):
+            return value
+        return next(
+            (item for key, item in value.items() if key.casefold() == field.casefold()),
+            None,
+        )
+
+    def resource_ids(value: Any, variables: dict[str, Any], seen: frozenset[str] = frozenset()) -> set[str]:
+        if isinstance(value, dict):
+            return set().union(*(resource_ids(item, variables, seen) for item in value.values()))
+        if isinstance(value, list):
+            return set().union(*(resource_ids(item, variables, seen) for item in value))
+        if not isinstance(value, str):
+            return set()
+        identifiers = {match.group(0).casefold() for match in guid_token.finditer(value)}
+        for match in variable_reference.finditer(value):
+            reference = f"{match.group(1)}.{match.group(2) or ''}".casefold()
+            if reference in seen:
+                continue
+            resolved = variable_value(variables, match.group(1), match.group(2))
+            identifiers.update(
+                resource_ids(resolved, variables, seen | {reference})
+            )
+        return identifiers
+
+    def resource_matches_id(
+        resource: dict[str, Any],
+        variables: dict[str, Any],
+        identifier: str,
+    ) -> bool:
+        properties = resource.get("properties")
+        if not isinstance(properties, dict):
+            properties = {}
+        identity_fields = [
+            resource.get("name"),
+            properties.get("id"),
+            properties.get("alertRuleTemplateName"),
+            properties.get("contentId"),
+        ]
+        if guid_token.fullmatch(identifier):
+            return any(
+                identifier.casefold() in resource_ids(value, variables)
+                for value in identity_fields
+            )
+        return any(exact_token(value, identifier.casefold()) for value in identity_fields)
+
+    def custom_detection_child(
+        document: dict[str, Any],
+        packaged_id: str,
+    ) -> bool:
+        return any(
+            str(child.get("type") or "").casefold()
+            == "microsoft.security/detectionrules"
+            and str(child.get("name") or "").casefold() == "detectionrule"
+            and exact_token(
+                (
+                    child.get("properties", {}).get("id")
+                    if isinstance(child.get("properties"), dict)
+                    else None
+                ),
+                packaged_id,
+            )
+            for child, _ in resources(document)
+        )
+
+    def verify_template(document: dict[str, Any], label: str) -> None:
+        tree = resources(document)
+        for item in selection_plan.get("analyticRules", []):
+            identifier = str(item.get("id") or "").casefold()
+            if not identifier:
+                raise ValueError("package selection inventory contains an Analytic Rule without an ID")
+            matching = [
+                resource for resource, variables in tree
+                if str(resource.get("type") or "").casefold() in {
+                    "microsoft.operationalinsights/workspaces/providers/alertrules",
+                    "microsoft.securityinsights/alertruletemplates",
+                }
+                and resource_matches_id(resource, variables, identifier)
+            ]
+            analytic_content_templates = [
+                resource for resource, variables in tree
+                if str(resource.get("type") or "").casefold()
+                == "microsoft.operationalinsights/workspaces/providers/contenttemplates"
+                and isinstance(resource.get("properties"), dict)
+                and str(resource["properties"].get("contentKind") or "").casefold()
+                == "analyticsrule"
+                and resource_matches_id(resource, variables, identifier)
+            ]
+            expected_count = 1 if item.get("included") else 0
+            if (
+                len(matching) != expected_count
+                or len(analytic_content_templates) != expected_count
+            ):
+                raise RuntimeError(
+                    f"{label} must contain exactly {expected_count} matching Analytic Rule "
+                    f"resources and content templates for {item.get('path')}; found "
+                    f"{len(matching)} resource(s), {len(analytic_content_templates)} content template(s)"
+                )
+        for item in selection_plan.get("xdrDetections", []):
+            source_id = str(item.get("sourceId") or "")
+            detection_id = str(item.get("id") or "")
+            if not detection_id:
+                raise ValueError("package selection inventory contains a Custom Detection without an ID")
+            packaged_id = (
+                f"xdr-{source_id}"
+                if re.fullmatch(
+                    r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
+                    source_id,
+                )
+                else detection_id
+            ).casefold()
+            installation_resources = []
+            for resource, _ in tree:
+                resource_type = str(resource.get("type") or "").casefold()
+                properties = resource.get("properties") or {}
+                if (
+                    resource_type == "microsoft.resources/deployments"
+                    and isinstance(properties, dict)
+                    and isinstance(properties.get("template"), dict)
+                    and custom_detection_child(properties["template"], packaged_id)
+                ):
+                    installation_resources.append(resource)
+            install_names = {
+                resource["name"]
+                for resource in installation_resources
+                if isinstance(resource.get("name"), str)
+            }
+            registration_count = 0
+            for resource, _ in tree:
+                resource_type = str(resource.get("type") or "").casefold()
+                properties = resource.get("properties") or {}
+                if (
+                    resource_type == "microsoft.operationalinsights/workspaces/providers/contenttemplates"
+                    and str(properties.get("contentKind") or "").casefold() == "customdetection"
+                    and exact_token(properties.get("contentId"), packaged_id)
+                    and isinstance(properties.get("mainTemplate"), dict)
+                    and custom_detection_child(properties["mainTemplate"], packaged_id)
+                ):
+                    dependencies = resource.get("dependsOn") or []
+                    if isinstance(dependencies, str):
+                        dependencies = [dependencies]
+                    dependency_names = [
+                        name.casefold()
+                        for dependency in dependencies
+                        if isinstance(dependency, str)
+                        for name in deployment_reference.findall(dependency)
+                    ]
+                    linked_installations = [
+                        name for name in dependency_names if name in {
+                            install_name.casefold() for install_name in install_names
+                        }
+                    ]
+                    if len(linked_installations) == 1:
+                        registration_count += 1
+            expected_count = 1 if item.get("included") else 0
+            if len(installation_resources) != expected_count or registration_count != expected_count:
+                raise RuntimeError(
+                    f"{label} must contain exactly {expected_count} Custom Detection installations "
+                    f"and registrations for {item.get('path')}; found "
+                    f"{len(installation_resources)} installation(s), {registration_count} registration(s)"
+                )
+        if not normalized_expected["xdrDetections"]:
+            parameters = document.get("parameters") or {}
+            if "DeployCustomDetection" in parameters:
+                raise RuntimeError(
+                    f"{label} emits Custom Detection controls for an explicitly empty XDR selection"
+                )
+
+    verify_template(template, "mainTemplate.json")
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            matches = [
+                name for name in archive.namelist()
+                if Path(name).name.casefold() == "maintemplate.json"
+            ]
+            if len(matches) != 1:
+                raise RuntimeError("package ZIP must contain exactly one mainTemplate.json")
+            embedded = json.loads(archive.read(matches[0]))
+            excluded_references = [
+                ("Analytic Rules", item)
+                for item in selection_plan.get("analyticRules", [])
+                if not item.get("included")
+            ] + [
+                ("XDR Detections", item)
+                for item in selection_plan.get("xdrDetections", [])
+                if not item.get("included")
+            ]
+            text_entries = []
+            for member in archive.namelist():
+                normalized_member = member.replace("\\", "/")
+                parts = [part for part in normalized_member.split("/") if part]
+                for family, item in excluded_references:
+                    path_parts = str(item.get("path") or "").replace("\\", "/").split("/")
+                    for index, part in enumerate(parts):
+                        if (
+                            part.casefold() == family.casefold()
+                            and [value.casefold() for value in parts[index:]]
+                            == [value.casefold() for value in path_parts]
+                        ):
+                            raise RuntimeError(
+                                f"package ZIP includes explicitly excluded content: {item.get('path')}"
+                            )
+                if Path(normalized_member).suffix.casefold() in {".json", ".yaml", ".yml", ".txt"}:
+                    text_entries.append((member, archive.read(member).decode("utf-8", errors="replace")))
+    except (OSError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot verify the package selection inside ZIP: {exc}") from exc
+    if not isinstance(embedded, dict):
+        raise RuntimeError("package ZIP mainTemplate.json must contain an object")
+    verify_template(embedded, "package ZIP mainTemplate.json")
+    for family, item in excluded_references:
+        identifiers = []
+        if family == "Analytic Rules":
+            identifiers.extend((str(item.get("id") or ""), str(item.get("path") or "")))
+        else:
+            source_id = str(item.get("sourceId") or "")
+            detection_id = str(item.get("id") or "")
+            identifiers.append(
+                f"xdr-{source_id}"
+                if re.fullmatch(
+                    r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
+                    source_id,
+                )
+                else detection_id
+            )
+            identifiers.append(detection_id)
+            identifiers.append(str(item.get("path") or ""))
+        for member, content in text_entries:
+            searchable = content.replace("\\", "/")
+            if any(exact_token(searchable, identifier.casefold()) for identifier in identifiers if identifier):
+                raise RuntimeError(
+                    f"package ZIP contains a reference to explicitly excluded content "
+                    f"{item.get('path')} in {member}"
+                )
+    return {
+        "planSha256": plan_sha,
+        "analyticRuleIncluded": len(normalized_expected["analyticRules"]),
+        "xdrDetectionIncluded": len(normalized_expected["xdrDetections"]),
+        "outcome": summary.get("outcome"),
+        "coverageNumerator": summary.get("coverageNumerator"),
+        "coverageDenominator": summary.get("coverageDenominator"),
+        "partialPublicationAllowed": summary.get("partialPublicationAllowed"),
+        "mainTemplateVerified": True,
+        "zipVerified": True,
+    }
 
 
 def package_solution_v3_1(
@@ -256,6 +617,7 @@ def package_solution_v3_1(
     requested_version_bump: str | None = None,
     package_attempt_id: str | None = None,
     workflow_run_id: str | None = None,
+    selection_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if version_bump not in {"none", "patch", "minor", "major"}:
         raise ValueError("version bump must be none, patch, minor, or major")
@@ -264,6 +626,23 @@ def package_solution_v3_1(
     if not root.is_dir():
         raise ValueError(f"solution folder does not exist: {root}")
     require_solution_conversion_scope(root)
+    applied_selection = None
+    if workflow_run_id is not None:
+        from .packaging_selection import verify_applied_package_selection
+
+        applied_selection = verify_applied_package_selection(root, workflow_run_id)
+        if selection_plan is not None and (
+            not applied_selection
+            or applied_selection["plan"].get("planSha256")
+            != selection_plan.get("planSha256")
+        ):
+            raise ValueError("V3.1 packaging selection is missing, stale, or mismatched")
+        if selection_plan is None and applied_selection is not None:
+            raise ValueError(
+                "an applied evidence-based selection must be passed explicitly to V3.1 packaging"
+            )
+    elif selection_plan is not None:
+        raise ValueError("V3.1 evidence-based packaging selection requires a bound workflow run ID")
     repository = repository_root(root)
     selected_toolkit_root = _validate_v31_toolkit_root(
         toolkit_root if toolkit_root is not None else repository
@@ -324,6 +703,16 @@ def package_solution_v3_1(
     if toolkit_root is not None:
         command.extend(["-ToolkitRootPath", str(selected_toolkit_root)])
     input_before = package_input_identity(root)
+    if applied_selection is not None:
+        current_selection = verify_applied_package_selection(root, workflow_run_id)
+        if (
+            not current_selection
+            or current_selection["plan"].get("planSha256")
+            != selection_plan.get("planSha256")
+        ):
+            raise ValueError(
+                "V3.1 package selection changed immediately before the package build"
+            )
     package_attempt_id = package_attempt_id or str(uuid.uuid4())
     completed = subprocess.run(
         command,
@@ -416,8 +805,9 @@ def package_solution_v3_1(
         raise RuntimeError(
             "V3.1 packaging completed without required artifacts: " + ", ".join(missing)
         )
+    template_document = _read_json(main_template)
     deployment_parameters = _deployment_parameters(
-        _read_json(main_template), _read_json(create_ui), _read_json(test_parameters),
+        template_document, _read_json(create_ui), _read_json(test_parameters),
         has_xdr=bool(xdr_files),
         contract_path=(
             selected_toolkit_root
@@ -449,6 +839,10 @@ def package_solution_v3_1(
         raise RuntimeError(
             "generated package ZIP is missing: " + ", ".join(sorted(missing_entries))
         )
+    selection_verification = (
+        _verify_package_selection(root, selection_plan, template_document, zip_path)
+        if selection_plan is not None else None
+    )
 
     artifact_paths = {
         "mainTemplate": main_template,
@@ -463,6 +857,13 @@ def package_solution_v3_1(
     if report_path.exists():
         suffix = package_attempt_id or uuid.uuid4().hex
         report_path = reports / f"packaging.v3_1.{suffix}.json"
+    selection_outcome = (
+        "partial-package-validated"
+        if selection_plan is not None
+        and selection_plan.get("summary", {}).get("outcome") == "partial"
+        else "package-validated"
+        if selection_plan is not None else None
+    )
     result = {
         "status": "passed",
         "packager": PACKAGER_NAME,
@@ -491,6 +892,20 @@ def package_solution_v3_1(
         "xdrDetectionCount": len(xdr_files),
         "deploymentParameters": deployment_parameters,
         "customDetectionRegistrationSupport": "unverified" if xdr_files else "notApplicable",
+        "selectionOutcome": selection_outcome,
+        "selectionPlanSha256": (
+            selection_plan.get("planSha256") if selection_plan is not None else None
+        ),
+        "selectionPlanPath": (
+            applied_selection["planPath"] if applied_selection is not None else None
+        ),
+        "selectionReceiptPath": (
+            applied_selection["receiptPath"] if applied_selection is not None else None
+        ),
+        "selectionSummary": (
+            selection_plan.get("summary") if selection_plan is not None else None
+        ),
+        "selectionVerification": selection_verification,
         "mainTemplate": str(main_template),
         "createUiDefinition": str(create_ui),
         "testParameters": str(test_parameters),
@@ -503,6 +918,12 @@ def package_solution_v3_1(
             "createUiDefinition": str(create_ui),
             "testParameters": str(test_parameters),
             "zip": str(zip_path),
+            **({
+                "selectionPlan": applied_selection["planPath"],
+                "selectionReceipt": applied_selection["receiptPath"],
+                "selectionPlanSha256": selection_plan["planSha256"],
+                "selectionOutcome": selection_outcome,
+            } if applied_selection is not None and selection_plan is not None else {}),
         },
     }
     write_json_artifact(root, report_path, result)

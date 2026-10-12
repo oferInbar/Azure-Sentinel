@@ -1374,6 +1374,106 @@ def build_deployment_plan(
         root, rules, duplicates, set(excluded_ids)
     )
     sentinel_ids, sentinel_ineligible_ids = _eligible_analytic_rule_ids(rules, duplicates)
+    from .packaging_selection import (
+        _partial_coverage_allowed,
+        verify_applied_package_selection,
+    )
+
+    package_selection = verify_applied_package_selection(
+        root, str(state.get("runId") or ""),
+    )
+    package_stage = (state.get("stages") or {}).get("packaging") or {}
+    package_stage_selection = (package_stage.get("artifacts") or {}).get(
+        "selectionOutcome"
+    )
+    if package_stage_selection == "partial-package-validated" and not package_selection:
+        raise ValueError("partial Qualification requires its current applied package selection")
+    qualification_scope = None
+    if package_selection is not None:
+        selection_plan = package_selection["plan"]
+        selection_summary = selection_plan.get("summary") or {}
+        if (
+            selection_summary.get("outcome") == "partial"
+            and not _partial_coverage_allowed(selection_summary)
+        ):
+            raise ValueError("current package selection no longer meets migrated-detection coverage")
+        selected_source_paths = {
+            str(value).replace("\\", "/").casefold()
+            for value in (selection_plan.get("selection") or {}).get(
+                "analyticRules", []
+            )
+        }
+        selected_source_ids = {
+            str(item.get("id") or "").casefold()
+            for item in selection_plan.get("analyticRules") or []
+            if item.get("included") is True
+        }
+        selected_detection_ids = {
+            str(item.get("sourceId") or "").casefold()
+            for item in selection_plan.get("xdrDetections") or []
+            if item.get("included") is True
+        }
+        selected_source_id_by_path = {
+            str(item.get("path") or "").replace("\\", "/").casefold():
+                str(item.get("id") or "").casefold()
+            for item in selection_plan.get("analyticRules") or []
+            if item.get("included") is True
+        }
+        if selected_source_ids != {
+            value for value in selected_source_id_by_path.values() if value
+        }:
+            raise ValueError("applied package selection source IDs do not match selected AR paths")
+        reviewed_drafts = [
+            item for item in reviewed_drafts if item.casefold() in selected_detection_ids
+        ]
+        eligible_ids = [
+            item for item in eligible_ids if item.casefold() in selected_detection_ids
+        ]
+        eligible_projections = {
+            key: value for key, value in eligible_projections.items()
+            if key.casefold() in selected_detection_ids
+        }
+        reviewed_projections = {
+            key: value for key, value in reviewed_projections.items()
+            if key.casefold() in selected_detection_ids
+        }
+        sentinel_ids = [
+            item for item in sentinel_ids if item.casefold() in selected_source_ids
+        ]
+        sentinel_ineligible_ids = [
+            item for item in sentinel_ineligible_ids
+            if item.casefold() in selected_source_ids
+        ]
+        ineligible_ids = [
+            item for item in ineligible_ids
+            if item.casefold() in selected_detection_ids
+        ]
+        qualification_scope = {
+            "kind": "applied-package-selection",
+            "planSha256": selection_plan.get("planSha256"),
+            "outcome": selection_summary.get("outcome"),
+            "coverage": selection_summary,
+            "selectedAnalyticRulePaths": sorted(selected_source_paths),
+            "excludedAnalyticRules": [
+                {
+                    "id": item.get("id"),
+                    "path": item.get("path"),
+                    "reasons": item.get("reasons") or [],
+                }
+                for item in selection_plan.get("analyticRules") or []
+                if item.get("included") is not True
+            ],
+            "excludedDetections": [
+                {
+                    "id": item.get("id"),
+                    "sourceId": item.get("sourceId"),
+                    "path": item.get("path"),
+                    "reasons": item.get("reasons") or [],
+                }
+                for item in selection_plan.get("xdrDetections") or []
+                if item.get("included") is not True
+            ],
+        }
     current_ids = {item.casefold() for item in reviewed_drafts}
     additional_ids = [
         item for item in eligible_ids if item.casefold() not in current_ids
@@ -1433,6 +1533,7 @@ def build_deployment_plan(
             else "current"
         ),
         "selectedProfile": selected_profile,
+        "qualificationScope": qualification_scope,
         "executionMode": "not-selected",
         "target": {
             "tenantId": locked["tenantId"],

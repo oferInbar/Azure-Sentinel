@@ -4,11 +4,14 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
+MIGRATION_ROOT = TOOLS.parent / "SentinelToXDRMigration"
+sys.path.insert(0, str(MIGRATION_ROOT))
 INGESTION_ROOT = TOOLS.parent / "AzureMonitorLogsIngestion"
 sys.path.insert(0, str(INGESTION_ROOT))
 
@@ -220,3 +223,103 @@ def test_planner_cli_requires_and_validates_locked_workspace_context(tmp_path, c
     capsys.readouterr()
     assert result == 0
     assert json.loads(output_path.read_text(encoding="utf-8"))["target"] == TARGET
+
+
+def test_partial_selection_plans_only_selected_pairs_but_keeps_full_denominator(tmp_path):
+    solution, first_rule = _create_solution(tmp_path, tmp_path / "ingestion")
+    ids = [
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+        "33333333-3333-3333-3333-333333333333",
+    ]
+    paths = []
+    for index, rule_id in enumerate(ids):
+        source_path = (
+            first_rule if index == 0
+            else solution / "Analytic Rules" / f"rule-{index}.yaml"
+        )
+        detection_path = (
+            solution / "XDR Detections" / "Nested" / "detection.yaml"
+            if index == 0
+            else solution / "XDR Detections" / "Nested" / f"detection-{index}.yaml"
+        )
+        source = {
+            "id": rule_id,
+            "name": f"rule-{index}",
+            "query": "CommonSecurityLog | where DeviceEventClassID == '733101'",
+        }
+        detection = {
+            "id": f"xdr-{rule_id}",
+            "sourceRuleId": rule_id,
+            "name": f"detection-{index}",
+            "query": "CommonSecurityLog | where DeviceEventClassID == '733101'",
+        }
+        _write_yaml(source_path, source)
+        _write_yaml(detection_path, detection)
+        paths.append((source_path, detection_path))
+
+    from sentinel_xdr_migration.packaging_selection import _coverage_summary
+
+    summary = {
+        **_coverage_summary(
+            [{"id": rule_id} for rule_id in ids],
+            ids[:2],
+        ),
+        "outcome": "partial",
+    }
+    plan = {
+        "runId": "run-partial",
+        "planSha256": "a" * 64,
+        "summary": summary,
+        "selection": {
+            "analyticRules": [
+                source.relative_to(solution).as_posix()
+                for source, _ in paths[:2]
+            ],
+            "xdrDetections": [
+                detection.relative_to(solution).as_posix()
+                for _, detection in paths[:2]
+            ],
+        },
+        "analyticRules": [
+            {"id": rule_id, "path": source.relative_to(solution).as_posix(), "included": index < 2}
+            for index, (rule_id, (source, _)) in enumerate(zip(ids, paths))
+        ],
+        "xdrDetections": [
+            {
+                "id": f"xdr-{rule_id}",
+                "sourceId": rule_id,
+                "path": detection.relative_to(solution).as_posix(),
+                "included": index < 2,
+            }
+            for index, (rule_id, (_, detection)) in enumerate(zip(ids, paths))
+        ],
+    }
+    selection_path = solution / "Logs" / "sentinel-xdr-migration" / "run-partial" / "package-selection-plan.json"
+    selection_path.parent.mkdir(parents=True)
+    selection_path.write_text(json.dumps(plan), encoding="utf-8")
+
+    with mock.patch.object(
+        planner,
+        "verify_applied_package_selection",
+        return_value={
+            "plan": plan,
+            "planPath": selection_path.relative_to(solution).as_posix(),
+            "receiptPath": "Logs/sentinel-xdr-migration/run-partial/package-selection-applied.json",
+        },
+    ):
+        result = planner.build_plan(
+            solution,
+            TARGET,
+            registry_path=tmp_path / "ingestion" / "registry.yaml",
+            selection_plan_path=selection_path,
+            expected_selection_plan_sha256="a" * 64,
+        )
+
+    assert result["inventory"]["complete"] is True
+    assert result["inventory"]["recursiveRuleCount"] == 3
+    assert result["qualificationScope"]["coverageNumerator"] == 2
+    assert result["qualificationScope"]["coverageDenominator"] == 3
+    assert result["qualificationScope"]["planSha256"] == "a" * 64
+    assert [item["status"] for item in result["rules"]].count("not-selected") == 1
+    assert {item.get("ruleId") for item in result["rules"] if item["status"] != "not-selected"} == set(ids[:2])

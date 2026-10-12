@@ -12,9 +12,16 @@ from urllib.parse import quote, unquote, urlsplit
 import yaml
 
 from .artifacts import existing_artifact_path, existing_artifacts, report_directory, resolve_artifact_reference, portable_artifact, write_json_artifact
-from .converter import analytic_rule_files, solution_paths, validate_document
+from .converter import (
+    analytic_rule_files,
+    custom_detail_binding_warnings,
+    solution_paths,
+    validate_document,
+)
 from .content_paths import content_path
+from .deployment_planning import _consent_state as _validated_planning_consent
 from .report_dashboard import render_dashboard
+from .runtime_consent import runtime_query_consent_status
 from .workflow import _package_freshness
 
 JSON_NAME = "migration-report.json"
@@ -461,15 +468,6 @@ def _planning_summary(
         "declined", "stale", "not-recorded", "not-approved", "unknown",
     }:
         consent_status = "not-recorded"
-    safe_flags = (
-        {
-            key: value
-            for key, value in selected_flags.items()
-            if isinstance(key, str) and isinstance(value, (str, bool, int))
-        }
-        if isinstance(selected_flags, dict)
-        else {}
-    )
     components = raw_components
     target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
     source_inventory = plan.get("sourceInventory") if isinstance(plan.get("sourceInventory"), dict) else {}
@@ -568,6 +566,80 @@ def _planning_summary(
     else:
         package_evidence_status = "unknown"
 
+    if plan and isinstance(plan_sha, str):
+        consent_from_artifact = _validated_planning_consent(
+            root,
+            plan_sha,
+            components=raw_components,
+            package={
+                "status": (
+                    "current" if package_evidence_status == "current"
+                    else package_evidence_status
+                ),
+                "resourceInventory": (
+                    plan.get("packageResourceInventory")
+                    if isinstance(plan.get("packageResourceInventory"), list)
+                    else []
+                ),
+            },
+            target=plan.get("target") if isinstance(plan.get("target"), dict) else {},
+        )
+        if isinstance(consent_from_artifact, dict):
+            raw_consent = consent_from_artifact
+            consent_status = consent_from_artifact.get("status")
+            consent_plan_sha = consent_from_artifact.get("planSha256")
+            consent_components = consent_from_artifact.get("approvedComponents")
+            consent_component_keys = (
+                [
+                    value for value in consent_components
+                    if isinstance(value, str) and value
+                ]
+                if isinstance(consent_components, list)
+                else []
+            )
+            consent_resource_types = (
+                [
+                    value for value in consent_from_artifact.get("resourceTypes", [])
+                    if isinstance(value, str) and "/" in value.split("@", 1)[0]
+                ]
+                if isinstance(consent_from_artifact.get("resourceTypes"), list)
+                else []
+            )
+            selected_flags = consent_from_artifact.get("packageFlags")
+            if not isinstance(selected_flags, dict):
+                selected_flags = {}
+            expected_consent_types = sorted({
+                resource_type
+                for component_key in consent_component_keys
+                for resource_type in (
+                    raw_components.get(component_key, {}).get("resourceTypes") or []
+                    if isinstance(raw_components.get(component_key), dict)
+                    else []
+                )
+                if isinstance(resource_type, str)
+            })
+            if consent_status == "approved" and not (
+                isinstance(plan_sha, str)
+                and re.fullmatch(r"[0-9a-fA-F]{64}", plan_sha)
+                and isinstance(consent_plan_sha, str)
+                and re.fullmatch(r"[0-9a-fA-F]{64}", consent_plan_sha)
+                and plan_sha.casefold() == consent_plan_sha.casefold()
+                and bool(consent_component_keys)
+                and set(consent_component_keys).issubset(current_component_keys)
+                and expected_consent_types == sorted(consent_resource_types)
+                and isinstance(plan.get("target"), dict)
+            ):
+                consent_status = "unknown"
+
+    safe_flags = (
+        {
+            key: value
+            for key, value in selected_flags.items()
+            if isinstance(key, str) and isinstance(value, (str, bool, int))
+        }
+        if isinstance(selected_flags, dict)
+        else {}
+    )
     contract_status = plan.get("status") if isinstance(plan.get("status"), str) else "not-recorded"
     if contract_status not in {
         "current", "provisional", "stale", "unavailable", "not-applicable",
@@ -622,7 +694,8 @@ def _planning_summary(
     ):
         contract_status = "stale"
     if consent_status == "approved" and (
-        contract_status != "current" or package_evidence_status != "current"
+        contract_status not in {"current", "provisional"}
+        or package_evidence_status != "current"
     ):
         consent_status = (
             "stale"
@@ -676,11 +749,24 @@ def _planning_summary(
         safe_components[key] = safe_component
 
     package_acceptance_approval = package_acceptance.get("approvalStatus")
-    if package_acceptance_approval == "approved":
+    if (
+        consent_status == "approved"
+        and "fullPackageAcceptance" in consent_component_keys
+    ):
+        package_acceptance["approvalStatus"] = "approved"
+        package_acceptance["selectedFlags"] = safe_flags
+    elif consent_status == "approved":
+        package_acceptance["approvalStatus"] = "not-approved"
+    elif package_acceptance_approval == "approved":
         if contract_status == "stale" or package_evidence_status == "stale":
             package_acceptance["approvalStatus"] = "stale"
-        elif contract_status != "current" or package_evidence_status != "current":
+        elif (
+            contract_status not in {"current", "provisional"}
+            or package_evidence_status != "current"
+        ):
             package_acceptance["approvalStatus"] = "unknown"
+        elif consent_status in {"not-recorded", "not-approved", "declined"}:
+            package_acceptance["approvalStatus"] = consent_status
     package_acceptance_identity = package_acceptance.get("packageIdentity")
     if isinstance(package_acceptance_identity, dict):
         package_acceptance_identity["status"] = final_package_identity_status
@@ -697,7 +783,19 @@ def _planning_summary(
         "schemaVersion": plan.get("schemaVersion") if isinstance(plan.get("schemaVersion"), str) else None,
         "status": contract_status,
         "selectedProfile": plan.get("selectedProfile") if isinstance(plan.get("selectedProfile"), str) else mode,
-        "executionMode": plan.get("executionMode") if isinstance(plan.get("executionMode"), str) and plan.get("executionMode") in {"pairs", "package", "both", "ingestion-or-provisioning", "not-selected"} else "not-selected",
+        "executionMode": (
+            raw_consent.get("executionMode")
+            if consent_status == "approved"
+            and raw_consent.get("executionMode") in {
+                "pairs", "package", "both", "ingestion-or-provisioning",
+            }
+            else plan.get("executionMode")
+            if isinstance(plan.get("executionMode"), str)
+            and plan.get("executionMode") in {
+                "pairs", "package", "both", "ingestion-or-provisioning", "not-selected",
+            }
+            else "not-selected"
+        ),
         "target": {
             key: target.get(key)
             for key in (
@@ -1203,6 +1301,60 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _partial_selection_parity_matches(
+    selection_plan: dict[str, Any],
+    parity: dict[str, Any],
+    applied_plan: dict[str, Any] | None,
+    *,
+    stage_passed: bool,
+) -> tuple[bool, str]:
+    current_plan_sha = (
+        applied_plan.get("planSha256") if isinstance(applied_plan, dict) else None
+    )
+    expected_paths = sorted(
+        Path(str(value).replace("\\", "/"))
+        .relative_to("XDR Detections").as_posix()
+        for value in (selection_plan.get("selection") or {}).get(
+            "xdrDetections", []
+        )
+    )
+    expected_sources = sorted({
+        str(item.get("sourceId") or "").casefold()
+        for item in selection_plan.get("xdrDetections") or []
+        if isinstance(item, dict)
+        and item.get("included") is True
+        and item.get("sourceId")
+    })
+    parity_paths = sorted(
+        str(value).replace("\\", "/")
+        for value in parity.get("testedDetectionPaths") or []
+    )
+    parity_sources = sorted({
+        str(value).casefold()
+        for value in parity.get("testedSourceIds") or []
+    })
+    matches = bool(
+        stage_passed
+        and parity.get("status") == "passed"
+        and parity.get("qualificationScopeVerified") is True
+        and isinstance(current_plan_sha, str)
+        and bool(current_plan_sha)
+        and isinstance(selection_plan.get("planSha256"), str)
+        and bool(selection_plan.get("planSha256"))
+        and current_plan_sha == selection_plan.get("planSha256")
+        and parity.get("selectionPlanSha256") == current_plan_sha
+        and parity_paths == expected_paths
+        and parity_sources == expected_sources
+        and (parity.get("qualificationScope") or {}).get("selectionComplete") is True
+    )
+    return (
+        matches,
+        "parity evidence matches the exact current applied selection"
+        if matches
+        else "parity evidence does not cover the exact current applied selection",
+    )
+
+
 def _error(
     stage: str,
     message: Any,
@@ -1243,6 +1395,38 @@ def _entity_recommendation(source: dict[str, Any], conversion_notes: list[str]) 
     return None
 
 
+def _current_source_whitelist(
+    root: Path,
+    runtime_reports: list[dict[str, Any]],
+) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, Any]]:
+    from .runtime import current_runtime_evidence
+
+    try:
+        evidence = current_runtime_evidence(root)
+    except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as exc:
+        return {}, {
+            "passed": False,
+            "sourceStatus": "unavailable",
+            "sourceWhitelist": [],
+            "runtimeUnavailable": str(exc),
+        }
+    reports_by_provider = {
+        str(report.get("provider") or ""): report for report in runtime_reports
+    }
+    assessments: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in evidence.get("sourceWhitelist") or []:
+        provider = str(evidence.get("sentinelProvider") or "")
+        report = reports_by_provider.get(provider) or {}
+        assessments[(provider, str(item.get("detection") or ""))] = {
+            **item,
+            "provider": provider,
+            "surface": report.get("querySurface"),
+            "sourceExecutionPassed": False,
+            "runtimeQualified": bool(evidence.get("passed")),
+        }
+    return assessments, evidence
+
+
 def build_solution_report(
     solution: str | Path,
     *,
@@ -1252,6 +1436,7 @@ def build_solution_report(
     reports = report_directory(root, create=True)
     manifest = _read_json(existing_artifact_path(root, "manifest.json"))
     workflow = _read_json(existing_artifact_path(root, "workflow-state.json"))
+    runtime_consent = runtime_query_consent_status(root)
     manifest_by_source = {}
     for item in manifest.get("results") or []:
         reference = str(item.get("sourceRelativePath") or item.get("source") or "").replace("\\", "/")
@@ -1263,6 +1448,9 @@ def build_solution_report(
         _read_json(path)
         for path in existing_artifacts(root, "runtime-validation.*.json")
     ]
+    current_source_whitelist, runtime_evidence = _current_source_whitelist(
+        root, runtime_reports
+    )
     deployment = _read_json(existing_artifact_path(root, "deployment.graph.json"))
     analytic_deployment = _read_json(
         existing_artifact_path(root, "deployment.sentinel.json")
@@ -1307,12 +1495,14 @@ def build_solution_report(
         detection_path = content_path(output, detection_name)
         detection: dict[str, Any] = {}
         structural_errors: list[str] = []
+        structural_warnings: list[str] = []
         if detection_path.exists():
             try:
                 detection = (
                     yaml.safe_load(detection_path.read_text(encoding="utf-8-sig")) or {}
                 )
                 structural_errors = validate_document(detection)
+                structural_warnings = custom_detail_binding_warnings(detection)
             except (OSError, ValueError, yaml.YAMLError) as exc:
                 structural_errors = [str(exc)]
         properties = detection.get("properties") or {}
@@ -1321,6 +1511,11 @@ def build_solution_report(
         identity_projection = identity_projection_by_id.get(detection_id)
         analytic_runtime: list[dict[str, Any]] = []
         custom_runtime: list[dict[str, Any]] = []
+        rule_warnings = list(conversion.get("warnings") or []) + [
+            value
+            for value in structural_warnings
+            if value not in (conversion.get("warnings") or [])
+        ]
         errors: list[dict[str, Any]] = []
         for value in conversion.get("errors") or []:
             errors.append(_error("conversion", value, provider="local-cli"))
@@ -1370,6 +1565,19 @@ def build_solution_report(
                 "rowCount": item.get("rowCount"),
                 "providerFallback": report.get("providerFallback"),
             }
+            source_whitelist = (
+                current_source_whitelist.get((provider, detection_name))
+                if is_sentinel
+                else None
+            )
+            if source_whitelist:
+                runtime_item["sourceWhitelist"] = source_whitelist
+                rule_warnings.append(
+                    f"Source runtime whitelist classified the raw failed query for "
+                    f"{source_whitelist['table']}: {source_whitelist['reason']} "
+                    "The source query remains failed; this does not qualify XDR runtime, "
+                    "schema bindings, validation review gates, or alert parity."
+                )
             (analytic_runtime if is_sentinel else custom_runtime).append(runtime_item)
             if stale_query_message or item.get("status") in {"failed", "blocked"}:
                 errors.append(
@@ -1530,7 +1738,7 @@ def build_solution_report(
                         "customDetectionRows"
                     ),
                 },
-                "warnings": list(conversion.get("warnings") or []),
+                "warnings": rule_warnings,
                 "informational": list(
                     conversion.get("informational") or []
                     if "informational" in conversion
@@ -1569,13 +1777,34 @@ def build_solution_report(
                     key: stage.get(key)
                     for key in (
                         "status", "attempts", "message", "evidence", "updatedAt",
-                        "startedAt", "completedAt",
+                        "startedAt", "completedAt", "artifacts",
                     )
                     if stage.get(key) is not None
                 }
                 for name, stage in (workflow.get("stages") or {}).items()
             },
             "packageFreshness": _package_freshness(root, workflow),
+            "runtimeQueryConsent": runtime_consent,
+        },
+        "runtimeAssessment": {
+            "validationStageStatus": (
+                ((workflow.get("stages") or {}).get("validation") or {}).get("status")
+            ),
+            "sourceStatus": runtime_evidence.get("sourceStatus", "not-run"),
+            "sourceWhitelist": [
+                {
+                    **item,
+                    "provider": runtime_evidence.get("sentinelProvider"),
+                    "runtimeQualified": bool(runtime_evidence.get("passed")),
+                }
+                for item in runtime_evidence.get("sourceWhitelist") or []
+            ],
+            "fullyRuntimeQualified": (
+                bool(runtime_evidence.get("passed"))
+                if runtime_reports
+                else None
+            ),
+            "runtimeUnavailable": runtime_evidence.get("runtimeUnavailable"),
         },
         "summary": {
             "conversionScope": manifest.get("scope") or {},
@@ -1662,6 +1891,93 @@ def build_solution_report(
             ],
         },
     }
+    if packaging.get("selectionOutcome") == "partial-package-validated":
+        selection_plan = _read_run_json(
+            root,
+            report_directory(root),
+            packaging.get("selectionPlanPath"),
+        )
+        selection_summary = selection_plan.get("summary") or {}
+        if selection_summary.get("outcome") == "partial":
+            profile = (workflow.get("context") or {}).get("workflowProfile")
+            stages = workflow.get("stages") or {}
+            parity_passed = (stages.get("alertParity") or {}).get("status") == "passed"
+            qualification_progression_passed = bool(
+                profile == "qualification"
+                and workflow.get("workflowStatus") in {"completed", "partialCompleted"}
+                and all(
+                    (stages.get(name) or {}).get("status") == "passed"
+                    for name in (
+                        "packaging", "deployment", "mockIngestion", "alertParity"
+                    )
+                )
+            )
+            parity_scope_matches = False
+            parity_scope_reason = "current selected-scope parity evidence is unavailable"
+            try:
+                from .packaging_selection import current_applied_package_selection
+
+                applied = current_applied_package_selection(root)
+                applied_plan = applied.get("plan") if isinstance(applied, dict) else None
+                parity_scope_matches, parity_scope_reason = (
+                    _partial_selection_parity_matches(
+                        selection_plan,
+                        parity,
+                        applied_plan,
+                        stage_passed=(
+                            parity_passed and qualification_progression_passed
+                        ),
+                    )
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                parity_scope_matches = False
+            report["partialSolution"] = {
+                "status": (
+                    "selected-subset-qualified"
+                    if profile == "qualification" and parity_scope_matches
+                    else "partial-package-validated"
+                ),
+                "profile": profile,
+                "fullInventoryQualification": "not-qualified",
+                "fullInventoryParity": "not-proven",
+                "selectedParityScope": (
+                    "exact-current-selection"
+                    if parity_scope_matches else "not-proven"
+                ),
+                "selectedParityScopeReason": parity_scope_reason,
+                "qualificationScopeVerified": parity_scope_matches,
+                "selectionPlanSha256": selection_plan.get("planSha256"),
+                "selectionSummary": selection_summary,
+                "selectedDetections": [
+                    {
+                        "id": item.get("id"),
+                        "sourceId": item.get("sourceId"),
+                        "path": item.get("path"),
+                        "evidencePaths": item.get("evidencePaths") or [],
+                    }
+                    for item in selection_plan.get("xdrDetections") or []
+                    if item.get("included") is True
+                ],
+                "excludedAnalyticRules": [
+                    {
+                        "id": item.get("id"),
+                        "path": item.get("path"),
+                        "reasons": item.get("reasons") or [],
+                    }
+                    for item in selection_plan.get("analyticRules") or []
+                    if item.get("included") is not True
+                ],
+                "excludedDetections": [
+                    {
+                        "id": item.get("id"),
+                        "sourceId": item.get("sourceId"),
+                        "path": item.get("path"),
+                        "reasons": item.get("reasons") or [],
+                    }
+                    for item in selection_plan.get("xdrDetections") or []
+                    if item.get("included") is not True
+                ],
+            }
     json_path = reports / JSON_NAME
     html_path = reports / HTML_NAME
     report["jsonReport"] = str(json_path)

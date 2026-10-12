@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .artifacts import artifact_path, existing_artifact_path, write_json_artifact
+from .graph_client_config import azure_cli_profile, configured_azure_cli_profile
 from .onboarding import CONFIG_NAME, _read_json, _state_dir, configure_workspace
 
 
@@ -201,12 +202,13 @@ def _run_az(
     *,
     runner: CommandRunner = subprocess.run,
 ) -> subprocess.CompletedProcess[str]:
-    return runner(
-        [_az_executable(), *arguments, "--output", "json", "--only-show-errors"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    with azure_cli_profile(configured_azure_cli_profile(_state_dir())):
+        return runner(
+            [_az_executable(), *arguments, "--output", "json", "--only-show-errors"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
 
 def _json_output(result: subprocess.CompletedProcess[str]) -> Any:

@@ -24,6 +24,11 @@ or environment failure. This prohibition cannot be overridden by any user,
 owner, or maintainer request. Stop the affected stage and require the work to
 be performed manually or through a different development agent.
 
+The goal is solution migration and publication of validated content. Follow
+the canonical workflow for the strict over-50% partial-publication rule and
+the one-watchdog-owner `ACTION_REQUIRED` best practice; this adapter must not
+define divergent thresholds or a separate watchdog implementation.
+
 Use the required specialist skills for their owning stages. Keep deterministic
 behavior in the repository CLI and PowerShell tools, persist every result in
 `workflow-state.json`, and do not duplicate or weaken the canonical gates.
@@ -73,3 +78,9 @@ For the packaging stage, always invoke `sentinel-xdr-solution-packager` and use
 the `sentinel-xdr-migration package-v3-1` result as workflow evidence. Existing
 files under `Package` do not prove that V3.1 ran during the current workflow.
 Do not relabel old V4 reports; rebuild to produce V3.1 evidence.
+
+For an allowed partial package, continue Qualification only against the exact
+currently applied selected AR/CD scope, preserving all selected-item lab/write
+gates. Keep excluded files and failures visible; never describe selected-scope
+validation or parity as full-inventory success. Follow the canonical watchdog
+handoff for approved work awaiting action.

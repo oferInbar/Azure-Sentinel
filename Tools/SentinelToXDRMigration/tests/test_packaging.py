@@ -16,6 +16,8 @@ from unittest import mock
 from sentinel_xdr_migration import cli as cli_module
 from sentinel_xdr_migration.packaging import (
     V31_TOOLKIT_PATHS,
+    _verify_package_selection,
+    _xdr_references,
     package_input_identity,
     package_solution_v3_1,
 )
@@ -79,6 +81,426 @@ class PackagingTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_xdr_reference_array_is_explicit_and_empty_never_scans_folder(self) -> None:
+        self.assertEqual([], _xdr_references(
+            self.solution, {"XDR Detections": []},
+        ))
+        with self.assertRaisesRegex(ValueError, "missing an explicit XDR Detections array"):
+            _xdr_references(self.solution, {"Name": "Sample"})
+        with self.assertRaisesRegex(ValueError, "duplicate XDR Detection"):
+            _xdr_references(
+                self.solution,
+                {"XDR Detections": [
+                    "XDR Detections/Detection.yaml",
+                    "XDR Detections/Detection.yaml",
+                ]},
+            )
+        with self.assertRaisesRegex(ValueError, "must be under XDR Detections"):
+            _xdr_references(
+                self.solution,
+                {"XDR Detections": ["XDR Detections/../Analytic Rules/Rule.yaml"]},
+            )
+
+    def test_v3_1_refuses_to_omit_an_applied_selection_plan(self) -> None:
+        with mock.patch(
+            "sentinel_xdr_migration.packaging_selection.verify_applied_package_selection",
+            return_value={
+                "plan": {"planSha256": "a" * 64},
+                "receipt": {},
+            },
+        ), mock.patch("sentinel_xdr_migration.packaging.subprocess.run") as run:
+            with self.assertRaisesRegex(ValueError, "must be passed explicitly"):
+                package_solution_v3_1(
+                    self.solution,
+                    version_bump="none",
+                    workflow_run_id="selected-run",
+                )
+        run.assert_not_called()
+
+    def test_template_and_zip_match_partial_selection_exclusions(self) -> None:
+        data_path = self.solution / "Data" / "Solution_Sample.json"
+        data = json.loads(data_path.read_text(encoding="utf-8"))
+        data["XDR Detections"] = [
+            "XDR Detections/Detection.yaml",
+            "XDR Detections/Detection2.yaml",
+        ]
+        included_source = "11111111-1111-1111-1111-111111111111"
+        second_included_source = "22222222-2222-2222-2222-222222222222"
+        excluded_source = "33333333-3333-3333-3333-333333333333"
+        data_path.write_text(json.dumps(data), encoding="utf-8")
+        plan = {
+            "planSha256": "a" * 64,
+            "summary": {
+                "outcome": "partial",
+                "coveragePolicy": "strictly-greater-than-50-percent-of-original-sentinel-rules",
+                "originalSourceRuleCount": 3,
+                "originalSourceRuleIds": [included_source, second_included_source, excluded_source],
+                "validatedMigratedSourceRuleCount": 2,
+                "validatedMigratedSourceRuleIds": [included_source, second_included_source],
+                "coverageNumerator": 2,
+                "coverageDenominator": 3,
+                "partialPublicationAllowed": True,
+            },
+            "selection": {
+                "analyticRules": [],
+                "xdrDetections": [
+                    "XDR Detections/Detection.yaml",
+                    "XDR Detections/Detection2.yaml",
+                ],
+            },
+            "analyticRules": [],
+            "xdrDetections": [
+                {
+                    "id": "xdr-included",
+                    "sourceId": included_source,
+                    "path": "XDR Detections/Detection.yaml",
+                    "included": True,
+                },
+                {
+                    "id": f"xdr-{second_included_source}",
+                    "sourceId": second_included_source,
+                    "path": "XDR Detections/Detection2.yaml",
+                    "included": True,
+                },
+                {
+                    "id": "xdr-excluded",
+                    "sourceId": excluded_source,
+                    "path": "XDR Detections/Failed.yaml",
+                    "included": False,
+                },
+            ],
+        }
+        packaged_id = f"xdr-{included_source}"
+        second_packaged_id = f"xdr-{second_included_source}"
+        (self.solution / "XDR Detections" / "Detection2.yaml").write_text(
+            "kind: CustomDetection\n", encoding="utf-8",
+        )
+        template = {
+            "parameters": {"DeployCustomDetection": {"defaultValue": False}},
+            "resources": [
+                {
+                    "type": "Microsoft.Resources/deployments",
+                    "name": "xdr-install-included",
+                    "properties": {
+                        "template": {
+                            "resources": {
+                                "detectionRule": {
+                                    "type": "Microsoft.Security/detectionRules",
+                                    "properties": {
+                                        "id": f"[if(true(), '{packaged_id}', '{packaged_id}')]",
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "Microsoft.OperationalInsights/workspaces/providers/contentTemplates",
+                    "dependsOn": ["[resourceId('Microsoft.Resources/deployments', 'xdr-install-included')]"],
+                    "properties": {
+                        "contentKind": "CustomDetection",
+                        "contentId": packaged_id,
+                        "mainTemplate": {
+                            "resources": {
+                                "detectionRule": {
+                                    "type": "Microsoft.Security/detectionRules",
+                                    "properties": {"id": f"[if(true(), '{packaged_id}', '{packaged_id}')]"},
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "Microsoft.Resources/deployments",
+                    "name": "xdr-install-included-2",
+                    "properties": {
+                        "template": {
+                            "resources": {
+                                "detectionRule": {
+                                    "type": "Microsoft.Security/detectionRules",
+                                    "properties": {"id": second_packaged_id},
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "Microsoft.OperationalInsights/workspaces/providers/contentTemplates",
+                    "dependsOn": ["[resourceId('Microsoft.Resources/deployments', 'xdr-install-included-2')]"],
+                    "properties": {
+                        "contentKind": "CustomDetection",
+                        "contentId": second_packaged_id,
+                        "mainTemplate": {
+                            "resources": {
+                                "detectionRule": {
+                                    "type": "Microsoft.Security/detectionRules",
+                                    "properties": {"id": second_packaged_id},
+                                },
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+        template_path = self.solution / "Package" / "mainTemplate.json"
+        template_path.write_text(json.dumps(template), encoding="utf-8")
+        zip_path = self.solution / "Package" / "selection.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("mainTemplate.json", json.dumps(template))
+
+        result = _verify_package_selection(
+            self.solution, plan, template, zip_path,
+        )
+
+        self.assertEqual(2, result["xdrDetectionIncluded"])
+        self.assertTrue(result["mainTemplateVerified"])
+        self.assertTrue(result["zipVerified"])
+        with zipfile.ZipFile(zip_path, "a") as archive:
+            archive.writestr(
+                "Solutions/Sample/XDR Detections/Failed.yaml",
+                f"properties:\n  id: {excluded_source}\n",
+            )
+        with self.assertRaisesRegex(RuntimeError, "includes explicitly excluded content"):
+            _verify_package_selection(self.solution, plan, template, zip_path)
+        reference_only_zip = self.solution / "Package" / "selection-reference.zip"
+        with zipfile.ZipFile(reference_only_zip, "w") as archive:
+            archive.writestr("mainTemplate.json", json.dumps(template))
+            archive.writestr("metadata/stale.yaml", f"excluded: xdr-{excluded_source}\n")
+        with self.assertRaisesRegex(RuntimeError, "contains a reference to explicitly excluded content"):
+            _verify_package_selection(self.solution, plan, template, reference_only_zip)
+
+    def test_selection_verification_counts_exact_arm_resources_not_id_substrings(self) -> None:
+        included_source = "11111111-1111-1111-1111-111111111111"
+        second_included_source = "22222222-2222-2222-2222-222222222222"
+        excluded_source = "33333333-3333-3333-3333-333333333333"
+        data_path = self.solution / "Data" / "Solution_Sample.json"
+        data = json.loads(data_path.read_text(encoding="utf-8"))
+        data["Analytic Rules"] = [
+            "Analytic Rules/Included.yaml",
+            "Analytic Rules/Included2.yaml",
+        ]
+        data["XDR Detections"] = [
+            "XDR Detections/Included.yaml",
+            "XDR Detections/Included2.yaml",
+        ]
+        data_path.write_text(json.dumps(data), encoding="utf-8")
+        (self.solution / "Analytic Rules").mkdir()
+        (self.solution / "Analytic Rules" / "Included.yaml").write_text(
+            f"id: {included_source}\n", encoding="utf-8",
+        )
+        (self.solution / "Analytic Rules" / "Included2.yaml").write_text(
+            f"id: {second_included_source}\n", encoding="utf-8",
+        )
+        (self.solution / "XDR Detections" / "Included.yaml").write_text(
+            "kind: CustomDetection\n", encoding="utf-8",
+        )
+        (self.solution / "XDR Detections" / "Included2.yaml").write_text(
+            "kind: CustomDetection\n", encoding="utf-8",
+        )
+        plan = {
+            "planSha256": "c" * 64,
+            "summary": {
+                "outcome": "partial",
+                "coveragePolicy": "strictly-greater-than-50-percent-of-original-sentinel-rules",
+                "originalSourceRuleCount": 3,
+                "originalSourceRuleIds": [included_source, second_included_source, excluded_source],
+                "validatedMigratedSourceRuleCount": 2,
+                "validatedMigratedSourceRuleIds": [included_source, second_included_source],
+                "coverageNumerator": 2,
+                "coverageDenominator": 3,
+                "partialPublicationAllowed": True,
+            },
+            "selection": {
+                "analyticRules": ["Analytic Rules/Included.yaml", "Analytic Rules/Included2.yaml"],
+                "xdrDetections": ["XDR Detections/Included.yaml", "XDR Detections/Included2.yaml"],
+            },
+            "analyticRules": [
+                {"id": included_source, "path": "Analytic Rules/Included.yaml", "included": True},
+                {"id": second_included_source, "path": "Analytic Rules/Included2.yaml", "included": True},
+                {"id": excluded_source, "path": "Analytic Rules/Excluded.yaml", "included": False},
+            ],
+            "xdrDetections": [
+                {
+                    "id": f"xdr-{included_source}",
+                    "sourceId": included_source,
+                    "path": "XDR Detections/Included.yaml",
+                    "included": True,
+                },
+                {
+                    "id": f"xdr-{second_included_source}",
+                    "sourceId": second_included_source,
+                    "path": "XDR Detections/Included2.yaml",
+                    "included": True,
+                },
+                {
+                    "id": f"xdr-{excluded_source}",
+                    "sourceId": excluded_source,
+                    "path": "XDR Detections/Excluded.yaml",
+                    "included": False,
+                },
+            ],
+        }
+        packaged_id = f"xdr-{included_source}"
+        second_packaged_id = f"xdr-{second_included_source}"
+        template = {
+            "variables": {
+                "analyticRuleObject1": {
+                    "_analyticRulecontentId1": included_source,
+                },
+            },
+            "resources": [
+                {
+                    "type": "Microsoft.OperationalInsights/workspaces/providers/contentTemplates",
+                    "properties": {
+                        "contentKind": "AnalyticsRule",
+                        "contentId": "[variables('analyticRuleObject1')._analyticRulecontentId1]",
+                        "mainTemplate": {
+                            "variables": {},
+                            "resources": [
+                                {
+                                    "type": "Microsoft.SecurityInsights/AlertRuleTemplates",
+                                    "name": "[variables('analyticRuleObject1')._analyticRulecontentId1]",
+                                },
+                            ],
+                        },
+                    },
+                },
+                {
+                    "type": "Microsoft.OperationalInsights/workspaces/providers/contentTemplates",
+                    "properties": {
+                        "contentKind": "AnalyticsRule",
+                        "contentId": second_included_source,
+                        "mainTemplate": {
+                            "resources": [
+                                {
+                                    "type": "Microsoft.SecurityInsights/AlertRuleTemplates",
+                                    "name": second_included_source,
+                                },
+                            ],
+                        },
+                    },
+                },
+                {
+                    "type": "Microsoft.Resources/deployments",
+                    "name": "xdr-install-included",
+                    "properties": {
+                        "template": {
+                            "resources": {
+                                "detectionRule": {
+                                    "type": "Microsoft.Security/detectionRules",
+                                    "properties": {"id": f"['{packaged_id}']"},
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "Microsoft.OperationalInsights/workspaces/providers/contentTemplates",
+                    "dependsOn": ["[resourceId('Microsoft.Resources/deployments', 'xdr-install-included')]"],
+                    "properties": {
+                        "contentKind": "CustomDetection",
+                        "contentId": packaged_id,
+                        "mainTemplate": {
+                            "resources": {
+                                "detectionRule": {
+                                    "type": "Microsoft.Security/detectionRules",
+                                    "properties": {"id": f"[if(true(), '{packaged_id}', '{packaged_id}')]"},
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "Microsoft.Resources/deployments",
+                    "name": "xdr-install-included-2",
+                    "properties": {
+                        "template": {
+                            "resources": {
+                                "detectionRule": {
+                                    "type": "Microsoft.Security/detectionRules",
+                                    "properties": {"id": second_packaged_id},
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "Microsoft.OperationalInsights/workspaces/providers/contentTemplates",
+                    "dependsOn": ["[resourceId('Microsoft.Resources/deployments', 'xdr-install-included-2')]"],
+                    "properties": {
+                        "contentKind": "CustomDetection",
+                        "contentId": second_packaged_id,
+                        "mainTemplate": {
+                            "resources": {
+                                "detectionRule": {
+                                    "type": "Microsoft.Security/detectionRules",
+                                    "properties": {"id": second_packaged_id},
+                                },
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+        zip_path = self.solution / "Package" / "exact-resources.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("mainTemplate.json", json.dumps(template))
+
+        result = _verify_package_selection(self.solution, plan, template, zip_path)
+        self.assertEqual(2, result["analyticRuleIncluded"])
+        self.assertEqual(2, result["xdrDetectionIncluded"])
+
+        phantom = json.loads(json.dumps(template))
+        phantom["resources"] = [
+            {"type": "Microsoft.Resources/deployments", "properties": {"description": included_source}}
+        ]
+        with self.assertRaisesRegex(RuntimeError, "Analytic Rule resources"):
+            _verify_package_selection(self.solution, plan, phantom, zip_path)
+
+        orphan_wrapper = {
+            "resources": [{
+                "type": "Microsoft.OperationalInsights/workspaces/providers/contentTemplates",
+                "properties": {
+                    "contentKind": "AnalyticsRule",
+                    "contentId": included_source,
+                    "mainTemplate": {"resources": []},
+                },
+            }],
+        }
+        with self.assertRaisesRegex(RuntimeError, "content templates"):
+            _verify_package_selection(self.solution, plan, orphan_wrapper, zip_path)
+
+        duplicate = json.loads(json.dumps(template))
+        duplicate["resources"].append(duplicate["resources"][0])
+        with self.assertRaisesRegex(RuntimeError, "exactly 1 matching Analytic Rule"):
+            _verify_package_selection(self.solution, plan, duplicate, zip_path)
+
+    def test_empty_xdr_partial_selection_is_blocked_by_coverage_policy(self) -> None:
+        data_path = self.solution / "Data" / "Solution_Sample.json"
+        data = json.loads(data_path.read_text(encoding="utf-8"))
+        data["XDR Detections"] = []
+        data_path.write_text(json.dumps(data), encoding="utf-8")
+        source_id = "11111111-1111-1111-1111-111111111111"
+        plan = {
+            "planSha256": "b" * 64,
+            "summary": {"outcome": "partial"},
+            "selection": {"analyticRules": [], "xdrDetections": []},
+            "analyticRules": [],
+            "xdrDetections": [{
+                "id": "xdr-excluded",
+                "sourceId": source_id,
+                "path": "XDR Detections/Detection.yaml",
+                "included": False,
+            }],
+        }
+        template = {"resources": []}
+        zip_path = self.solution / "Package" / "empty-selection.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("mainTemplate.json", json.dumps(template))
+
+        with self.assertRaisesRegex(ValueError, "strict over-50%"):
+            _verify_package_selection(self.solution, plan, template, zip_path)
+
     @mock.patch(
         "sentinel_xdr_migration.packaging.subprocess.run",
         return_value=CompletedProcess(
@@ -127,6 +549,59 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(str(self.repository / V31_TOOLKIT_PATHS[0]), result["packagerScript"])
         self.assertEqual(self.repository, run.call_args.kwargs["cwd"])
         which.assert_called_once_with("pwsh")
+
+    @mock.patch(
+        "sentinel_xdr_migration.packaging.subprocess.run",
+        return_value=CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="=======Starting Package Creation using V3.1 tool=========",
+            stderr="",
+        ),
+    )
+    @mock.patch(
+        "sentinel_xdr_migration.packaging.shutil.which",
+        return_value=r"C:\Program Files\PowerShell\7\pwsh.exe",
+    )
+    def test_partial_selection_outcome_is_persisted_in_workflow_artifacts(
+        self,
+        _which: mock.Mock,
+        _run: mock.Mock,
+    ) -> None:
+        selection_plan = {
+            "planSha256": "d" * 64,
+            "summary": {"outcome": "partial"},
+        }
+        applied_selection = {
+            "plan": selection_plan,
+            "planPath": "Reports/Selection/package-selection-plan.json",
+            "receiptPath": "Reports/Selection/package-selection-applied.json",
+        }
+        with (
+            mock.patch(
+                "sentinel_xdr_migration.packaging_selection.verify_applied_package_selection",
+                return_value=applied_selection,
+            ),
+            mock.patch(
+                "sentinel_xdr_migration.packaging._verify_package_selection",
+                return_value={"status": "verified"},
+            ),
+        ):
+            result = package_solution_v3_1(
+                self.solution,
+                version_bump="none",
+                workflow_run_id="synthetic-package-run",
+                selection_plan=selection_plan,
+            )
+
+        expected = "partial-package-validated"
+        self.assertEqual(expected, result["selectionOutcome"])
+        self.assertEqual(
+            expected,
+            result["workflowArtifacts"]["selectionOutcome"],
+        )
+        report = json.loads(Path(result["packageReport"]).read_text(encoding="utf-8"))
+        self.assertEqual(expected, report["workflowArtifacts"]["selectionOutcome"])
 
     @mock.patch(
         "sentinel_xdr_migration.packaging.subprocess.run",

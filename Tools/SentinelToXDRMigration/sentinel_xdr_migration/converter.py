@@ -1212,6 +1212,20 @@ def _custom_detail_binding(query: str, column: str) -> str:
                 for item in items
             ):
                 return "available" if column in {item[0] for item in items} else "missing"
+        if tail and tail[-1][:3] == ["project", "-", "away"]:
+            removed = {
+                token for token in tail[-1][3:]
+                if re.fullmatch(r"[A-Za-z_]\w*", token)
+            }
+            if column in removed:
+                return "missing"
+        if tail and tail[-1][:3] == ["project", "-", "rename"]:
+            items = _expression_items(tail[-1][3:])
+            if any(
+                len(item) >= 3 and item[1] == "=" and item[2] == column
+                for item in items
+            ):
+                return "missing"
     tokens = _tokens(query)
     if any(
         tokens[index:index + 3] in (["project", "-", "away"], ["project", "-", "rename"])
@@ -1259,6 +1273,15 @@ def _entity_identifier_preserved(
     return False
 
 
+def _unproven_custom_detail_warning(key: str, column: str) -> str:
+    return (
+        f"customDetails {key!r} column `{column}` has an unproven output binding "
+        "after a destructive projection; the explicit binding is retained, but "
+        "static analysis cannot establish its output and runtime output-schema "
+        "verification is required"
+    )
+
+
 def _supplemental_custom_details(
     doc: dict[str, Any], override: dict[str, Any], mappings: dict[str, Any],
     query: str, column_mappings: dict[str, str],
@@ -1291,8 +1314,13 @@ def _supplemental_custom_details(
         if not isinstance(column, str) or not column:
             continue
         binding = _custom_detail_binding(query, column)
-        if binding in {"missing", "unproven-destructive-projection"}:
-            errors.append(f"customDetails {key!r} column `{column}` is missing or unproven after projection; explicit binding retained for correction")
+        if binding == "missing":
+            errors.append(
+                f"customDetails {key!r} column `{column}` is missing from the final query output; "
+                "explicit binding retained for correction"
+            )
+        elif binding == "unproven-destructive-projection":
+            warnings.append(_unproven_custom_detail_warning(key, column))
         elif binding != "available":
             warnings.append(f"customDetails {key!r} column `{column}` requires runtime output-schema binding verification")
 
@@ -1318,12 +1346,12 @@ def _supplemental_custom_details(
                 "sourceColumn": source_column, "column": column, "status": binding,
             }
             evidence.append(record)
-            if binding in {"missing", "unproven-destructive-projection"}:
+            if binding == "missing":
                 record["status"] = "not-preserved"
                 record["reason"] = binding
                 warnings.append(
                     f"{entity_type}.{identifier} value is not preserved: column `{column}` "
-                    "is missing or unproven after projection. No invalid customDetails binding was added and KQL was not rewritten"
+                    "is missing from the final query output. No invalid customDetails binding was added and KQL was not rewritten"
                 )
                 if entity_type == "Host" and identifier == "FullName":
                     warnings.append(
@@ -1331,6 +1359,14 @@ def _supplemental_custom_details(
                         "is not available in the query output, so no supported host-name "
                         "mapping or supplemental customDetails binding can be made"
                     )
+                continue
+            if binding == "unproven-destructive-projection":
+                record["reason"] = binding
+                warnings.append(
+                    f"{entity_type}.{identifier} output column `{column}` cannot be proven "
+                    "after a destructive projection; no supplemental customDetails binding "
+                    "was added and KQL was not rewritten. Runtime output-schema verification is required"
+                )
                 continue
             key = next((key for key, value in details.items() if value == column and isinstance(key, str)), None)
             if key is None:
@@ -1386,6 +1422,22 @@ def custom_detail_schema_errors(document: dict[str, Any], schema: list[dict[str,
     return [
         f"customDetails {key!r} column `{column}` is absent from the runtime output schema"
         for key, column in details.items() if not isinstance(column, str) or column not in columns
+    ]
+
+
+def custom_detail_binding_warnings(document: dict[str, Any]) -> list[str]:
+    properties = document.get("properties") or {}
+    query = ((properties.get("queryCondition") or {}).get("queryText") or "")
+    alert = ((properties.get("detectionAction") or {}).get("alertTemplate") or {})
+    details = alert.get("customDetails")
+    if not isinstance(details, dict):
+        return []
+    return [
+        _unproven_custom_detail_warning(key, column)
+        for key, column in details.items()
+        if isinstance(key, str)
+        and isinstance(column, str)
+        and _custom_detail_binding(query, column) == "unproven-destructive-projection"
     ]
 
 
@@ -1802,8 +1854,10 @@ def validate_document(document: dict[str, Any]) -> list[str]:
         if sum(len(key.encode("utf-8")) for key in custom_details if isinstance(key, str)) > 4096:
             errors.append("customDetails keys alone exceed the documented combined 4 KB per-alert limit")
         for key, column in custom_details.items():
-            if isinstance(column, str) and _custom_detail_binding(query, column) in {"missing", "unproven-destructive-projection"}:
-                errors.append(f"customDetails {key!r} column `{column}` is missing or unproven after projection")
+            if isinstance(column, str) and _custom_detail_binding(query, column) == "missing":
+                errors.append(
+                    f"customDetails {key!r} column `{column}` is missing from the final query output"
+                )
     if not mappings:
         errors.append("alertTemplate.entityMappings is required")
     if not REQUIRED_ASSET_COLLECTIONS.intersection(mappings):
@@ -2144,14 +2198,21 @@ def validate_solution(solution: str | Path) -> dict[str, Any]:
     results_by_id: dict[str, list[dict[str, Any]]] = {}
     for path in files:
         detection_id = None
+        warnings = []
         try:
             with path.open(encoding="utf-8-sig") as handle:
                 document = yaml.safe_load(handle) or {}
             errors = validate_document(document)
+            warnings = custom_detail_binding_warnings(document)
             detection_id = (document.get("properties") or {}).get("id")
         except (OSError, yaml.YAMLError, ValueError) as exc:
             errors = [str(exc)]
-        result = {"file": str(path), "valid": not errors, "errors": errors}
+        result = {
+            "file": str(path),
+            "valid": not errors,
+            "errors": errors,
+            "warnings": warnings,
+        }
         results.append(result)
         if isinstance(detection_id, str) and detection_id:
             results_by_id.setdefault(detection_id.casefold(), []).append(result)

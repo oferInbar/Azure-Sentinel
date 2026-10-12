@@ -88,7 +88,10 @@ packager normalizes a bare source GUID on its packaging copy, keeps a canonical
 `xdr-` ID unchanged, and rejects unrelated custom IDs; it must not rewrite the
 authored detection YAML or provenance. Installation and registration IDs and
 references must use the same normalized identity. Existing deployed identities
-are not migrated or deleted; review and reconcile them before any deployment.
+are not migrated or deleted. An optional read-only identity review may help
+diagnose known legacy IDs or collisions, but it is not a mandatory
+pre-deployment existence check. Stop for manual reconciliation if an observed
+ID's ownership or content is uncertain; never overwrite unrelated content.
 
 `Include XDR Content Registration` is deprecated: any supplied value warns and
 is ignored. V3.1 emits installation and registration together under

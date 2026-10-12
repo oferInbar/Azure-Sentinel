@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,7 +21,16 @@ from sentinel_xdr_migration.deployment import (
     DEPLOYMENT_SCOPE,
     _deployment_token,
 )
-from sentinel_xdr_migration.graph_auth import credential_token_scope
+from sentinel_xdr_migration.graph_auth import (
+    delegated_scope_diagnostics,
+    validate_delegated_graph_claims,
+    credential_token_scope,
+)
+from sentinel_xdr_migration.graph_client_config import (
+    DEFAULT_GRAPH_CLIENT_ID,
+    configure_azure_cli_profile,
+    configure_graph_client,
+)
 
 TENANT_ID = "39768270-33ce-4b90-a1a6-e0caeb3ba0ab"
 SOURCE_ID = "11111111-2222-3333-4444-555555555555"
@@ -94,7 +104,10 @@ def access_token() -> str:
     claims = {
         "tid": TENANT_ID,
         "aud": "00000003-0000-0000-c000-000000000000",
-        "scp": "CustomDetection.Read.All CustomDetection.ReadWrite.All",
+        "scp": (
+            "CustomDetection.Read.All CustomDetection.ReadWrite.All "
+            "User.Read email openid profile"
+        ),
     }
     encoded = base64.urlsafe_b64encode(
         json.dumps(claims).encode("utf-8")
@@ -103,6 +116,61 @@ def access_token() -> str:
 
 
 class AzureCliGraphScopeTests(unittest.TestCase):
+    def test_required_scope_policy_accepts_valid_extras_and_blocks_invalid_claims(
+        self,
+    ) -> None:
+        diagnostics = delegated_scope_diagnostics(
+            "CustomDetection.ReadWrite.All User.Read email openid profile",
+            ("https://graph.microsoft.com/CustomDetection.ReadWrite.All",),
+        )
+        self.assertEqual("satisfied", diagnostics["status"])
+        self.assertEqual(
+            ["email", "openid", "profile", "User.Read"],
+            diagnostics["extraScopeNames"],
+        )
+        base_claims = {
+            "tid": TENANT_ID,
+            "aud": "https://graph.microsoft.com",
+            "scp": "CustomDetection.ReadWrite.All User.Read",
+        }
+        self.assertEqual(
+            "satisfied",
+            validate_delegated_graph_claims(
+                base_claims,
+                tenant_id=TENANT_ID,
+                required_scopes=(
+                    "https://graph.microsoft.com/CustomDetection.ReadWrite.All",
+                ),
+                purpose="test",
+            )["delegatedScopes"]["status"],
+        )
+        invalid_claims = (
+            ({**base_claims, "tid": "wrong-tenant"}, "tenant"),
+            ({**base_claims, "aud": "https://other.example"}, "Microsoft Graph"),
+            ({**base_claims, "scp": "User.Read"}, "required delegated"),
+            ({**base_claims, "scp": ["CustomDetection.ReadWrite.All"]}, "required delegated"),
+            (
+                {
+                    "tid": TENANT_ID,
+                    "aud": "https://graph.microsoft.com",
+                    "roles": ["CustomDetection.ReadWrite.All"],
+                },
+                "required delegated",
+            ),
+        )
+        for claims, message in invalid_claims:
+            with self.subTest(claims=claims), self.assertRaisesRegex(
+                RuntimeError, message
+            ):
+                validate_delegated_graph_claims(
+                    claims,
+                    tenant_id=TENANT_ID,
+                    required_scopes=(
+                        "https://graph.microsoft.com/CustomDetection.ReadWrite.All",
+                    ),
+                    purpose="test",
+                )
+
     def _preflight_patches(self, cli_backend: mock.Mock):
         root = Path("preflight-fixture").resolve()
         return (
@@ -151,20 +219,25 @@ class AzureCliGraphScopeTests(unittest.TestCase):
     ) -> None:
         cli_command.return_value = json.dumps(
             {
-                "accessToken": "controlled-deployment-token",
+                "accessToken": access_token(),
                 "expires_on": 2_000_000_000,
             }
         )
-        state_root = mock.MagicMock()
-        state_root.__truediv__.return_value.exists.return_value = False
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+            state_root = Path(temp) / "synthetic-auth-state"
+            configure_graph_client(
+                state_root, "customDetection", DEFAULT_GRAPH_CLIENT_ID
+            )
+            configure_azure_cli_profile(
+                state_root, Path(temp) / "synthetic-azure-cli-profile"
+            )
+            with mock.patch(
+                "sentinel_xdr_migration.deployment._state_dir",
+                return_value=state_root,
+            ):
+                token = _deployment_token(tenant_id=TENANT_ID)
 
-        with mock.patch(
-            "sentinel_xdr_migration.deployment._state_dir",
-            return_value=state_root,
-        ):
-            token = _deployment_token(tenant_id=TENANT_ID)
-
-        self.assertEqual(token, "controlled-deployment-token")
+        self.assertEqual(token, access_token())
         cli_command.assert_called_once()
         command = cli_command.call_args.args[0]
         self.assertEqual(

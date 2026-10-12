@@ -759,7 +759,10 @@ def _query_html(rule: dict[str, Any]) -> str:
     queries = rule.get("queries") or {}
     source, converted = queries.get("source"), queries.get("converted")
     if source is None and converted is None:
-        return ""
+        return (
+            '<section class="query-review"><h4>Sentinel and XDR queries</h4>'
+            '<p class="muted">Source and converted queries were not recorded in this report.</p></section>'
+        )
     pair = (
         '<div class="query-pair">'
         f'<section><h4>Source Sentinel KQL</h4><pre>{_text(source)}</pre></section>'
@@ -776,9 +779,9 @@ def _query_html(rule: dict[str, Any]) -> str:
         )
         diff = "<h4>Unified text diff</h4><pre>" + escape("\n".join(lines)) + "</pre>"
     return (
-        '<details><summary>Source / converted queries</summary>'
+        '<section class="query-review"><h4>Sentinel and XDR queries</h4>'
         '<p class="muted">Current file snapshot at report generation; textual comparison is not proof of semantic equivalence.</p>'
-        + pair + diff + "</details>"
+        + pair + diff + "</section>"
     )
 
 
@@ -795,6 +798,14 @@ def _result_html(rule: dict[str, Any]) -> str:
                 f"<li>{name} runtime — {_text(runtime.get('provider'))}: "
                 f"{_text(_status_label(runtime.get('status')))} · {measurement}</li>"
             )
+            whitelist = runtime.get("sourceWhitelist")
+            if isinstance(whitelist, dict):
+                lines.append(
+                    f"<li>Source table whitelist — {_text(whitelist.get('table'))}: "
+                    f"{_text(whitelist.get('status'))}; raw result "
+                    f"{_text((whitelist.get('rawFailure') or {}).get('status'))}; "
+                    f"{_text(whitelist.get('reason'))}</li>"
+                )
         for field, label in (("deploymentStatus", "deployment"), ("alertStatus", "alerts")):
             value = side.get(field)
             if value not in {None, "not-run", "not-recorded"}:
@@ -817,8 +828,15 @@ def _run_html(report: dict[str, Any]) -> str:
     for name, stage in stages.items():
         label = STAGE_LABELS.get(name, name)
         status = stage.get("status")
+        runtime_status = (
+            (stage.get("artifacts") or {}).get("runtimeStatus")
+            if isinstance(stage.get("artifacts"), dict)
+            else None
+        )
         display_status = (
             "Pending" if status == "pending" and stage.get("attempts") != 0
+            else "Source waived — not fully runtime-qualified"
+            if name == "validation" and runtime_status == "source-waived"
             else _status_label(status)
         )
         stage_html.append(f'<li class="stage {_text(status)}">{_text(label)}: {_text(display_status)}</li>')
@@ -835,6 +853,23 @@ def _run_html(report: dict[str, Any]) -> str:
         bool(rule.get("analyticRule", {}).get("runtime") or rule["customDetection"].get("runtime"))
         for rule in report["rules"]
     )
+    runtime_assessment = (
+        report.get("runtimeAssessment")
+        if isinstance(report.get("runtimeAssessment"), dict)
+        else {}
+    )
+    whitelist_entries = (
+        runtime_assessment.get("sourceWhitelist")
+        if isinstance(runtime_assessment.get("sourceWhitelist"), list)
+        else []
+    )
+    whitelist_summary = ""
+    if whitelist_entries:
+        whitelist_summary = (
+            f"<p>Source runtime whitelist: {len(whitelist_entries)} IdentityInfo "
+            "missing-table result(s) classified; raw query results remain failed. "
+            "This does not indicate XDR runtime qualification.</p>"
+        )
     workspace = "Configured in run context" if workflow.get("workspaceConfigured") else "Not recorded in run context"
     return (
         '<section class="panel" aria-labelledby="run-heading"><h2 id="run-heading">Run context</h2>'
@@ -842,7 +877,8 @@ def _run_html(report: dict[str, Any]) -> str:
         f" · Run {_text(workflow.get('runId'))} · {_text(_status_label(workflow.get('status')))}</p>"
         '<ol class="stages">' + "".join(stage_html) + "</ol>"
         f"<p>Workspace: {workspace}. Runtime evidence available for {runtime_rules} of {len(report['rules'])} rules.</p>"
-        "<p class=\"muted\">Shared stage status does not override individual results. Missing evidence is not proof "
+        + whitelist_summary
+        + "<p class=\"muted\">Shared stage status does not override individual results. Missing evidence is not proof "
         "a check was skipped. Optional stages are marked Not required only when recorded by the workflow.</p>"
         "<details><summary>Run messages, environment reasons and historical evidence</summary>"
         "<p class=\"muted\">Recorded text may contain historical counts; current artifact counts appear below.</p>"
@@ -898,6 +934,7 @@ def _flow_stage(stage: Any, *, freshness: Any = None) -> dict[str, Any]:
         "stale": ("stale", "Stale"),
     }.get(raw, ("unknown", "Evidence unavailable" if raw is None else "Unknown status"))
     display = normalized[1]
+    artifacts = stage.get("artifacts") if isinstance(stage.get("artifacts"), dict) else {}
     freshness_status = None
     if isinstance(freshness, dict):
         freshness_status = freshness.get("status") if isinstance(freshness.get("status"), str) else None
@@ -906,11 +943,15 @@ def _flow_stage(stage: Any, *, freshness: Any = None) -> dict[str, Any]:
             normalized = ("stale", "Stale package")
         elif freshness_status != "current":
             normalized = ("unknown", "Freshness unverified")
+    if artifacts.get("runtimeStatus") == "source-waived":
+        display = "Source waived — not fully runtime-qualified"
+    else:
+        display = normalized[1]
     message = stage.get("message") if isinstance(stage.get("message"), str) else ""
     evidence = stage.get("evidence") if isinstance(stage.get("evidence"), list) else []
     return {
         "state": normalized[0],
-        "display": normalized[1],
+        "display": display,
         "raw": raw or "",
         "freshness": freshness_status or "",
         "freshnessReason": (
@@ -1256,15 +1297,34 @@ def _flow_stage_detail(stage_name: str, report: dict[str, Any]) -> str:
             and isinstance(report.get("deploymentPlanning", {}).get("deploymentPlan"), dict)
             else {}
         )
+        runtime_consent = (
+            report.get("workflow", {}).get("runtimeQueryConsent", {})
+            if isinstance(report.get("workflow"), dict)
+            else {}
+        )
+        runtime_families = (
+            runtime_consent.get("families", {})
+            if isinstance(runtime_consent.get("families"), dict)
+            else {}
+        )
         details = [
             f'<li>Explicit migration run ID: {_text(setup.get("runId") or "Not recorded")}</li>',
             f'<li>Confirmed workflow profile: {_text(setup.get("profile") or "Not recorded")}</li>',
             f'<li>Local Python/CLI/tool checks: {_text(setup.get("localToolChecks") or "Not recorded")}</li>',
             f'<li>Locked target record: {_text("Confirmed" if setup.get("targetLocked") else "Not confirmed")} · source: {_text(setup.get("targetSource") or "Not recorded")}</li>',
             f'<li>Cached authentication evidence: {_text(auth.get("status") or "Not checked in this run")}</li>',
-            f'<li>Advance planning consent: {_text(consent.get("status") or "Not recorded")} · hash: <code>{_text(consent.get("planSha256") or "Not recorded")}</code></li>',
+            f'<li>Advance read-only runtime-query consent: {_text(runtime_consent.get("status") or "Not recorded")} · scope: {_text(runtime_consent.get("consentScope") or "Not recorded")} · latest decision: {_text((runtime_consent.get("latestDecision") or {}).get("status") or "unanswered")} · run snapshot: {_text((runtime_consent.get("runSnapshot") or {}).get("status") or "not-current")} · Sentinel source: {_text((runtime_families.get("sentinelSourceQueryFamily") or {}).get("status") or "Not recorded")} / {_text((runtime_families.get("sentinelSourceQueryFamily") or {}).get("executionStatus") or "not-run")} · Defender XDR: {_text((runtime_families.get("defenderXdrQueryFamily") or {}).get("status") or "Not recorded")} / {_text((runtime_families.get("defenderXdrQueryFamily") or {}).get("executionStatus") or "not-run")}</li>',
             '<li>Exact-scope write approval: Not recorded. A recorded target or cached auth does not authorize any write.</li>',
         ]
+        consent_value = consent.get("status")
+        if isinstance(consent_value, str) and consent_value.casefold().replace("_", "-") not in {
+            "not-recorded", "unknown", "unrecorded", "not-checked",
+        }:
+            details.insert(
+                5,
+                f'<li>Advance planning consent: {_text(consent_value)} · hash: '
+                f'<code>{_text(consent.get("planSha256") or "Not recorded")}</code></li>',
+            )
         if setup_target:
             details.extend(
                 f'<li>{_text(key)}: {_text(value)}</li>'
@@ -1280,7 +1340,7 @@ def _flow_stage_detail(stage_name: str, report: dict[str, Any]) -> str:
         rule_proof = (
             '<h4>Persisted setup/configuration facts</h4><ul>'
             + "".join(details)
-            + '</ul><p class="muted">The .env target keys are configuration only; they do not prove Graph/ARM authentication, scoped read access, management permission, effective RBAC, or deployment approval. The report does not run doctor, authenticate, inspect auth caches, or make network calls.</p>'
+            + '</ul><p class="muted">The .env target keys are configuration only; they do not prove Graph/ARM authentication, scoped read access, management permission, effective RBAC, or deployment approval. The report does not run doctor, authenticate, or make provider/network calls. Runtime-query consent status may inspect only local cached-account selection to detect stale authentication bindings.</p>'
             + ('<p>Qualification still requires a fresh read-only preflight immediately before each deployment phase.</p>' if setup.get("profile") == "qualification" else "")
         )
     elif stage_name in {"discovery", "conversion"}:
@@ -1711,6 +1771,11 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
         for item in inventory:
             if not isinstance(item, dict):
                 continue
+            if not any(
+                item.get(name) not in (None, "", [], {})
+                for name in ("type", "typeAtVersion", "apiVersion", "count", "sourceForms", "extensionResource")
+            ):
+                continue
             forms = item.get("sourceForms")
             form_text = ", ".join(str(value) for value in forms) if isinstance(forms, list) else "not recorded"
             resource_type = item.get("type") or item.get("typeAtVersion") or "Not recorded"
@@ -1727,8 +1792,16 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
                 f'<td>{extension}</td>'
                 "</tr>"
             )
-    if not rows:
-        rows = ['<tr><td colspan="5">No package resource inventory is recorded in this snapshot.</td></tr>']
+    inventory_markup = (
+        '<section class="planning-card planning-inventory" aria-labelledby="package-resource-inventory">'
+        '<h3 id="package-resource-inventory">Package resource inventory</h3>'
+        '<p class="muted">Candidate package contents are inventory, not a selected or approved deployment scope. Resource type/API columns retain readable widths; scroll this table horizontally on narrow screens.</p>'
+        '<div class="planning-table-scroll" role="region" aria-label="Horizontally scrollable package resource inventory" tabindex="0">'
+        '<table class="resource-inventory"><thead><tr><th scope="col">Resource type</th><th scope="col">API version</th><th scope="col">Count</th><th scope="col">Source form</th><th scope="col">Extension</th></tr></thead><tbody>'
+        + "".join(rows)
+        + '</tbody></table></div></section>'
+        if rows else ""
+    )
     defaults = plan.get("deploymentDefaults")
     if isinstance(defaults, list):
         default_lines = [
@@ -1823,6 +1896,9 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
     consent = contract.get("planningConsent")
     consent = consent if isinstance(consent, dict) else {}
     consent_status = consent.get("status") if isinstance(consent.get("status"), str) else "not-recorded"
+    consent_recorded = consent_status.casefold().replace("_", "-") not in {
+        "not-recorded", "not-recorded-or-unknown", "unknown", "unrecorded", "not-checked",
+    }
     consent_status_label = "Not recorded" if consent_status == "not-recorded" else consent_status
     consent_keys = consent.get("componentKeys") if isinstance(consent.get("componentKeys"), list) else []
     consent_types = consent.get("resourceTypes") if isinstance(consent.get("resourceTypes"), list) else []
@@ -1833,6 +1909,20 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
     if isinstance(components, dict):
         for key, component in components.items():
             if not isinstance(component, dict):
+                continue
+            has_component_evidence = any(
+                value is not None
+                and value not in ("", [], {})
+                and not (
+                    name in {"status", "planningConsent"}
+                    and isinstance(value, str)
+                    and value.casefold().replace("_", "-") in {
+                        "not-recorded", "unknown", "unrecorded", "not-checked",
+                    }
+                )
+                for name, value in component.items()
+            )
+            if not has_component_evidence:
                 continue
             non_consentable = (
                 component.get("consentable") is False
@@ -1862,6 +1952,12 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
                     f'<p><strong>Coverage status:</strong> {_text(component_plan_status)} · '
                     'not consentable and not deployment approval.</p>'
                     '<p><strong>Advance consent support:</strong> No.</p>'
+                )
+            elif component_status.casefold().replace("_", "-") in {
+                "not-recorded", "unknown", "unrecorded", "not-checked",
+            }:
+                status_markup = (
+                    f'<p><strong>Plan status:</strong> {_text(component_plan_status)}</p>'
                 )
             else:
                 status_markup = (
@@ -1918,8 +2014,6 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
                 + (f'<details><summary>Recorded component evidence</summary><pre>{_text(json.dumps(component_fields, indent=2, sort_keys=True))}</pre></details>' if component_fields else "")
                 + '</section>'
             )
-    if not component_markup:
-        component_markup.append('<p class="muted">No component-specific plan or consent evidence is recorded.</p>')
     plan_fingerprint = contract.get("planSha256")
     plan_fingerprint_html = (
         f'<p>Plan SHA-256: <code>{_text(plan_fingerprint)}</code></p>'
@@ -1990,6 +2084,16 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
         if deployment_stage.get("status") in {"blocked", "failed"} and deployment_message
         else ""
     )
+    consent_blocked_stage = next(
+        (
+            name for name, stage in workflow_stages.items()
+            if isinstance(stage, dict)
+            and stage.get("status") in {"blocked", "failed"}
+            and isinstance(stage.get("message"), str)
+            and "consent" in stage["message"].casefold()
+        ),
+        None,
+    )
     target_summary = (
         target.get("workspaceName")
         or target.get("workspaceResourceId")
@@ -2018,6 +2122,16 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
     )
     if consent_status != "approved":
         consent_scope_text = "No approved component scope recorded"
+    consent_summary = (
+        f'<div class="planning-summary-card"><strong>Advance planning consent</strong>'
+        f'<span>{_text(consent_status_label)} · {_text(consent_scope_text)}</span></div>'
+        if consent_recorded
+        else (
+            '<div class="planning-summary-card"><strong>Advance planning consent</strong>'
+            f'<span>Not recorded · blocking at {_text(consent_blocked_stage)} stage</span></div>'
+            if consent_blocked_stage else ""
+        )
+    )
     inventory_status = (
         "Plan-bound source inventory recorded"
         if isinstance(source_inventory, dict) and source_inventory
@@ -2077,8 +2191,8 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
         f'<div class="planning-summary-card"><strong>Formal scope plan</strong><span>{_text(contract.get("status") or "not-recorded")}</span></div>'
         f'<div class="planning-summary-card"><strong>Current package</strong><span>{_text(version)} · freshness {_text(freshness or "unknown")} · identity {_text(current_package_status or "unknown")}</span></div>'
         f'<div class="planning-summary-card"><strong>Official local validation</strong><span>{_text(validation_summary.get("display") or "Not recorded")}</span></div>'
-        f'<div class="planning-summary-card"><strong>Advance planning consent</strong><span>{_text(consent_status_label)} · {_text(consent_scope_text)}</span></div>'
-        '<div class="planning-summary-card"><strong>Exact-scope write approval</strong><span>Not recorded. Required immediately before each environment write.</span></div>'
+        + consent_summary
+        + '<div class="planning-summary-card"><strong>Exact-scope write approval</strong><span>Not recorded. Required immediately before each environment write.</span></div>'
         '</div>'
         + deployment_summary
         + '<p class="muted">A missing formal plan is not evidence that no run target exists. The setup station shows only persisted target/profile data; it never runs doctor, authentication, discovery, or network checks.</p>'
@@ -2099,22 +2213,18 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
         + (cap_html if cap_html else "")
         + scope_details
         + '</section></div>'
-        + '<section class="planning-card planning-inventory" aria-labelledby="package-resource-inventory">'
-        + '<h3 id="package-resource-inventory">Package resource inventory</h3>'
-        + '<p class="muted">Candidate package contents are inventory, not a selected or approved deployment scope. Resource type/API columns retain readable widths; scroll this table horizontally on narrow screens.</p>'
-        + '<div class="planning-table-scroll" role="region" aria-label="Horizontally scrollable package resource inventory" tabindex="0">'
-        + '<table class="resource-inventory"><thead><tr><th scope="col">Resource type</th><th scope="col">API version</th><th scope="col">Count</th><th scope="col">Source form</th><th scope="col">Extension</th></tr></thead><tbody>'
-        + "".join(rows)
-        + '</tbody></table></div></section>'
-        + '<section class="planning-card" aria-labelledby="deployment-components-heading">'
-        + '<h3 id="deployment-components-heading">Component plans and advance consent</h3>'
-        + f'<p>{_text(component_consent_note)}</p>'
-        + '<div class="component-plan-grid">'
-        + ("".join(component_markup) if component_markup else '<p class="muted">No component plans are recorded. Conditional provisioning is not approval.</p>')
-        + '</div>'
-        + (f'<p><strong>Consent resource types:</strong> {_text(", ".join(consent_types))}</p>' if consent_status == "approved" and consent_types else "")
-        + (f'<p><strong>Approved max additional detections:</strong> {_text(consent_max_additional)}</p>' if consent_status == "approved" and consent_max_additional is not None else "")
-        + (f'<details class="planning-details"><summary>Approved package flags and conditional selections</summary><pre>{_text(json.dumps({"packageFlags": consent_flags, "conditionalSelections": consent.get("conditionalSelections")}, sort_keys=True, indent=2))}</pre></details>' if consent_status == "approved" else "")
+        + inventory_markup
+        + (
+            '<section class="planning-card" aria-labelledby="deployment-components-heading">'
+            + f'<h3 id="deployment-components-heading">{"Component plans and advance consent" if consent_recorded else "Component plans"}</h3>'
+            + (f'<p>{_text(component_consent_note)}</p>' if consent_recorded else "")
+            + '<div class="component-plan-grid">' + "".join(component_markup) + '</div>'
+            + (f'<p><strong>Consent resource types:</strong> {_text(", ".join(consent_types))}</p>' if consent_status == "approved" and consent_types else "")
+            + (f'<p><strong>Approved max additional detections:</strong> {_text(consent_max_additional)}</p>' if consent_status == "approved" and consent_max_additional is not None else "")
+            + (f'<details class="planning-details"><summary>Approved package flags and conditional selections</summary><pre>{_text(json.dumps({"packageFlags": consent_flags, "conditionalSelections": consent.get("conditionalSelections")}, sort_keys=True, indent=2))}</pre></details>' if consent_status == "approved" else "")
+            + '</section>'
+            if component_markup or consent_recorded else ""
+        )
         + package_default_details + dcr_details + package_acceptance_details
         + '<p class="muted">No cleanup, deletion, retention change, RBAC assignment, enablement, or recurring job is implied by these plans. Exact-scope approval and readiness are separate from advance consent.</p>'
         + '</section>'
@@ -2259,12 +2369,13 @@ def render_dashboard(report: dict[str, Any]) -> str:
             f'Output: <code>{_text(rule.get("outputFile"))}</code><br>'
             f'Sentinel ID: <code>{_text(rule.get("analyticRule", {}).get("id"))}</code> · '
             f'XDR ID: <code>{_text(rule["customDetection"].get("id"))}</code></p>'
+            + _query_html(rule)
             + (f"<p><strong>Entity recommendation:</strong> {_text(recommendation)}</p>" if recommendation else "")
             + _result_html(rule)
             + _tactic_details(rule, findings)
             + "<h4>Findings and original evidence</h4>"
             + (evidence_html if evidence_html else "<p>No rule-level findings recorded.</p>")
-            + _query_html(rule) + "</td></tr></tbody>"
+            + "</td></tr></tbody>"
         )
     summary = report.get("summary") or {}
     scope = summary.get("conversionScope") or {}

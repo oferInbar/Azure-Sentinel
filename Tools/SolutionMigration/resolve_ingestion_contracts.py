@@ -1,4 +1,4 @@
-"""Build a no-write ingestion-contract plan for a complete solution rule inventory."""
+"""Build a no-write ingestion plan over a complete inventory or current package selection."""
 from __future__ import annotations
 
 import argparse
@@ -27,6 +27,15 @@ if str(SOLUTION_GENERATOR_ROOT) not in sys.path:
     sys.path.insert(0, str(SOLUTION_GENERATOR_ROOT))
 
 import generate_mock_scenario as scenario  # noqa: E402
+
+MIGRATION_TOOL_ROOT = REPOSITORY_ROOT / "Tools" / "SentinelToXDRMigration"
+if str(MIGRATION_TOOL_ROOT) not in sys.path:
+    sys.path.insert(0, str(MIGRATION_TOOL_ROOT))
+
+from sentinel_xdr_migration.packaging_selection import (  # noqa: E402
+    _partial_coverage_allowed,
+    verify_applied_package_selection,
+)
 
 TARGET_FIELDS = (
     "tenantId",
@@ -135,6 +144,7 @@ def _rule_plan(
     document: dict | None,
     parse_error: str | None,
     registry_path: str | Path,
+    selected_detection_path: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     relative_path = path.relative_to(solution_root).as_posix()
     file_hash = _sha256(path.read_bytes())
@@ -154,9 +164,26 @@ def _rule_plan(
         source_query_hash = _sha256(source_query.encode("utf-8"))
         result["sourceQuerySha256"] = source_query_hash
         target_query = ""
-        detection_path, detection, detection_error = _matching_detection(
-            solution_root, document
-        )
+        if selected_detection_path is None:
+            detection_path, detection, detection_error = _matching_detection(
+                solution_root, document
+            )
+        else:
+            detection_path = selected_detection_path.resolve()
+            output_root = (solution_root / "XDR Detections").resolve()
+            if (
+                not detection_path.is_relative_to(output_root)
+                or detection_path.is_symlink()
+                or not detection_path.is_file()
+            ):
+                raise ValueError("selected Custom Detection path is missing or unsafe")
+            detection = scenario._load_yaml(detection_path)
+            detection_error = (
+                None
+                if scenario._detection_source_id(detection)
+                == str(document.get("id") or "")
+                else "Selected Custom Detection does not match the source rule ID."
+            )
         if detection_error:
             result["blockers"].append(detection_error)
         else:
@@ -307,6 +334,8 @@ def build_plan(
     registry_path: str | Path = DEFAULT_REGISTRY,
     expected_inventory_sha256: str | None = None,
     expected_target_sha256: str | None = None,
+    selection_plan_path: str | Path | None = None,
+    expected_selection_plan_sha256: str | None = None,
 ) -> dict[str, Any]:
     root = Path(solution_root).resolve()
     if not root.is_dir():
@@ -314,6 +343,94 @@ def build_plan(
     rule_paths = _rule_files(root)
     if not rule_paths:
         raise ValueError(f"no recursive Analytic Rule YAML files found under {root}")
+
+    selection = None
+    selected_detection_by_rule: dict[str, Path] = {}
+    selection_scope: dict[str, Any] | None = None
+    if selection_plan_path is not None:
+        selection_path = Path(selection_plan_path).expanduser().resolve()
+        try:
+            selection = json.loads(selection_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read applied package-selection plan: {exc}") from exc
+        run_id = selection.get("runId") if isinstance(selection, dict) else None
+        plan_sha = selection.get("planSha256") if isinstance(selection, dict) else None
+        if (
+            not isinstance(run_id, str)
+            or not run_id
+            or not isinstance(plan_sha, str)
+            or expected_selection_plan_sha256 != plan_sha
+        ):
+            raise ValueError("package-selection plan hash and run binding are required")
+        applied = verify_applied_package_selection(root, run_id)
+        if (
+            not applied
+            or applied["plan"].get("planSha256") != plan_sha
+            or (root / applied["planPath"]).resolve() != selection_path
+        ):
+            raise ValueError("qualification requires the current applied package-selection plan")
+        selection = applied["plan"]
+        selection_summary = selection.get("summary") or {}
+        if (
+            selection_summary.get("outcome") not in {"partial", "complete"}
+            or not _partial_coverage_allowed(selection_summary)
+        ):
+            raise ValueError("applied package selection does not meet validated detection coverage")
+        for item in selection.get("xdrDetections") or []:
+            if item.get("included") is not True:
+                continue
+            rule_id = str(item.get("sourceId") or "").casefold()
+            relative = str(item.get("path") or "").replace("\\", "/")
+            if not rule_id or not relative.startswith("XDR Detections/"):
+                raise ValueError("applied selection has an invalid selected detection identity")
+            if rule_id in selected_detection_by_rule:
+                raise ValueError("applied selection contains multiple detections for one source rule")
+            selected_detection_by_rule[rule_id] = (root / relative).resolve()
+        selected_rule_ids = {
+            key for key in selected_detection_by_rule
+        }
+        declared_ids = {
+            str(value).casefold()
+            for value in selection_summary.get("validatedMigratedSourceRuleIds") or []
+        }
+        if selected_rule_ids != declared_ids:
+            raise ValueError("package-selection coverage does not match selected Custom Detection pairs")
+        selection_scope = {
+            "kind": "applied-package-selection",
+            "planSha256": plan_sha,
+            "outcome": selection_summary.get("outcome"),
+            "originalSourceRuleCount": selection_summary.get("originalSourceRuleCount"),
+            "validatedMigratedSourceRuleCount": selection_summary.get(
+                "validatedMigratedSourceRuleCount"
+            ),
+            "coverageNumerator": selection_summary.get("coverageNumerator"),
+            "coverageDenominator": selection_summary.get("coverageDenominator"),
+            "partialPublicationAllowed": selection_summary.get("partialPublicationAllowed"),
+            "selectedDetectionPaths": sorted(
+                str(item.get("path"))
+                for item in selection.get("xdrDetections") or []
+                if item.get("included") is True
+            ),
+            "excludedAnalyticRules": [
+                {
+                    "id": item.get("id"),
+                    "path": item.get("path"),
+                    "reasons": item.get("reasons") or [],
+                }
+                for item in selection.get("analyticRules") or []
+                if item.get("included") is not True
+            ],
+            "excludedDetections": [
+                {
+                    "id": item.get("id"),
+                    "sourceId": item.get("sourceId"),
+                    "path": item.get("path"),
+                    "reasons": item.get("reasons") or [],
+                }
+                for item in selection.get("xdrDetections") or []
+                if item.get("included") is not True
+            ],
+        }
 
     rules: list[dict[str, Any]] = []
     grouped: dict[str, dict[str, Any]] = {}
@@ -326,9 +443,30 @@ def build_plan(
         except (OSError, ValueError, RuntimeError) as exc:
             document = None
             parse_error = str(exc)
-        rule_result, groups = _rule_plan(
-            root, path, document, parse_error, registry_path
-        )
+        rule_id = str((document or {}).get("id") or "").casefold()
+        if selection is not None and (parse_error or not rule_id):
+            raise ValueError(
+                f"complete source inventory cannot be bound to package selection: {path}"
+            )
+        if selection is not None and rule_id not in selected_detection_by_rule:
+            rule_result = {
+                "sourcePath": path.relative_to(root).as_posix(),
+                "sourceFileSha256": _sha256(path.read_bytes()),
+                "ruleId": (document or {}).get("id"),
+                "ruleName": (document or {}).get("name"),
+                "status": "not-selected",
+                "blockers": ["excluded-by-current-applied-package-selection"],
+            }
+            groups = {}
+        else:
+            rule_result, groups = _rule_plan(
+                root,
+                path,
+                document,
+                parse_error,
+                registry_path,
+                selected_detection_by_rule.get(rule_id) if selection is not None else None,
+            )
         rule_id = str(rule_result.get("ruleId") or "")
         if rule_id and rule_id in seen_ids:
             rule_result["blockers"].append(
@@ -375,6 +513,15 @@ def build_plan(
         "solution": root.name,
         "target": target_context,
         "targetSha256": target_sha256,
+        "qualificationScope": (
+            selection_scope
+            if selection_scope is not None
+            else {
+                "kind": "complete-source-inventory",
+                "originalSourceRuleCount": len(rules),
+                "validatedMigratedSourceRuleCount": None,
+            }
+        ),
         "inventory": {
             "complete": True,
             "recursiveRuleCount": len(rules),
@@ -400,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
     parser.add_argument("--expected-inventory-sha256")
     parser.add_argument("--expected-target-sha256")
+    parser.add_argument("--selection-plan", type=Path)
+    parser.add_argument("--expected-selection-plan-sha256")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
@@ -410,6 +559,8 @@ def main(argv: list[str] | None = None) -> int:
             registry_path=args.registry,
             expected_inventory_sha256=args.expected_inventory_sha256,
             expected_target_sha256=args.expected_target_sha256,
+            selection_plan_path=args.selection_plan,
+            expected_selection_plan_sha256=args.expected_selection_plan_sha256,
         )
         output = json.dumps(plan, indent=2, ensure_ascii=False) + "\n"
         if args.output:

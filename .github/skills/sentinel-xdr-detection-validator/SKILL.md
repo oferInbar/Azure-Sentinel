@@ -46,6 +46,14 @@ launch authentication without first asking. Structural validation, runtime
 execution, schema binding, and qualification are separate outcomes; a provider
 fallback or successful query never marks a rule validated or proves parity.
 
+For partial publication, do not weaken this rule-level evidence contract.
+`package-selection-plan` counts only unique, current source IDs represented by
+eligible deployable Custom Detections against the complete original Sentinel
+rule inventory; the partial threshold is strictly over 50%. Qualification may
+use only the fresh applied selected subset and must keep excluded item failures
+visible. Never relabel a partial selected-query result as full-inventory
+Validation or Qualification.
+
 ## Workflow
 
 1. Run `sentinel-xdr-migration doctor`.

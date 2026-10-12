@@ -320,28 +320,105 @@ def portable_artifact(solution: str | Path, value: Any, *, destination: Path | N
         run_names.add(destination.name)
 
     path_fields = {
-        "solution", "solutionPath", "source", "output", "file", "sourceFile", "sourceRule",
+        "solution", "solutionPath", "output", "outputFile", "file", "sourceFile", "sourceRule",
         "outputDirectory", "reportDirectory", "manifest", "transformationReport",
         "jsonReport", "htmlReport", "reportPath", "statePath", "targetPath",
         "packageReport", "mainTemplate", "createUiDefinition", "testParameters", "zip",
         "solutionData", "contract", "payload", "deploymentReport", "analyticDeploymentReport",
         "queryParityReport", "alertParityReport",
     }
+    reference_suffixes = {".json", ".yaml", ".yml", ".zip", ".csv", ".log", ".md", ".txt"}
+    literal_containers = {
+        "queries", "querycondition", "error", "errors", "errordetails",
+        "providererror", "providererrors", "exception", "diagnostic",
+        "diagnostics",
+    }
+    literal_fields = {
+        "query", "querytext", "kql", "sourcequery", "targetquery",
+        "message", "errormessage", "diagnostictext",
+    }
 
-    def visit(item: Any, key: str = "", references: bool = False) -> Any:
+    def looks_like_reference(text: str) -> bool:
+        stripped = text.strip()
+        if (
+            not stripped
+            or "\n" in stripped
+            or "|" in stripped
+            or "://" in stripped
+            or "?" in stripped
+            or "#" in stripped
+        ):
+            return False
+        return (
+            "/" in stripped
+            or "\\" in stripped
+            or Path(stripped).suffix.lower() in reference_suffixes
+            or PureWindowsPath(stripped).suffix.lower() in reference_suffixes
+        )
+
+    def is_source_reference(text: str) -> bool:
+        stripped = text.strip()
+        if not stripped or any(marker in stripped for marker in ("\n", "|", "://", "?", "#")):
+            return False
+        normalized = stripped.replace("\\", "/")
+        known_roots = (
+            root.as_posix() + "/",
+            repository.as_posix() + "/",
+            *(legacy.as_posix() + "/" for legacy in legacy_directories(root)),
+        )
+        return (
+            Path(stripped).suffix.lower() in reference_suffixes
+            or PureWindowsPath(stripped).suffix.lower() in reference_suffixes
+            or normalized == root.as_posix()
+            or normalized.startswith(known_roots)
+        )
+
+    def visit(
+        item: Any,
+        key: str = "",
+        references: bool = False,
+        parent_key: str = "",
+        literal_text: bool = False,
+    ) -> Any:
         if isinstance(item, dict):
+            child_literal_text = literal_text or key.casefold() in literal_containers
             return {
                 name: "[REDACTED]" if _SECRET_KEY.fullmatch(str(name)) else visit(
-                    child, str(name), references or key in {"artifacts", "workflowArtifacts"}
+                    child,
+                    str(name),
+                    references or key in {"artifacts", "workflowArtifacts"},
+                    key,
+                    child_literal_text,
                 )
                 for name, child in item.items()
             }
         if isinstance(item, (list, tuple)):
-            return [visit(child, key, references or key == "evidence") for child in item]
+            return [
+                visit(
+                    child,
+                    key,
+                    references or key == "evidence",
+                    parent_key,
+                    literal_text,
+                )
+                for child in item
+            ]
         if not isinstance(item, str):
             return item
         text = item
-        if key in path_fields or references:
+        literal_value = (
+            literal_text
+            or key.casefold() in literal_fields
+            or parent_key.casefold() in literal_containers
+        )
+        source_path = (
+            key == "source"
+            and not literal_value
+            and is_source_reference(text)
+        )
+        if not literal_value and (
+            key in path_fields or source_path or (references and looks_like_reference(text))
+        ):
             normalized = text.replace("\\", "/")
             for legacy in legacy_directories(root)[:-1]:
                 prefix = legacy.as_posix() + "/"

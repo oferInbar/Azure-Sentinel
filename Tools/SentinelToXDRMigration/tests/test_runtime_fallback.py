@@ -15,19 +15,29 @@ import unittest
 
 import yaml
 
+from sentinel_xdr_migration import runtime_consent
 import sentinel_xdr_migration.runtime as runtime_module
 from sentinel_xdr_migration.runtime import (
+    _advanced_hunting_token,
     _load_provider_fallback,
     record_runtime_validation,
     run_advanced_hunting_query,
     validate_advanced_hunting,
 )
+from sentinel_xdr_migration.workflow import initialize_workflow
 
 
-def _successful_response():
+def _successful_response(payload=None):
     response = mock.MagicMock()
     response.status = 200
-    response.read.return_value = b'{"results": [], "schema": []}'
+    response.read.return_value = json.dumps(
+        payload
+        if payload is not None
+        else {
+            "results": [],
+            "schema": [{"name": "DeviceId", "type": "String"}],
+        }
+    ).encode()
     context = mock.MagicMock()
     context.__enter__.return_value = response
     context.__exit__.return_value = False
@@ -109,6 +119,50 @@ class RuntimeFallbackEvidenceTests(unittest.TestCase):
             "permissionsVerified": True,
             "kqlError": False,
         }), encoding="utf-8")
+
+    def test_advanced_hunting_token_accepts_required_scope_superset(self):
+        tenant_id = "39768270-33ce-4b90-a1a6-e0caeb3ba0ab"
+        claims = {
+            "tid": tenant_id,
+            "aud": "https://graph.microsoft.com",
+            "scp": "ThreatHunting.Read.All User.Read email openid profile",
+        }
+        credential = mock.Mock()
+        credential.get_token.return_value.token = "synthetic-access-token"
+        record = mock.Mock(tenant_id=tenant_id)
+        state_root = Path(self.temp.name) / "private-state"
+        with (
+            mock.patch("azure.identity.DeviceCodeCredential", return_value=credential),
+            mock.patch("azure.identity.TokenCachePersistenceOptions"),
+            mock.patch(
+                "sentinel_xdr_migration.runtime.resolve_graph_client_id",
+                return_value="11111111-2222-3333-4444-555555555555",
+            ),
+            mock.patch(
+                "sentinel_xdr_migration.runtime.graph_auth_record_path",
+                return_value=state_root / "auth-record.json",
+            ),
+            mock.patch(
+                "sentinel_xdr_migration.runtime._load_auth_record",
+                return_value=record,
+            ),
+            mock.patch(
+                "sentinel_xdr_migration.runtime._read_json",
+                return_value={"tenantId": tenant_id},
+            ),
+            mock.patch(
+                "sentinel_xdr_migration.runtime.verify_graph_auth_binding"
+            ),
+            mock.patch(
+                "sentinel_xdr_migration.graph_readiness._token_claims",
+                return_value=claims,
+            ),
+        ):
+            token = _advanced_hunting_token(state_root, tenant_id=tenant_id)
+        self.assertEqual("synthetic-access-token", token)
+        credential.get_token.assert_called_once_with(
+            "https://graph.microsoft.com/ThreatHunting.Read.All"
+        )
 
     def test_complete_fallback_evidence_is_persisted_without_promoting_status(self):
         result = record_runtime_validation(
@@ -238,6 +292,63 @@ class RuntimeFallbackEvidenceTests(unittest.TestCase):
 
 
 class AdvancedHuntingProviderBoundsTests(unittest.TestCase):
+    def test_exact_query_response_retains_typed_schema_and_bounded_rows(self):
+        query = "DeviceEvents | where DeviceId == 'synthetic-device'"
+        schema = [
+            {"name": "DeviceId", "type": "String"},
+            {"name": "Timestamp", "type": "DateTime"},
+        ]
+        rows = [{"DeviceId": f"synthetic-{index}"} for index in range(12)]
+        urlopen = mock.Mock(
+            return_value=_successful_response({"schema": schema, "results": rows})
+        )
+        with mock.patch.object(runtime_module.urllib.request, "urlopen", urlopen):
+            result = run_advanced_hunting_query(query, _token="cached-test-token")
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(1, urlopen.call_count)
+        self.assertEqual({"Query": query}, json.loads(request.data))
+        self.assertTrue(request.get_header("Authorization").startswith("Bearer "))
+        self.assertEqual(schema, result["schema"])
+        self.assertEqual(12, result["rowCount"])
+        self.assertEqual(rows[:10], result["sampleRows"])
+        self.assertTrue(result["sampleRowsTruncated"])
+
+    def test_missing_or_invalid_provider_schema_is_not_success(self):
+        invalid_bodies = (
+            {"results": []},
+            {"schema": [{"name": "DeviceId"}], "results": []},
+            {
+                "schema": [
+                    {"name": "DeviceId", "type": "String"},
+                    {"name": "deviceid", "type": "String"},
+                ],
+                "results": [],
+            },
+            {
+                "schema": [{"name": "DeviceId", "type": "String"}],
+                "results": [{"OtherColumn": "value"}],
+            },
+            {"schema": [{"name": "DeviceId", "type": "String"}]},
+            {
+                "error": {"message": "provider rejected the query"},
+                "schema": [],
+                "results": [],
+            },
+        )
+        for body in invalid_bodies:
+            with self.subTest(body=body):
+                urlopen = mock.Mock(return_value=_successful_response(body))
+                with mock.patch.object(runtime_module.urllib.request, "urlopen", urlopen):
+                    result = run_advanced_hunting_query(
+                        "DeviceEvents", _token="cached-test-token"
+                    )
+                self.assertFalse(result["ok"])
+                self.assertEqual("provider", result["failureKind"])
+                self.assertEqual(200, result["statusCode"])
+                self.assertIn("Graph Advanced Hunting", result["error"])
+                self.assertEqual(1, urlopen.call_count)
+
     def test_retry_after_seconds_and_http_date_are_honored(self):
         clock = _FakeClock()
         retry_date = datetime.fromtimestamp(clock.wall_time, timezone.utc) + timedelta(seconds=2)
@@ -386,7 +497,9 @@ class AdvancedHuntingProviderBoundsTests(unittest.TestCase):
                 "ok": True,
                 "statusCode": 200,
                 "rowCount": 0,
-                "schema": [],
+                "schema": [{"name": "Timestamp", "type": "DateTime"}],
+                "sampleRows": [],
+                "sampleRowsTruncated": False,
                 "error": None,
                 "errorDetails": None,
             }
@@ -395,13 +508,119 @@ class AdvancedHuntingProviderBoundsTests(unittest.TestCase):
 
         self.assertEqual("graph", report["provider"])
         self.assertEqual(
-            ["DeviceEvents | take 0", converted_query],
+            [converted_query],
             [call.args[0] for call in run_query.call_args_list],
         )
         self.assertEqual(
             hashlib.sha256(converted_query.encode()).hexdigest(),
             report["results"][0]["querySha256"],
         )
+
+    def test_authoring_validation_uses_tenant_only_auth_scope(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+            root = Path(temp) / "Example"
+            output = root / "XDR Detections"
+            output.mkdir(parents=True)
+            tenant_id = "11111111-1111-4111-8111-111111111111"
+            query = "DeviceEvents | take 1"
+            (output / "Rule.yaml").write_text(
+                yaml.safe_dump({
+                    "properties": {"queryCondition": {"queryText": query}},
+                }),
+                encoding="utf-8",
+            )
+            initialize_workflow(
+                root,
+                tenant_id=tenant_id,
+                workflow_profile="authoring",
+            )
+            state_root = Path(temp) / "auth-state"
+            state_root.mkdir()
+            (state_root / runtime_module.CONFIG_NAME).write_text(
+                json.dumps({"tenantId": tenant_id}),
+                encoding="utf-8",
+            )
+            run_query = mock.Mock(return_value={
+                "ok": True,
+                "statusCode": 200,
+                "rowCount": 0,
+                "schema": [{"name": "DeviceId", "type": "String"}],
+                "sampleRows": [],
+                "sampleRowsTruncated": False,
+                "error": None,
+                "errorDetails": None,
+            })
+            with (
+                mock.patch.object(
+                    runtime_module,
+                    "_load_auth_record",
+                    return_value=mock.Mock(tenant_id=tenant_id),
+                ),
+                mock.patch.object(
+                    runtime_module,
+                    "require_runtime_query_consent",
+                    return_value={
+                        "status": "approved",
+                        "family": "defenderXdrQueryFamily",
+                        "provider": "graph",
+                        "workflowProfile": "authoring",
+                    },
+                ),
+                mock.patch.object(
+                    runtime_module,
+                    "_advanced_hunting_token",
+                    return_value="cached-test-token",
+                ),
+                mock.patch.object(
+                    runtime_module,
+                    "run_advanced_hunting_query",
+                    run_query,
+                ),
+                mock.patch.object(
+                    runtime_module,
+                    "_write_runtime_artifacts",
+                    return_value={"provider": "graph", "invalid": 0, "blocked": 0},
+                ),
+            ):
+                report = validate_advanced_hunting(
+                    root,
+                    state_dir=state_root,
+                )
+
+        self.assertEqual("graph", report["provider"])
+        run_query.assert_called_once_with(query, _token="cached-test-token")
+
+    def test_qualification_auth_scope_still_checks_complete_target_configuration(self) -> None:
+        tenant_id = "11111111-1111-4111-8111-111111111111"
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+            state_root = Path(temp)
+            (state_root / runtime_module.CONFIG_NAME).write_text(
+                json.dumps({
+                    "tenantId": tenant_id,
+                    "subscriptionId": "different-subscription",
+                }),
+                encoding="utf-8",
+            )
+            target = {
+                "tenantId": tenant_id,
+                "subscriptionId": "locked-subscription",
+                "workspaceResourceId": "/subscriptions/locked/workspaces/locked",
+                "workspaceCustomerId": "locked-customer",
+            }
+            with mock.patch.object(
+                runtime_module,
+                "_load_auth_record",
+                return_value=mock.Mock(tenant_id=tenant_id),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "configuration subscriptionId does not match",
+                ):
+                    runtime_module._assert_graph_auth_scope(
+                        state_root,
+                        locked_target=target,
+                        requested_tenant_id=tenant_id,
+                    )
 
     def test_authentication_and_kql_errors_are_not_retried(self):
         for status, failure_kind in ((401, "provider"), (403, "provider"), (400, "query")):
@@ -507,9 +726,251 @@ class AdvancedHuntingProviderBoundsTests(unittest.TestCase):
                 hashlib.sha256(query.encode()).hexdigest(),
                 report["results"][0]["querySha256"],
             )
-            self.assertEqual(["DeviceEvents | take 0"], [
+            self.assertEqual([query], [
                 call.args[0] for call in run_query.call_args_list
             ])
+
+
+class _SyntheticDetection:
+    def __init__(self, name, query):
+        self.name = name
+        self.document = {
+            "id": f"xdr-{name}",
+            "properties": {"queryCondition": {"queryText": query}},
+        }
+
+    def _contents(self):
+        return yaml.safe_dump(self.document)
+
+    def open(self, *_, **__):
+        return io.StringIO(self._contents())
+
+    def read_text(self, *_, **__):
+        return self._contents()
+
+    def relative_to(self, _):
+        return Path(self.name)
+
+
+class ExactAdvancedHuntingInventoryTests(unittest.TestCase):
+    def setUp(self):
+        self.queries = [
+            f"DeviceEvents | where DeviceId == 'synthetic-{index:02d}'"
+            for index in range(21)
+        ]
+        self.detections = [
+            _SyntheticDetection(f"Rule{index:02d}.yaml", query)
+            for index, query in enumerate(self.queries)
+        ]
+
+    def test_plan_inventory_and_hash_cover_only_authored_queries(self):
+        batches = {
+            "Windows Security Events": 21,
+            "Azure Activity": 14,
+            "Syslog": 7,
+            "Endpoint Threat Protection Essentials": 15,
+        }
+        target = {
+            "tenantId": "tenant",
+            "subscriptionId": "subscription",
+            "resourceGroup": "group",
+            "workspaceResourceId": "workspace",
+            "workspaceName": "primary-workspace",
+            "workspaceCustomerId": "customer",
+        }
+        total_queries = 0
+        for batch, count in batches.items():
+            with self.subTest(batch=batch):
+                queries = [
+                    f"DeviceEvents | where DeviceId == '{batch}-{index:02d}'"
+                    for index in range(count)
+                ]
+                source_queries = [
+                    runtime_consent._query_entry(
+                        rule_id=f"source-{index:02d}",
+                        path=f"Analytic Rules/Rule{index:02d}.yaml",
+                        query=f"SecurityEvent | where RuleIndex == {index}",
+                    )
+                    for index in range(count)
+                ]
+                detections = [
+                    _SyntheticDetection(f"Rule{index:02d}.yaml", query)
+                    for index, query in enumerate(queries)
+                ]
+                root = Path.cwd() / f"offline-plan-{count}"
+                with (
+                    mock.patch.object(
+                        runtime_consent,
+                        "xdr_detection_files",
+                        return_value=detections,
+                    ),
+                    mock.patch.object(
+                        runtime_consent, "_run_context", return_value=({}, "run-21")
+                    ),
+                    mock.patch.object(
+                        runtime_consent,
+                        "require_locked_target",
+                        return_value=target,
+                    ),
+                    mock.patch.object(
+                        runtime_consent, "_load_primary_setting", return_value=None
+                    ),
+                    mock.patch.object(
+                        runtime_consent,
+                        "_source_inventory",
+                        return_value=source_queries,
+                    ),
+                    mock.patch.object(
+                        runtime_consent,
+                        "_authentication_requirement",
+                        return_value={},
+                    ),
+                ):
+                    rules, probes = runtime_consent._xdr_inventory(root)
+                    with mock.patch.object(
+                        runtime_consent,
+                        "_xdr_inventory",
+                        return_value=(rules, probes),
+                    ):
+                        plan = runtime_consent.build_runtime_query_plan(root)
+
+                family = plan["families"]["defenderXdrQueryFamily"]
+                source_family = plan["families"]["sentinelSourceQueryFamily"]
+                self.assertEqual(count, len(rules))
+                self.assertEqual([], probes)
+                self.assertEqual(count, family["ruleCount"])
+                self.assertEqual(count, family["queryCount"])
+                self.assertEqual(count, source_family["ruleCount"])
+                self.assertEqual(count, source_family["queryCount"])
+                self.assertEqual(queries, [item["queryText"] for item in family["queries"]])
+                self.assertTrue(all(
+                    item["kind"] == "rule-query" for item in family["queries"]
+                ))
+                self.assertTrue(all(
+                    item["querySha256"]
+                    == hashlib.sha256(item["queryText"].encode()).hexdigest()
+                    for item in family["queries"]
+                ))
+                unhashed = {
+                    key: value for key, value in family.items() if key != "familySha256"
+                }
+                self.assertEqual(
+                    family["familySha256"],
+                    runtime_consent._canonical_sha256(unhashed),
+                )
+                total_queries += family["queryCount"]
+        self.assertEqual(57, total_queries)
+
+    def test_dispatch_runs_each_authored_query_once_without_extra_probes(self):
+        dispatched = []
+
+        def fake_query(query, **kwargs):
+            dispatched.append((query, kwargs))
+            return {
+                "ok": True,
+                "statusCode": 200,
+                "rowCount": 0,
+                "schema": [{"name": "DeviceId", "type": "String"}],
+                "sampleRows": [],
+                "sampleRowsTruncated": False,
+                "error": None,
+                "errorDetails": None,
+            }
+
+        def capture_report(root, provider, results, **kwargs):
+            return {"solution": str(root), "provider": provider, "results": results}
+
+        with (
+            mock.patch.object(
+                runtime_module,
+                "_detection_files",
+                return_value=self.detections,
+            ),
+            mock.patch.object(
+                runtime_module,
+                "require_runtime_query_consent",
+                return_value={"status": "approved", "family": "defenderXdrQueryFamily"},
+            ),
+            mock.patch.object(
+                runtime_module,
+                "_advanced_hunting_token",
+                return_value="cached-test-token",
+            ),
+            mock.patch.object(runtime_module, "run_advanced_hunting_query", side_effect=fake_query),
+            mock.patch.object(runtime_module, "_write_runtime_artifacts", side_effect=capture_report),
+        ):
+            report = validate_advanced_hunting(
+                Path.cwd() / "offline-dispatch-fixture",
+                state_dir=Path.cwd(),
+            )
+
+        self.assertEqual(21, len(dispatched))
+        self.assertEqual(self.queries, [query for query, _ in dispatched])
+        self.assertTrue(all(kwargs["_token"] == "cached-test-token" for _, kwargs in dispatched))
+        self.assertEqual(21, len(report["results"]))
+        self.assertEqual(
+            [hashlib.sha256(query.encode()).hexdigest() for query in self.queries],
+            [item["querySha256"] for item in report["results"]],
+        )
+        self.assertTrue(all(item["schema"] == [
+            {"name": "DeviceId", "type": "String"}
+        ] for item in report["results"]))
+
+    def test_locked_target_and_stale_consent_fail_before_dispatch(self):
+        target = {
+            "tenantId": "locked-tenant",
+            "subscriptionId": "locked-subscription",
+            "resourceGroup": "locked-group",
+            "workspaceResourceId": "locked-workspace",
+            "workspaceCustomerId": "locked-customer",
+        }
+        workflow_state = mock.Mock()
+        workflow_state.is_file.return_value = True
+        workflow_state.read_text.return_value = json.dumps({
+            "context": {"workflowProfile": "qualification"}
+        })
+        dispatch = mock.Mock()
+        token = mock.Mock()
+        with (
+            mock.patch.object(
+                runtime_module,
+                "existing_artifact_path",
+                return_value=workflow_state,
+            ),
+            mock.patch.object(runtime_module, "require_locked_target", return_value=target),
+            mock.patch.object(runtime_module, "_advanced_hunting_token", token),
+            mock.patch.object(runtime_module, "run_advanced_hunting_query", dispatch),
+            mock.patch.object(
+                runtime_module,
+                "require_runtime_query_consent",
+            ) as consent,
+        ):
+            with self.assertRaisesRegex(ValueError, "locked Qualification tenant"):
+                validate_advanced_hunting(
+                    Path.cwd() / "locked-target-fixture",
+                    tenant_id="different-tenant",
+                    state_dir=Path.cwd(),
+                )
+            self.assertFalse(consent.called)
+            self.assertFalse(token.called)
+            dispatch.assert_not_called()
+
+        with (
+            mock.patch.object(
+                runtime_module,
+                "require_runtime_query_consent",
+                side_effect=ValueError("runtime query inventory or consent is stale"),
+            ),
+            mock.patch.object(runtime_module, "_advanced_hunting_token", token),
+            mock.patch.object(runtime_module, "run_advanced_hunting_query", dispatch),
+        ):
+            with self.assertRaisesRegex(ValueError, "inventory or consent is stale"):
+                validate_advanced_hunting(
+                    Path.cwd() / "stale-consent-fixture",
+                    state_dir=Path.cwd(),
+                )
+        token.assert_not_called()
+        dispatch.assert_not_called()
 
 
 if __name__ == "__main__":

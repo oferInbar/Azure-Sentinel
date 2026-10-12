@@ -792,7 +792,7 @@ AzureActivity
         return_value="token",
     )
     @mock.patch("sentinel_xdr_migration.runtime.run_advanced_hunting_query")
-    def test_runtime_validation_distinguishes_unavailable_tables(
+    def test_runtime_validation_reports_query_failure_without_table_probes(
         self, run_query: mock.Mock, _token: mock.Mock
     ) -> None:
         convert_solution(self.solution)
@@ -805,10 +805,17 @@ AzureActivity
             "errorDetails": None,
         }
         result = validate_advanced_hunting(self.solution)
-        self.assertEqual(result["blocked"], 1)
-        self.assertEqual(result["invalid"], 0)
+        self.assertEqual(result["blocked"], 0)
+        self.assertEqual(result["invalid"], 1)
         self.assertEqual(result["provider"], "graph")
-        self.assertEqual(result["results"][0]["status"], "blocked")
+        self.assertEqual(result["results"][0]["status"], "failed")
+        expected_query = yaml.safe_load(
+            (self.solution / "XDR Detections" / "SampleRule.yaml").read_text(
+                encoding="utf-8"
+            )
+        )["properties"]["queryCondition"]["queryText"]
+        run_query.assert_called_once_with(expected_query, _token="token")
+        self.assertEqual({}, result["tableAvailability"])
         self.assertTrue(Path(result["jsonReport"]).is_file())
         self.assertTrue(Path(result["htmlReport"]).is_file())
 
@@ -855,7 +862,7 @@ AzureActivity
         return_value="token",
     )
     @mock.patch("sentinel_xdr_migration.runtime.run_advanced_hunting_query")
-    def test_runtime_validation_preflights_solution_parser_functions(
+    def test_runtime_validation_queries_parser_function_without_probe(
         self, run_query: mock.Mock, _token: mock.Mock
     ) -> None:
         path = self.solution / "Analytic Rules" / "SampleRule.yaml"
@@ -876,19 +883,24 @@ AzureActivity
         )
         convert_solution(self.solution)
         run_query.return_value = {
-            "ok": False,
-            "statusCode": 400,
+            "ok": True,
+            "statusCode": 200,
             "rowCount": 0,
             "schema": [],
-            "error": "function unavailable",
+            "error": None,
             "errorDetails": None,
         }
 
         result = validate_advanced_hunting(self.solution)
 
-        self.assertEqual(result["blocked"], 1)
-        self.assertIn("ExampleParser", result["tableAvailability"])
-        run_query.assert_called_once_with("ExampleParser | take 0", _token="token")
+        expected_query = yaml.safe_load(
+            (self.solution / "XDR Detections" / "SampleRule.yaml").read_text(
+                encoding="utf-8"
+            )
+        )["properties"]["queryCondition"]["queryText"]
+        self.assertEqual(result["valid"], 1)
+        run_query.assert_called_once_with(expected_query, _token="token")
+        self.assertNotEqual(expected_query, "ExampleParser | take 0")
 
     def test_records_normalized_triage_mcp_results(self) -> None:
         convert_solution(self.solution)

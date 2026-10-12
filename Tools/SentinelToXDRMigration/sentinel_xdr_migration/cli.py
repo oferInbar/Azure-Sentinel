@@ -29,6 +29,10 @@ from .deployment import deploy_solution, setup_deployment_authentication
 from .deployment_planning import persist_deployment_plan, record_planning_consent
 from .graph_readiness import preflight_deployment
 from .analytic_deployment import deploy_analytic_rules
+from .arm_acceptance import (
+    execute_arm_template_acceptance_batch,
+    plan_arm_template_acceptance_batch,
+)
 from .alert_parity import (
     abort_alert_parity,
     complete_alert_parity,
@@ -39,6 +43,14 @@ from .runtime import (
     record_runtime_validation,
     validate_advanced_hunting,
     validate_sentinel_sdk,
+)
+from .runtime_consent import (
+    SOURCE_PROVIDERS,
+    confirm_primary_lab_setting,
+    persist_runtime_query_plan,
+    record_runtime_query_consent,
+    revoke_runtime_query_consent,
+    runtime_query_consent_status,
 )
 from .solution_report import build_solution_report
 from .target_context import diagnose_target, repair_target, require_locked_target
@@ -56,6 +68,19 @@ from .workflow import (
     run_yolo_authoring,
     start_workflow_stage,
     workflow_status,
+)
+from .packaging_selection import (
+    apply_package_selection,
+    create_package_selection_plan,
+)
+from .coordinator import (
+    acknowledge_outbox,
+    claim as coordinator_claim,
+    enroll as coordinator_enroll,
+    heartbeat as coordinator_heartbeat,
+    reconcile as coordinator_reconcile,
+    record_event as coordinator_record_event,
+    status as coordinator_status,
 )
 
 SUPPORTED_PYTHON_MIN = (3, 11)
@@ -76,6 +101,33 @@ def _key_values(values: list[str] | None) -> dict[str, str]:
             raise ValueError(f"duplicate artifact name: {key}")
         result[key] = item
     return result
+
+
+def _package_batch_members(values: list[str]) -> list[dict[str, str]]:
+    members: list[dict[str, str]] = []
+    for value in values:
+        solution_path, separator, run_id = value.rpartition("::")
+        if not separator or not solution_path.strip() or not run_id.strip():
+            raise ValueError(
+                f"expected --member SOLUTION_PATH::RUN_ID, received: {value}"
+            )
+        members.append(
+            {"solution": solution_path.strip(), "runId": run_id.strip()}
+        )
+    return members
+
+
+def _require_explicit_authoring_run(solution: str, run_id: str | None) -> dict[str, Any]:
+    state = workflow_status(solution)
+    if (
+        state.get("context", {}).get("workflowProfile") == "authoring"
+        and not run_id
+    ):
+        raise ValueError(
+            "Authoring Advanced Hunting requires an explicit --run-id; "
+            "no run is inferred"
+        )
+    return state
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -156,6 +208,14 @@ def main(argv: list[str] | None = None) -> int:
     setup_parser.add_argument("--tenant-id")
     setup_parser.add_argument("--workspace-id")
     setup_parser.add_argument(
+        "--hunting-client-id",
+        help="Public delegated Graph client ID for Advanced Hunting; the built-in client remains the default.",
+    )
+    setup_parser.add_argument(
+        "--azure-config-dir",
+        help="Explicitly select and persist an isolated Azure CLI profile for this target.",
+    )
+    setup_parser.add_argument(
         "--hunting-auth-method",
         choices=["device-code", "browser"],
         default="device-code",
@@ -196,6 +256,86 @@ def main(argv: list[str] | None = None) -> int:
     deployment_setup.add_argument("--tenant-id")
     deployment_setup.add_argument("--solution", required=True)
     deployment_setup.add_argument(
+        "--custom-detection-client-id",
+        help="Public delegated Graph client ID for Custom Detection; the built-in client remains the default.",
+    )
+    deployment_setup.add_argument(
+        "--azure-config-dir",
+        help="Explicitly select and persist an isolated Azure CLI profile for this target.",
+    )
+    app_registration_auth = subparsers.add_parser(
+        "setup-app-registration-auth",
+        help="Explicitly authenticate with the least-privilege app-registration bootstrap scope.",
+    )
+    app_registration_auth.add_argument("--solution", required=True)
+    app_registration_auth.add_argument(
+        "--auth-method",
+        choices=["device-code", "browser"],
+        default="device-code",
+    )
+    app_registration_auth.add_argument(
+        "--bootstrap-client-id",
+        help="Existing public Graph client ID already able to request the bootstrap scopes; defaults to the built-in client.",
+    )
+    app_readback_auth = subparsers.add_parser(
+        "setup-app-readback-auth",
+        help="Set up the separate browser-only, GET-only delegated app verification credential.",
+    )
+    app_readback_auth.add_argument("--solution", required=True)
+    app_readback_auth.add_argument(
+        "--readback-client-id",
+        required=True,
+        help=(
+            "Existing approved public Graph client ID; readback uses a separate "
+            "auth purpose, record, and token cache."
+        ),
+    )
+    app_readback = subparsers.add_parser(
+        "verify-delegated-app-readback",
+        help="Read-only reconciliation for the exact approved owned application; performs GET requests only.",
+    )
+    app_readback.add_argument("--solution", required=True)
+    app_readback_scope_diagnostic = subparsers.add_parser(
+        "diagnose-app-readback-scopes",
+        help="Report required and extra cached readback-token scope names; makes no Microsoft Graph resource requests.",
+    )
+    app_readback_scope_diagnostic.add_argument("--solution", required=True)
+    app_registration_plan = subparsers.add_parser(
+        "plan-delegated-app-registration",
+        help="Show the exact single-tenant delegated desktop-app plan; performs no cloud calls.",
+    )
+    app_registration_plan.add_argument("--solution", required=True)
+    app_registration_plan.add_argument(
+        "--app-display-name",
+        help="Exact application display name to bind into the reviewed plan; defaults to the legacy name.",
+    )
+    app_registration = subparsers.add_parser(
+        "register-delegated-app",
+        help="Create at most one explicitly approved delegated Graph desktop app; grants no consent.",
+    )
+    app_registration.add_argument("--solution", required=True)
+    app_registration.add_argument(
+        "--app-display-name",
+        help="Exact application display name bound into the reviewed plan; defaults to the legacy name.",
+    )
+    app_registration.add_argument("--expected-plan-sha256", required=True)
+    app_registration.add_argument(
+        "--approve-exact-app-registration",
+        action="store_true",
+        help="Approve only the application registration bound to the supplied plan hash.",
+    )
+    app_permission_plan = subparsers.add_parser(
+        "plan-delegated-app-permission-update",
+        help="Show the exact manual permission-addition plan; performs no cloud calls.",
+    )
+    app_permission_plan.add_argument("--solution", required=True)
+    app_permission_verify = subparsers.add_parser(
+        "verify-delegated-app-permission-update",
+        help="Verify the reviewed manual permission update; performs GET requests only.",
+    )
+    app_permission_verify.add_argument("--solution", required=True)
+    app_permission_verify.add_argument("--expected-plan-sha256", required=True)
+    deployment_setup.add_argument(
         "--auth-method",
         choices=["azure-cli", "device-code", "browser"],
         default="azure-cli",
@@ -226,6 +366,85 @@ def main(argv: list[str] | None = None) -> int:
         help="Persist a deterministic local Qualification deployment-scope plan; performs no cloud calls.",
     )
     deployment_plan.add_argument("--solution", required=True)
+    runtime_query_plan = subparsers.add_parser(
+        "plan-runtime-query-consent",
+        help="Create the exact, local-only read-only query inventory and consent plan for the selected workflow profile.",
+    )
+    runtime_query_plan.add_argument("--solution", required=True)
+    runtime_query_plan.add_argument(
+        "--source-provider",
+        choices=sorted(SOURCE_PROVIDERS),
+        default="azure-monitor-sdk",
+        help="Exact Sentinel source-query provider route to bind; does not approve execution.",
+    )
+    primary_setting = subparsers.add_parser(
+        "confirm-primary-lab-setting",
+        help="Explicitly attest the primary workspace setting before shared lab read approval.",
+    )
+    primary_setting.add_argument("--solution", required=True)
+    primary_setting.add_argument("--actor", required=True)
+    primary_setting.add_argument("--primary-setting-name", required=True)
+    primary_setting.add_argument(
+        "--confirm-primary-setting",
+        action="store_true",
+        help="Confirm the named setting; this is user attestation, not service verification.",
+    )
+    runtime_query_consent = subparsers.add_parser(
+        "review-runtime-query-consent",
+        help=(
+            "Record explicit query-family approval for the selected workflow profile, "
+            "revise, or decline after reviewing the current inventory. Approval never "
+            "authorizes authentication or writes."
+        ),
+    )
+    runtime_query_consent.add_argument("--solution", required=True)
+    runtime_query_consent.add_argument("--expected-plan-sha256", required=True)
+    runtime_query_consent.add_argument("--actor", required=True)
+    runtime_query_consent.add_argument(
+        "--source-provider",
+        choices=sorted(SOURCE_PROVIDERS),
+        default="azure-monitor-sdk",
+    )
+    runtime_query_consent.add_argument(
+        "--approve-family",
+        action="append",
+        choices=["sentinelSourceQueryFamily", "defenderXdrQueryFamily"],
+        default=[],
+    )
+    runtime_query_consent.add_argument("--decline", action="store_true")
+    runtime_query_consent.add_argument(
+        "--revise-plan",
+        action="store_true",
+        help="Return to plan review without recording consent.",
+    )
+    runtime_query_consent.add_argument("--reason")
+    revoke_runtime_consent = subparsers.add_parser(
+        "revoke-lab-runtime-query-consent",
+        help="Revoke shared lab runtime-query consent for the currently locked lab.",
+    )
+    revoke_runtime_consent.add_argument("--solution", required=True)
+    revoke_runtime_consent.add_argument("--actor", required=True)
+    revoke_runtime_consent.add_argument("--reason", required=True)
+    runtime_query_check = subparsers.add_parser(
+        "check-runtime-query-consent",
+        help="Check an exact approved family/provider binding before external provider dispatch.",
+    )
+    runtime_query_check.add_argument("--solution", required=True)
+    runtime_query_check.add_argument(
+        "--family",
+        required=True,
+        choices=["sentinelSourceQueryFamily", "defenderXdrQueryFamily"],
+    )
+    runtime_query_check.add_argument(
+        "--provider",
+        required=True,
+        choices=["azure-monitor-sdk", "triage-mcp", "log-analytics-cli", "graph"],
+    )
+    runtime_query_check.add_argument(
+        "--source-provider",
+        choices=sorted(SOURCE_PROVIDERS),
+        default="azure-monitor-sdk",
+    )
     planning_consent = subparsers.add_parser(
         "review-deployment-plan",
         help="Record or decline component-specific planning consent bound to the current plan hash; authorizes no writes.",
@@ -266,6 +485,33 @@ def main(argv: list[str] | None = None) -> int:
     )
     analytic_deployment.add_argument("--solution", required=True)
     analytic_deployment.add_argument("--workspace-resource-id")
+    arm_acceptance_plan = subparsers.add_parser(
+        "plan-arm-template-acceptance-batch",
+        help="Plan exact post-validation ARM template deployments for every solution in the approved same-lab workstream.",
+    )
+    arm_acceptance_plan.add_argument("--member", action="append", required=True)
+    arm_acceptance_plan.add_argument(
+        "--validation-receipt",
+        action="append",
+        required=True,
+        help="Current build-and-validate-report.md for the corresponding --member; repeat in matching order.",
+    )
+    arm_acceptance_plan.add_argument("--shared-decisions", required=True)
+    arm_acceptance = subparsers.add_parser(
+        "deploy-arm-template-acceptance-batch",
+        help="Submit the exact final V3.1 mainTemplates; accept only recorded ARM provisioningState Succeeded.",
+    )
+    arm_acceptance.add_argument("--member", action="append", required=True)
+    arm_acceptance.add_argument(
+        "--validation-receipt",
+        action="append",
+        required=True,
+        help="Same current build-and-validate-report.md for the corresponding --member; repeat in matching order.",
+    )
+    arm_acceptance.add_argument("--shared-decisions", required=True)
+    arm_acceptance.add_argument("--expected-batch-plan-sha256", required=True)
+    arm_acceptance.add_argument("--actor", required=True)
+    arm_acceptance.add_argument("--confirm-exact-scope-write", required=True)
     parity_start = subparsers.add_parser(
         "start-alert-parity",
         help="Enable disabled AR/CD pairs, ingest a marked mock payload, and emit capture queries.",
@@ -326,6 +572,12 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         choices=["triage-mcp", "azure-monitor-sdk", "log-analytics-cli"],
     )
+    record_parser.add_argument(
+        "--source-provider",
+        choices=sorted(SOURCE_PROVIDERS),
+        default="azure-monitor-sdk",
+        help="Exact Sentinel route bound by the runtime-query consent plan.",
+    )
     record_parser.add_argument("--results", required=True)
     record_parser.add_argument(
         "--provider-gap-evidence",
@@ -348,6 +600,17 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         choices=["none", "patch", "minor", "major"],
     )
+    selection_plan = subparsers.add_parser(
+        "package-selection-plan",
+        help="Plan evidence-based Analytic Rule and Custom Detection package eligibility.",
+    )
+    selection_plan.add_argument("--solution", required=True)
+    selection_apply = subparsers.add_parser(
+        "package-selection-apply",
+        help="Apply a fresh, hash-bound package selection to Solution_*.json.",
+    )
+    selection_apply.add_argument("--solution", required=True)
+    selection_apply.add_argument("--expected-plan-sha256", required=True)
     package_release = subparsers.add_parser(
         "workflow-plan-package-release",
         help="Explicitly select a new V3.1 release action for changed package inputs.",
@@ -407,6 +670,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Show the persisted end-to-end migration workflow state.",
     )
     workflow_status_parser.add_argument("--solution", required=True)
+    workflow_status_parser.add_argument(
+        "--source-provider",
+        choices=sorted(SOURCE_PROVIDERS),
+        help="Override the Sentinel source route; otherwise use the persisted plan route.",
+    )
     workflow_next = subparsers.add_parser(
         "workflow-next",
         help="Return the next stage whose dependencies have passed.",
@@ -440,6 +708,82 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         help="Evidence path or reference; repeat for multiple values.",
     )
+    coordinator_enroll_parser = subparsers.add_parser(
+        "coordinator-enroll",
+        help="Enroll a selected persisted run with an accountable owner; shadow mode only.",
+    )
+    coordinator_enroll_parser.add_argument("--solution", required=True)
+    coordinator_enroll_parser.add_argument("--owner", required=True)
+    coordinator_enroll_parser.add_argument(
+        "--shared-dependency",
+        action="append",
+        help="Optional exact prerequisite as ACTION=KEY:PURPOSE; repeat as needed.",
+    )
+    coordinator_enroll_parser.add_argument(
+        "--registry", help="Override the ignored local registry path."
+    )
+    for command, help_text in (
+        ("coordinator-reconcile", "Refresh coordination decisions from workflow-status and workflow-next."),
+        ("coordinator-status", "Show the current durable coordination view and watchdog exceptions."),
+    ):
+        coordinator_parser = subparsers.add_parser(command, help=help_text)
+        coordinator_parser.add_argument("--solution", required=True)
+        coordinator_parser.add_argument("--idle-seconds", type=int, default=900)
+        coordinator_parser.add_argument("--registry", help="Override the ignored local registry path.")
+    coordinator_event = subparsers.add_parser(
+        "coordinator-event",
+        help="Append one idempotent coordinator event; approvals are never granted here.",
+    )
+    coordinator_event.add_argument("--solution", required=True)
+    coordinator_event.add_argument("--event-id", required=True)
+    coordinator_event.add_argument(
+        "--kind",
+        required=True,
+        choices=[
+            "executor-completed",
+            "approval-requested",
+            "shared-dependency-completed",
+            "claim-resolved",
+            "owner-handoff",
+        ],
+    )
+    coordinator_event.add_argument("--action-id")
+    coordinator_event.add_argument("--purpose")
+    coordinator_event.add_argument("--target-sha256")
+    coordinator_event.add_argument("--evidence")
+    coordinator_event.add_argument("--actor")
+    coordinator_event.add_argument("--new-owner")
+    coordinator_event.add_argument("--claim-id")
+    coordinator_event.add_argument("--outcome", choices=["not-started", "completed", "unknown"])
+    coordinator_event.add_argument("--reference")
+    coordinator_event.add_argument("--registry")
+    coordinator_claim_parser = subparsers.add_parser(
+        "coordinator-claim",
+        help="Atomically claim one ready local action; does not dispatch it.",
+    )
+    coordinator_claim_parser.add_argument("--solution", required=True)
+    coordinator_claim_parser.add_argument("--action-id", required=True)
+    coordinator_claim_parser.add_argument("--executor", required=True)
+    coordinator_claim_parser.add_argument("--claim-key", required=True)
+    coordinator_claim_parser.add_argument("--lease-seconds", type=float, default=300)
+    coordinator_claim_parser.add_argument("--registry")
+    coordinator_heartbeat_parser = subparsers.add_parser(
+        "coordinator-heartbeat",
+        help="Extend a live claim after rechecking its exact evidence and target.",
+    )
+    coordinator_heartbeat_parser.add_argument("--solution", required=True)
+    coordinator_heartbeat_parser.add_argument("--claim-id", required=True)
+    coordinator_heartbeat_parser.add_argument("--executor", required=True)
+    coordinator_heartbeat_parser.add_argument("--lease-seconds", type=float, default=300)
+    coordinator_heartbeat_parser.add_argument("--registry")
+    coordinator_ack_parser = subparsers.add_parser(
+        "coordinator-ack",
+        help="Acknowledge outbox delivery only; this is not user approval.",
+    )
+    coordinator_ack_parser.add_argument("--solution", required=True)
+    coordinator_ack_parser.add_argument("--delivery-id", required=True)
+    coordinator_ack_parser.add_argument("--actor", required=True)
+    coordinator_ack_parser.add_argument("--registry")
     budget_status = subparsers.add_parser(
         "workflow-budget",
         help="Show configured ceilings, measured receipts, unknown usage, and remaining campaign allowance.",
@@ -503,6 +847,17 @@ def main(argv: list[str] | None = None) -> int:
             action.required = True
             action.help = "Select the exact existing workflow run to update."
             break
+    for name in ("package-selection-plan", "package-selection-apply"):
+        for action in subparsers.choices[name]._actions:
+            if action.dest == "run_id":
+                action.required = True
+                action.help = "Select the exact existing workflow run."
+                break
+    for action in subparsers.choices["diagnose-app-readback-scopes"]._actions:
+        if action.dest == "run_id":
+            action.required = True
+            action.help = "Select the exact approved Cisco qualification run."
+            break
     subparsers.choices["workflow-init"].add_argument(
         "--new-run", action="store_true", help="Create an isolated new workflow instead of resuming."
     )
@@ -511,14 +866,77 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--rule-id accepts exactly one GUID; repeated selectors are not supported")
     selection = None
     try:
-        if getattr(args, "solution", None):
+        isolated_permission_commands = {
+            "plan-delegated-app-permission-update",
+            "verify-delegated-app-permission-update",
+        }
+        if getattr(args, "solution", None) and args.command not in isolated_permission_commands:
             selection = select_run(args.solution, args.run_id)
         # Read-only status and migration planning must not initialize or change artifacts.
-        if args.command not in {"migrate-reports", "workflow-status", "workflow-next", "workflow-init", "workflow-runs", "export-evidence", "preflight-deployment", "plan-deployment", "review-deployment-plan"} and not (
+        if args.command not in {"migrate-reports", "workflow-status", "workflow-next", "workflow-init", "workflow-runs", "export-evidence", "preflight-deployment", "plan-deployment", "review-deployment-plan", "plan-runtime-query-consent", "confirm-primary-lab-setting", "review-runtime-query-consent", "revoke-lab-runtime-query-consent", "check-runtime-query-consent", "coordinator-enroll", "coordinator-status", "coordinator-reconcile", "coordinator-event", "coordinator-claim", "coordinator-heartbeat", "coordinator-ack", *isolated_permission_commands} and not (
             args.command == "convert" and args.rule_id
         ):
             configure_logging(getattr(args, "solution", None))
-        if args.command == "workflow-runs":
+        if args.command == "coordinator-enroll":
+            result = coordinator_enroll(
+                args.solution,
+                owner=args.owner,
+                required_shared_dependencies=args.shared_dependency,
+                registry_path=args.registry,
+            )
+        elif args.command == "coordinator-reconcile":
+            result = coordinator_reconcile(
+                args.solution,
+                registry_path=args.registry,
+                idle_seconds=args.idle_seconds,
+            )
+        elif args.command == "coordinator-status":
+            result = coordinator_status(
+                args.solution,
+                registry_path=args.registry,
+                idle_seconds=args.idle_seconds,
+            )
+        elif args.command == "coordinator-event":
+            result = coordinator_record_event(
+                args.solution,
+                event_id=args.event_id,
+                kind=args.kind,
+                action_id=args.action_id,
+                purpose=args.purpose,
+                target_sha256=args.target_sha256,
+                evidence=args.evidence,
+                actor=args.actor,
+                new_owner=args.new_owner,
+                claim_id=args.claim_id,
+                outcome=args.outcome,
+                reference=args.reference,
+                registry_path=args.registry,
+            )
+        elif args.command == "coordinator-claim":
+            result = coordinator_claim(
+                args.solution,
+                action_id=args.action_id,
+                executor=args.executor,
+                claim_key=args.claim_key,
+                lease_seconds=args.lease_seconds,
+                registry_path=args.registry,
+            )
+        elif args.command == "coordinator-heartbeat":
+            result = coordinator_heartbeat(
+                args.solution,
+                claim_id=args.claim_id,
+                executor=args.executor,
+                lease_seconds=args.lease_seconds,
+                registry_path=args.registry,
+            )
+        elif args.command == "coordinator-ack":
+            result = acknowledge_outbox(
+                args.solution,
+                delivery_id=args.delivery_id,
+                actor=args.actor,
+                registry_path=args.registry,
+            )
+        elif args.command == "workflow-runs":
             result = {"runs": list_runs(args.solution)}
         elif args.command == "export-evidence":
             if args.include_authoring_contract and not args.run_id:
@@ -543,6 +961,8 @@ def main(argv: list[str] | None = None) -> int:
                 skip_sentinel_auth=args.skip_sentinel_auth,
                 skip_hunting_auth=args.skip_hunting_auth,
                 hunting_auth_method=args.hunting_auth_method,
+                hunting_client_id=args.hunting_client_id,
+                azure_config_dir=args.azure_config_dir,
             )
         elif args.command == "doctor":
             result = doctor(solution=args.solution)
@@ -568,6 +988,71 @@ def main(argv: list[str] | None = None) -> int:
             result = setup_deployment_authentication(
                 tenant_id=target["tenantId"],
                 auth_method=args.auth_method,
+                graph_client_id=args.custom_detection_client_id,
+                azure_config_dir=args.azure_config_dir,
+            )
+        elif args.command == "setup-app-registration-auth":
+            target = require_locked_target(args.solution, materialize_missing=False)
+            from .delegated_app_registration import (
+                setup_app_registration_authentication,
+            )
+
+            result = setup_app_registration_authentication(
+                tenant_id=target["tenantId"],
+                auth_method=args.auth_method,
+                bootstrap_client_id=args.bootstrap_client_id,
+            )
+        elif args.command == "setup-app-readback-auth":
+            target = require_locked_target(args.solution, materialize_missing=False)
+            from .delegated_app_registration import (
+                setup_app_readback_authentication,
+            )
+
+            result = setup_app_readback_authentication(
+                tenant_id=target["tenantId"],
+                readback_client_id=args.readback_client_id,
+            )
+        elif args.command == "verify-delegated-app-readback":
+            from .delegated_app_registration import verify_delegated_app_readback
+
+            result = verify_delegated_app_readback(args.solution)
+        elif args.command == "diagnose-app-readback-scopes":
+            from .delegated_app_registration import diagnose_app_readback_scopes
+
+            result = diagnose_app_readback_scopes(
+                args.solution,
+                run_id=args.run_id,
+            )
+        elif args.command == "plan-delegated-app-registration":
+            from .delegated_app_registration import plan_delegated_app_registration
+
+            result = plan_delegated_app_registration(
+                args.solution,
+                app_display_name=args.app_display_name,
+            )
+        elif args.command == "register-delegated-app":
+            from .delegated_app_registration import register_delegated_app
+
+            result = register_delegated_app(
+                args.solution,
+                expected_plan_sha256=args.expected_plan_sha256,
+                approve_exact_app_registration=args.approve_exact_app_registration,
+                app_display_name=args.app_display_name,
+            )
+        elif args.command == "plan-delegated-app-permission-update":
+            from .delegated_app_registration import (
+                plan_delegated_app_permission_update,
+            )
+
+            result = plan_delegated_app_permission_update(args.solution)
+        elif args.command == "verify-delegated-app-permission-update":
+            from .delegated_app_registration import (
+                verify_delegated_app_permission_update,
+            )
+
+            result = verify_delegated_app_permission_update(
+                args.solution,
+                expected_plan_sha256=args.expected_plan_sha256,
             )
         elif args.command == "deploy":
             result = deploy_solution(args.solution)
@@ -578,6 +1063,46 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "plan-deployment":
             result = persist_deployment_plan(args.solution)
+        elif args.command == "plan-runtime-query-consent":
+            _require_explicit_authoring_run(args.solution, args.run_id)
+            result = persist_runtime_query_plan(
+                args.solution,
+                source_provider=args.source_provider,
+            )
+        elif args.command == "confirm-primary-lab-setting":
+            result = confirm_primary_lab_setting(
+                args.solution,
+                actor=args.actor,
+                primary_setting_name=args.primary_setting_name,
+                confirmed=args.confirm_primary_setting,
+            )
+        elif args.command == "review-runtime-query-consent":
+            _require_explicit_authoring_run(args.solution, args.run_id)
+            result = record_runtime_query_consent(
+                args.solution,
+                expected_plan_sha256=args.expected_plan_sha256,
+                actor=args.actor,
+                approved_families=args.approve_family,
+                declined=args.decline,
+                revised=args.revise_plan,
+                reason=args.reason,
+                source_provider=args.source_provider,
+            )
+        elif args.command == "revoke-lab-runtime-query-consent":
+            result = revoke_runtime_query_consent(
+                args.solution,
+                actor=args.actor,
+                reason=args.reason,
+            )
+        elif args.command == "check-runtime-query-consent":
+            from .runtime_consent import require_runtime_query_consent
+
+            result = require_runtime_query_consent(
+                args.solution,
+                family=args.family,
+                provider=args.provider,
+                source_provider=args.source_provider,
+            )
         elif args.command == "review-deployment-plan":
             package_flags: dict[str, bool] = {}
             for name, value in _key_values(args.package_flag).items():
@@ -599,6 +1124,21 @@ def main(argv: list[str] | None = None) -> int:
             result = deploy_analytic_rules(
                 args.solution,
                 workspace_resource_id=args.workspace_resource_id,
+            )
+        elif args.command == "plan-arm-template-acceptance-batch":
+            result = plan_arm_template_acceptance_batch(
+                _package_batch_members(args.member),
+                shared_decisions_path=args.shared_decisions,
+                validation_receipts=args.validation_receipt,
+            )
+        elif args.command == "deploy-arm-template-acceptance-batch":
+            result = execute_arm_template_acceptance_batch(
+                _package_batch_members(args.member),
+                expected_batch_plan_sha256=args.expected_batch_plan_sha256,
+                shared_decisions_path=args.shared_decisions,
+                validation_receipts=args.validation_receipt,
+                actor=args.actor,
+                confirmation=args.confirm_exact_scope_write,
             )
         elif args.command == "start-alert-parity":
             result = start_alert_parity(
@@ -646,6 +1186,14 @@ def main(argv: list[str] | None = None) -> int:
                     "V3.1 package builds require a persisted workflow and campaign budget; "
                     "run workflow-init before packaging"
                 )
+        elif args.command == "package-selection-plan":
+            result = create_package_selection_plan(args.solution, args.run_id)
+        elif args.command == "package-selection-apply":
+            result = apply_package_selection(
+                args.solution,
+                args.run_id,
+                expected_plan_sha256=args.expected_plan_sha256,
+            )
         elif args.command == "workflow-plan-package-release":
             if not args.run_id:
                 raise ValueError(
@@ -670,20 +1218,57 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "validate-advanced-hunting":
             try:
                 state = workflow_status(args.solution)
-            except ValueError:
+            except ValueError as exc:
+                if "workflow state does not exist" not in str(exc):
+                    raise
                 state = None
+            profile = (
+                (state.get("context") or {}).get("workflowProfile")
+                if isinstance(state, dict)
+                else None
+            )
+            if profile == "authoring" and not args.run_id:
+                raise ValueError(
+                    "Authoring Advanced Hunting requires an explicit --run-id; "
+                    "no run is inferred"
+                )
             target = (
                 require_locked_target(args.solution)
-                if state
-                and state["context"]["workflowProfile"] == "qualification"
+                if profile == "qualification"
                 else None
+            )
+            authoring_tenant_id = None
+            if profile == "authoring":
+                authoring_tenant_id = (state.get("context") or {}).get("tenantId")
+                if not isinstance(authoring_tenant_id, str) or not authoring_tenant_id:
+                    raise ValueError(
+                        "Authoring Advanced Hunting requires the explicit tenant "
+                        "stored in the selected workflow run"
+                    )
+            from .runtime_consent import require_runtime_query_consent
+
+            require_runtime_query_consent(
+                args.solution,
+                family="defenderXdrQueryFamily",
+                provider="graph",
+                allow_legacy=True,
             )
             result = validate_advanced_hunting(
                 args.solution,
-                tenant_id=target["tenantId"] if target else None,
+                tenant_id=(
+                    target["tenantId"] if target else authoring_tenant_id
+                ),
                 provider_gap_evidence=args.provider_gap_evidence,
             )
         elif args.command == "validate-sentinel-sdk":
+            from .runtime_consent import require_runtime_query_consent
+
+            require_runtime_query_consent(
+                args.solution,
+                family="sentinelSourceQueryFamily",
+                provider="azure-monitor-sdk",
+                allow_legacy=True,
+            )
             target = require_locked_target(args.solution)
             result = validate_sentinel_sdk(
                 args.solution,
@@ -698,6 +1283,7 @@ def main(argv: list[str] | None = None) -> int:
                 provider=args.provider,
                 results_path=args.results,
                 provider_gap_evidence=args.provider_gap_evidence,
+                source_provider=args.source_provider,
             )
         elif args.command == "workflow-init":
             if args.new_run and args.run_id:
@@ -798,6 +1384,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "workflow-status":
             result = workflow_status(args.solution)
+            result["runtimeQueryConsent"] = runtime_query_consent_status(
+                args.solution,
+                source_provider=getattr(args, "source_provider", None),
+            )
         elif args.command == "workflow-next":
             result = next_workflow_stage(args.solution)
         elif args.command == "workflow-start-stage":
@@ -845,9 +1435,42 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.command in ("deploy", "deploy-analytic-rules") and result["failed"]:
         return 1
+    if args.command == "plan-arm-template-acceptance-batch" and result.get(
+        "status"
+    ) != "ready":
+        return 1
+    if args.command == "deploy-arm-template-acceptance-batch" and result.get(
+        "status"
+    ) != "accepted":
+        return 1
     if args.command == "complete-alert-parity" and result["status"] != "passed":
         return 1
     if args.command == "abort-alert-parity" and result["status"] != "aborted":
+        return 1
+    if (
+        args.command == "verify-delegated-app-readback"
+        and result.get("status") != "readback-verified-private-config-completed"
+    ):
+        return 1
+    if (
+        args.command == "diagnose-app-readback-scopes"
+        and result.get("status") != "required-scopes-present"
+    ):
+        return 1
+    if (
+        args.command == "verify-delegated-app-permission-update"
+        and result.get("status") != "manual-permission-update-verified"
+    ):
+        return 1
+    if (
+        args.command == "package-selection-plan"
+        and result.get("status") != "ready"
+    ):
+        return 1
+    if (
+        args.command == "package-selection-apply"
+        and result.get("status") != "applied"
+    ):
         return 1
     if args.command == "convert" and (result["needsReview"] or result["conflicts"]):
         return 1

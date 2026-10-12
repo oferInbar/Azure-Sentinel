@@ -46,10 +46,12 @@ migration workflow.
 
 ### Authoring goal and capability boundary
 
-The product goal is autonomous best-effort candidate generation for source
-rules, followed by a human-reviewable batch in which reviewers can accept,
-change, or exclude proposed mappings. This is a roadmap goal, not a claim that
-the current CLI provides autonomous research or batch review orchestration.
+The product goal is to migrate Microsoft Sentinel solutions to Defender XDR
+and enable authors to publish validated content without waiting for unrelated
+source-rule failures to be fixed. Autonomous best-effort candidate generation
+and a human-reviewable batch in which reviewers can accept, change, or exclude
+proposed mappings remain roadmap goals, not claims that the current CLI
+provides autonomous research or batch review orchestration.
 
 Today, the deterministic converter emits only mappings supported by its
 existing rules and records uncertain mapping assumptions as `reviewRequired`.
@@ -68,6 +70,27 @@ disabled-by-default, and exact-scope authorization gates remain in force.
 
 This is the ISV publishing workflow. It does not require a tenant, workspace,
 deployment, mock ingestion, or alert-parity test.
+
+#### Optional explicitly approved Advanced Hunting read validation
+
+Authoring may perform read-only Defender XDR Advanced Hunting query/schema
+validation when the author explicitly configures a tenant on the Authoring
+run and approves its exact current plan. This is a separate, one-run read
+capability, not Qualification: it does not require or discover a workspace,
+change the active workspace, run Sentinel source queries, or authorize any
+write. Select the run explicitly, inspect `plan-runtime-query-consent`, and
+affirmatively approve only `defenderXdrQueryFamily` through
+`review-runtime-query-consent` before invoking `validate-advanced-hunting`.
+
+The authorization binds the exact selected run, tenant, Graph client/auth
+binding, and every current Advanced Hunting query identity/hash. It is not
+reusable across runs or solutions. Dispatch requires an existing cached Graph
+credential bound to that tenant; consent never authorizes sign-in or
+permission changes. Current query execution and returned-schema checks remain
+mandatory. Missing, declined, stale, or incomplete consent/authentication
+blocks dispatch. This route cannot satisfy Qualification's source/runtime,
+target, consent, dispatch, completeness, schema, packaging, deployment, or
+parity gates; source SDK validation remains Qualification-only.
 
 #### Optional resumable full-inventory authoring
 
@@ -109,8 +132,8 @@ coverage denominator, including unprocessed, blocked, and suppressed rules.
 `E` counts each rule with an unresolved error or suppressed disposition once;
 shared provider failures are accounted separately. A stop is persisted when
 more than 50% of the inventory is in `E` and cannot be cleared by improved
-later results. The 80% migrated threshold is advisory only; it is not
-packaging, PR, or Qualification authorization. Stale source/target hashes or
+later results. The 80% migrated threshold is advisory only. It does not replace the separate
+partial-publication rule below. Stale source/target hashes or
 changed inventory stop processing rather than overwriting user content. See the toolkit README's
 [YOLO authoring guide](../README.md#opt-in-full-inventory-yolo-authoring) for
 the contract, exact coverage definitions, and evidence-export option.
@@ -156,7 +179,138 @@ artifacts are retained as historical evidence before rebuilding. This lifecycle
 does not waive technical or entity-review gates: unresolved `reviewRequired`
 flags continue to block packaging.
 
+#### Evidence-based package selection
+
+When a complete solution run contains item-level runtime or review failures,
+maintainers may explicitly package only the artifacts that have current,
+hash-bound evidence. This does not change the original conversion manifest,
+validation reports, validation-stage status, or authored YAML. It is an
+inventory-accounting path, not a waiver: an item is excluded if its structural
+validation, source/Graph runtime query, provider/target binding, or required
+review evidence is missing, stale, failed, or unresolved. The workflow retains
+the full discovery/conversion inventory and reports every included and excluded
+Analytic Rule and Custom Detection with hashes, evidence paths, check outcomes,
+and reasons. Invalid paths, duplicate references, malformed reports, or other
+selection/execution errors block applying the plan.
+
+Use the exact run ID and review the complete plan before applying it:
+
+```powershell
+sentinel-xdr-migration package-selection-plan `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>"
+
+sentinel-xdr-migration package-selection-apply `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --expected-plan-sha256 "<plan-sha256>"
+```
+
+Applying a fresh plan updates only the `Analytic Rules` and `XDR Detections`
+selection arrays in `Data/Solution_*.json`; it adds `XDR Detections` only when
+the plan explicitly bootstrapped candidates from the complete current
+solution-scope conversion manifest. Other metadata, content arrays, and
+authored YAML remain unchanged. When the array was absent, planning uses only
+manifest output references and records missing outputs; it does not discover
+additional candidate files by scanning the XDR folder. An explicitly present
+empty array remains an empty selection and is never bootstrapped. In either
+case, the complete manifest and current detection files remain accounted for
+as included or excluded inventory entries with reasons.
+
+V3.1 consumes only the explicit references written by apply and must not
+repopulate excluded detections by scanning their folder. If XDR YAML exists
+and no selection plan has added an explicit array, direct V3.1 packaging fails
+closed; an explicit empty array means no Custom Detection installation or
+registration resources. The plan and apply receipt are rechecked against
+current files and evidence immediately before packaging, and package-template
+and ZIP contents are checked against the exact plan. Applying snapshots the
+original bytes and file identity, rechecks after staging the update, and
+performs a post-receipt freshness check. If solution data changes while the
+update or a receipt-failure rollback is being prepared, the operation stops
+when it detects the change and retains conflict evidence where possible. The
+migration writer lock serializes only this tool's own updates; apply requires
+that external editors or processes do not modify `Data/Solution_*.json` until
+it completes. Filesystem exchange detects changes at the commit boundary but
+is not a general compare-and-swap guarantee for writers that do not honor the
+lock. A receipt published before a later detected edit is retained as evidence
+and is not treated as a valid current selection.
+
+Current local structural validation checks the source rule's kind-specific
+contract. Both `Scheduled` and `NRT` rules are supported; scheduling fields
+are required for `Scheduled` and forbidden for `NRT`. Historical runtime
+evidence is reusable only when its own execution report, provider, current
+query hash, run, workflow profile, solution, and target bindings agree. A
+current sidecar authorization cannot supply missing execution-report
+provenance. Selection reuses matching reports and does not dispatch runtime
+queries.
+
+Partial publication is allowed only when validated, unique source-rule IDs
+represented by deployable Custom Detections are strictly more than 50% of the
+complete original Sentinel Analytic Rule inventory (`2 * validated > original`).
+Exactly 50%, fewer, zero, or an empty/invalid denominator is blocked. The
+denominator is the full current recursive source inventory, independent of
+package selection; a scoped/replaced manifest, omitted source, duplicate
+reference, duplicate detection, or source-only Analytic Rule cannot shrink or
+inflate the count. A source-only Analytic Rule may remain in the package under
+the existing eligibility rules but does not count as a migrated detection.
+Only currently structurally valid, explicitly review-resolved, current
+source/target/provider-bound query and schema evidence makes a Custom Detection
+eligible. Global malformed manifest/report, inventory mismatch, ambiguous
+identity, or selection/execution errors remain fatal.
+
+For a non-YOLO workflow, an applied, fresh selection meeting that threshold
+may produce a V3.1 package containing only eligible reviewed/validated
+selections, with outcome `partial-package-validated`. Preserve every excluded
+YAML file and its source failure evidence; report the original denominator,
+validated numerator and coverage, selected evidence scope, and every excluded
+identity/reason. Do not turn excluded items into placeholder deployables.
+Validation remains blocked for the full inventory and its original evidence is
+unchanged. Authoring may publish this package without a lab; it must not claim
+full-inventory validation.
+
+Qualification may continue for the exact selected subset after that package
+passes. Deployment, ingestion, and parity must operate only on the currently
+applied selected content and retain every existing per-item runtime/schema,
+target, permission, disabled-state, ownership, consent, write-approval,
+ingestion, and parity gate. Excluded item failures do not block aggregate
+progress for the selected subset, but neither selected-subset completion nor
+parity may be represented as full-inventory success. Persist and report the
+selection-plan identity and exact selected evidence scope through Qualification.
+Changing selection or any bound input invalidates the package/receipt and
+requires replanning and renewed exact-scope decisions as applicable. This is
+not a waiver of any selected-item gate. YOLO continues to require
+full-inventory validation and review success. Reuse only current,
+run/target/provider-bound runtime reports; selection does not rerun queries or
+treat historical query hashes as proof of a current full-file hash.
+
 ### Qualification — explicit opt-in
+
+#### Reusable lab read approval
+
+Request one explicit approval for migration-related read operations across all
+selected solutions in the same locked lab, rather than separate approvals for
+each solution or read-only step. Show the tenant, subscription, resource group,
+workspace ARM ID and customer ID, expected provider surfaces, and read-operation
+families before recording approval. Include supported status/access checks,
+read-only preflight, and source/Advanced Hunting query execution. Query API
+requests may use HTTP POST without being resource writes.
+
+Reuse that approval while the lab definition is unchanged and approval has not
+been withdrawn. Adding a solution or refreshing its query hashes within the
+approved operation families does not require another lab-read approval, but
+each dispatch still requires current exact inventories, hashes, target checks,
+bounded execution, effective access, and a supported provider route. Record
+those bindings with the run's evidence; do not reuse stale validation results.
+Reconfirm when any locked lab identifier or confirmed primary-XDR-workspace
+setting changes, or when an operation expands beyond the approved read scope.
+
+Interactive authentication, Entra consent, role changes, deployments,
+ingestion, rule enablement, deletion, and other environment writes are excluded.
+Lab-read approval never grants access or authorizes an unsupported route,
+unrelated tenant-wide discovery, secret/token export, or repeated unchanged
+failed batches. Local evidence/report refreshes do not require another live-read
+approval. Existing CLI consent checks must still be satisfied through supported
+commands; reusable user approval is not permission to bypass those checks.
 
 `Discovery -> Conversion -> Validation -> Packaging -> Deployment -> Mock ingestion -> Alert parity -> Report`
 
@@ -384,6 +538,137 @@ sentinel-xdr-migration workflow-complete-stage `
 Allowed terminal statuses are `passed`, `failed`, and `blocked`. Explain
 failed and blocked results. Correct and retry only that stage.
 
+### Event-driven durable coordination
+
+An optional local coordinator can track accountable ownership, executor claims,
+idempotent events, and durable handoff notifications for an already initialized
+run. Enroll using its exact run ID. The coordinator reads the existing
+`workflow-status` and `workflow-next` results; it does not create, reorder,
+complete, or weaken canonical stages or prerequisites:
+
+```powershell
+sentinel-xdr-migration coordinator-enroll `
+  --solution "<solution-path>" `
+  --run-id "<run-id>" `
+  --owner "<accountable-owner>"
+
+sentinel-xdr-migration coordinator-reconcile `
+  --solution "<solution-path>" `
+  --run-id "<run-id>"
+sentinel-xdr-migration coordinator-status `
+  --solution "<solution-path>" `
+  --run-id "<run-id>"
+```
+
+`coordinator-status` performs deterministic reconciliation and persists any
+expired-claim, decision, and outbox updates; it is not read-only.
+
+The ignored registry is local to the current checkout. Its owner is independent
+of any ephemeral executor. A claim is an atomic reservation, never permission
+to run a command. It binds the action, exact current target, prerequisites,
+evidence, and (for runtime tasks) query-set hash. An expired claim is blocked as
+unknown outcome; cloud requests must not be blindly retried. Record results
+through the existing gated CLI first, then post a hash-bound
+`coordinator-event --kind executor-completed`. The event does not complete a
+stage; reconciliation consumes it only when the authoritative workflow state
+or current evidence supports the reported outcome. An expired claim can be
+resolved only against the exact current target and evidence hash recorded by
+an officially completed stage, through that completion event or
+`claim-resolved --outcome completed`; this updates coordinator state only.
+Confirming `not-started` requires separate hash-bound owner evidence.
+If that terminal stage exposes a same-ID retry with changed evidence, the
+retry remains blocked until the previous claim's authoritative handoff is
+validated against its retained action snapshot and consumed.
+
+Coordination starts in shadow mode: it persists and reports decisions but
+dispatches no CLI commands, authentication, grants, runtime queries, writes, or
+user approvals. Changed decisions, including `approval-needed`, create durable
+outbox items. `coordinator-event --kind approval-requested` separately records
+an exact action, purpose, and target request; an adapter may deliver that
+outbox only after rechecking the current action hash and target; reconciliation
+supersedes stale outbox items. The explicit `coordinator-ack` means delivery
+only, never approval. No host messaging adapter or autonomous daemon is
+provided. Use the existing user-confirmation,
+approval, preflight, and guarded CLI gates; a confirmation or preflight result
+is not proof of service configuration or runtime success.
+
+Optional shared prerequisites are keyed by dependency, purpose, and target
+fingerprint; for example, Advanced Hunting (`advancedHunting`) and Custom
+Detection (`customDetection`) authorization remain separate even for the same
+tenant. A submitted dependency remains an actor-reported, locally hash-checked
+assertion; it is not automated permission or service-configuration proof. The
+coordinator can show source and Advanced Hunting runtime tasks independently
+without changing the single Validation stage gate. Status and
+reconciliation report missing owner, ready-idle work, untracked running stages,
+expired claims, unconsumed completion handoffs, and pending outbox deliveries.
+The watchdog runs only when invoked; it is not a background service.
+
+### Solution watchdog best practice — `ACTION_REQUIRED`
+
+For each solution and current workstream, retain exactly one accountable
+watchdog owner bound to the explicit run ID, selected profile, agreed goal, and
+current approved scope. A global observer may aggregate status and alerts but
+does not replace the solution owner or create duplicate owners. The existing
+owner performs watchdog duty; do not launch replacement/nested agents to
+re-check the same work. If ownership is missing, escalate to the responsible
+parent rather than inventing an owner.
+
+The owner should retain one read-only periodic watch until the agreed goal is
+verified complete or explicitly stopped/cancelled. Cadence is explicitly
+configurable per coordination instruction rather than a fixed toolkit timer;
+the current coordination setting is three minutes. Avoid hot polling,
+interrupting a running owner, or launching duplicate executors. A fresh run
+retargets the same owner and schedule, preserves prior history, and never
+imports or relabels old-run success as current-run evidence. Completion requires the goal-specific
+persistent artifact and its bound evidence—not an idle agent, status message,
+toolkit commit, or watchdog acknowledgement. Stop the watch after genuine
+completion or explicit stop/cancellation.
+
+When progress needs human/parent action, emit a prominent, repeatable
+`ACTION_REQUIRED` handoff through the existing agent completion/handoff
+channel. Include at least:
+
+- solution, current run ID, agreed goal, and the single watchdog owner;
+- the exact next operation or prerequisite and the responsible parent;
+- current approval reference and exact scope, or explicitly `missing`;
+- readiness evidence and each missing, stale, or blocking prerequisite;
+- last **real solution progress** timestamp, elapsed stalled time (or
+  `unknown` when it cannot be proved), and a stable outstanding-alert identity.
+
+Raise the alert when an approved operation is ready but has not started, or
+when a concrete gate requires parent action. Repeat it on ordinary ticks until
+genuine execution/progress, verified completion, explicit revocation, or a
+reported blocker resolves it. Another status update, toolkit commit, or
+watchdog acknowledgement does not reset the progress timer or clear the alert.
+The parent must consume the handoff by executing the already-approved bounded
+next step, obtaining a required missing approval, or reporting the exact
+blocker; do not wait for the user to repeat the request.
+
+Example (all values are illustrative):
+
+```text
+ACTION_REQUIRED
+solution=ExampleSolution
+runId=20261012T000000Z-example
+goal=publish validated partial package (>50% migrated-CD coverage)
+watchdogOwner=solution-owner
+nextOperation=apply reviewed selection plan and build V3.1 package
+responsibleParent=parent-coordinator
+approval=granted; reference=approval-ref-01; scope=local-authoring-package-only
+readiness=blocked; missing=2 of 3 source rules lack current validated CDs
+lastRealProgressAt=2026-10-12T09:00:00Z
+elapsedStalled=28 minutes
+alertIdentity=ExampleSolution/run/selection-coverage
+```
+
+Watchdog ticks are read-only and do not grant build, packaging, toolkit,
+content, workflow-state, cloud, authentication, ingestion, enablement, or
+deletion authority. Actual operations remain with the existing sole executor
+and must use the workflow's separate approvals and exact write gates. Do not
+repeat unchanged, already-granted common choices or expand into unapproved
+work. The watchdog rule does not add a scheduler, backend, agent registry, or
+native CLI watchdog capability.
+
 ## Stage gates
 
 ### Discovery
@@ -437,9 +722,10 @@ and downstream stages are blocked with historical evidence retained.
 Do not pass solution conversion/validation stages or package from scoped results:
 the workflow and toolkit packager reject them. Full-solution conversion and the
 normal gates are required before proceeding. Structural validation of existing
-files alone is not conversion coverage. No scoped runtime/deployment or waiver
-is introduced; run-local evidence cannot authorize reuse of stale evidence from
-other runs sharing the same content. See the README's
+files alone is not conversion coverage. This pilot does not introduce scoped
+runtime/deployment qualification or a generic waiver. The global source-runtime
+missing-schema whitelist is limited to `IdentityInfo` and cannot authorize
+scoped conversion, deployment, or reuse of stale query evidence. See the README's
 [single-rule CLI contract](../README.md#single-rule-conversion).
 
 Explain entity mapping differences using the restricted target mapping contract:
@@ -557,21 +843,23 @@ queries. Present this disclosure while retaining actual static/schema checks:
 
 > KQL has not been validated because this migration runs without runtime validation. Enable full validation, or review/accept the specific migration checks below.
 
-This is presentation policy, not a new completion mode or waiver. A supported
+This disclosure does not create a general no-runtime completion mode. A
 specific review acceptance is not runtime verification. Report unexecuted
 checks as not run; keep failed, blocked, and unresolved-review results visible.
-No optional-runtime gate/state implementation is introduced by this policy.
 Do not complete an unmet stage, silently bypass it, or treat declined runtime
-checks as an environment-only error. The existing validation procedure and
-Authoring exception below remain unchanged; if their evidence cannot be
-obtained, report the unmet gate and pending implementation rather than success.
+checks as an environment-only error. The Authoring exception below remains
+unchanged; if its evidence cannot be obtained, report the unmet gate and pending
+implementation rather than success.
 
 Run structural validation. When runtime validation is authorized, validate
 original Sentinel and converted Advanced Hunting queries. Prefer capabilities
 actually advertised by the official Sentinel Triage MCP; do not invent tool
 names. Verify the exact persisted workspace/tenant and read permissions before
-live queries. If a provider-level failure interrupts a query family, rerun the
-entire family through the native Azure Monitor Query SDK for Sentinel
+live queries. For the Graph Advanced Hunting family, execute each exact
+converted detection query only; do not add table, function, or schema probes.
+The runtime plan and consent inventory must contain the same one-to-one
+detection-query set. If a provider-level failure interrupts a query family,
+rerun the entire family through the native Azure Monitor Query SDK for Sentinel
 (`validate-sentinel-sdk`) or Microsoft Graph for Advanced Hunting, and record
 the provider gap with complete-family evidence. The SDK uses the selected
 Qualification run's locked workspace and current Azure CLI identity, sends the
@@ -593,6 +881,56 @@ validated only with complete current-hash Sentinel and Advanced Hunting reports.
 Authoring may explicitly record `runtimeStatus=environment-blocked` when no
 current exact-query KQL/runtime failure exists; this is not runtime
 qualification. Qualification cannot use that exception.
+
+The validation-stage producer records the canonical `sentinelRuntimeJson`
+reference and the legacy `sentinelRuntimeReport` alias for the exact source
+report. Consumers accept either reference only when every present reference
+resolves to that same report; conflicting, stale, or unsafe references are
+rejected. A missing reference may be repaired only by the guarded
+`Tools/ignored/repair-runtime-report-references.py` maintenance utility after
+it independently verifies the passed stage, complete source and Graph
+families, typed SDK schemas, query hashes, and report-owned run/target/
+consent/dispatch bindings. Its default is read-only dry run; `--apply` changes
+only the canonical state reference under the workflow writer lock and records
+a preimage backup and receipt. This reference normalization is not validation,
+does not clear failures or review gates, and never upgrades legacy reports
+whose own execution provenance is missing. A stale or failed validation stage
+is not eligible.
+
+The source-runtime missing-schema whitelist is global across solutions, source
+queries, and runs, and contains exactly `IdentityInfo` (case-insensitive
+matching; canonical report name `IdentityInfo`). It automatically classifies
+only a current Sentinel/Log Analytics source result with HTTP 400,
+`failureKind=query`, and `SEM0100` explicitly stating that the `IdentityInfo`
+table could not be resolved. This includes the preserved Azure Monitor SDK
+error structure/message (`'summarize' operator: Failed to resolve table or
+column expression named 'IdentityInfo'`) and the equivalent explicit
+`Failed to resolve table 'IdentityInfo'` wording already present in provider
+evidence. A missing column, another table, mixed/multiple error codes or
+diagnostics, partial family/provider failure, authentication/authorization,
+tenant, transport, timeout, stale query hash, or changed inventory is not
+whitelisted. The classifier is structure-aware and source-provider-only.
+
+There is no per-run allowlist, actor, reason, or acceptance command. The
+derived runtime assessment is bound to each exact current source-query hash
+and the complete source family. It does not create or mutate a decision
+artifact: the raw source result remains `failed`, with its original provider
+error. A qualifying result is represented as `source-waived`, never passed,
+successful, or executed, and reports include both the whitelist table/reason
+and the unchanged raw failure.
+
+The whitelist only classifies source missing-table failures. Validation may
+complete as `runtimeStatus=source-waived` only when every other current source
+query passes, every converted XDR query has exact successful execution and
+actual output-schema evidence (including verified `customDetails` bindings),
+and full-solution structural, technical, and review gates pass. Direct stage
+completion enforces those gates independently. A source-waived query alone
+never completes Validation when XDR is unrun, has missing schema, or any
+unrelated gate remains. Whitelist status remains visible in reports while the
+overall Validation stage is blocked. No XDR schema, mapping review,
+technical validation, packaging, deployment, ingestion, or parity gate is
+weakened. Documentation that `IdentityInfo` exists in Advanced Hunting does
+not establish availability in a selected Sentinel source workspace.
 
 When investigating table/schema uncertainty, use standard-table documentation,
 provider query schemas, and solution-owned parser or custom connector DCR/table
@@ -717,7 +1055,7 @@ sentinel-xdr-migration review-deployment-plan `
 ```
 
 At the initial request, present the complete action inventory for this exact
-target and plan with no preselected answers:
+target and plan before showing the suggested default selection:
 
 | Potential action group | Scope to show before asking |
 | --- | --- |
@@ -729,14 +1067,35 @@ target and plan with no preselected answers:
 | Full-package installation and XDR registration | Current package identity/resource inventory and every selected package flag; distinguish installation/registration from package creation. |
 | Explicitly owned cleanup/deletion | Exact resources, ownership evidence, deletion cap, and exclusions; pre-existing or unowned resources are never included. |
 
-Offer structured, unselected choices: **Approve all currently bounded and
-available components**, **Select components**, **Revise the plan**, or
-**Decline advance consent**. “Approve all” is an explicit user selection, not
-a default. Persist only explicitly selected components that the current CLI
-can bind to complete evidence. Unknown, provisional, unsupported, or
-unselected components remain unapproved; revise or defer them rather than
-treating unknown scope as unlimited. Denial or absence must not block
-independent read-only checks or offline Authoring.
+Present a structured consent form with **Approve the broadest currently
+bounded and available scope** preselected as the suggested default, alongside
+**Select components**, **Revise the plan**, and **Decline advance consent**.
+The preselection is only a proposal: it is not consent and must not write a
+consent record. Show every proposed component, cap, target, resource family,
+and package flag explicitly before submission. Require an affirmative user
+submission/confirmation of the displayed scope; a preselected choice without
+submission, a cancelled/closed form, a decline, or no response records no
+approval. A user may narrow, revise, or decline the proposal.
+
+“Broadest currently bounded and available” means only components the current
+consent CLI supports and the current plan can bind to complete evidence. When
+both routes are available, the suggested set may include the disabled
+Sentinel-AR/Graph-CD pair and separate later `fullPackageAcceptance`. For the
+package component, display every exact current package selection flag and its
+proposed boolean value; when the plan exposes five flags and all-true is a
+valid bounded selection, show all five names individually with `true`, never
+hide them behind an “all” label. Do not silently add conditional DCR/DCE,
+custom-table creation, ingestion, parity, or cleanup: include such a component
+only when its scope is complete, supported, and explicitly shown as selected.
+Unknown, provisional, unsupported, or unselected components remain
+unapproved; if the broadest scope cannot be completely bound, preselect only
+the largest valid bounded subset and list excluded groups with reasons.
+
+Persist only the exact, affirmatively submitted component and flag selection
+after checking it against the current plan. The proposed default alone,
+environment state, or an absent/cancelled response must never set consent to
+approved. Denial or absence must not block independent read-only checks or
+offline Authoring.
 
 Sentinel alert rules and Graph Custom Detections are a pair-first route and
 must be approved together, disabled, with an explicit cap no larger than the
@@ -809,6 +1168,40 @@ evidence.
 
 ### Deployment — qualification only
 
+Repeat deployment of the same reviewed detection identities to the same locked,
+approved non-production lab is a supported, bounded create-or-update workflow;
+do not add a separate mandatory “check whether each AR/CD already exists”
+pre-step. Keep all rules disabled. The Sentinel route sends `PUT` to the
+deterministic `Microsoft.SecurityInsights/alertRules/{source-rule-id}` resource,
+which idempotently creates or updates that alert rule for the same ID and
+payload. The alert-rule-template API is a catalog read surface, not a resource
+this direct-deployment command creates; the `alertRuleTemplateName` field links
+the deployed alert rule to its source template. Any package `contentTemplates`
+installation is a separate package-acceptance route with its own explicit scope
+and approval.
+
+For Graph, the current deployer derives the stable client-provided ID
+`xdr-<source-rule-GUID>`, performs an exact-ID `GET`, uses `POST` only when
+that ID returns 404, and uses `PATCH` when it returns 200, followed by required
+read-back verification. Treat this supported CLI sequence as a repeatable
+workflow-level upsert for the reviewed ID, not as a guarantee that arbitrary
+Graph `POST` requests are idempotent. The separate pre-deployment
+`preflight-deployment` exact-rule existence/readability check is optional
+diagnostic evidence; it is not proof of ownership, readiness, or permission.
+However, the current Graph deployer still requires its own exact-ID `GET`, and
+the current preflight also performs exact-ID reads and can report them as
+blocking. Documentation alone cannot skip those backend reads. Do not bypass
+them with a direct `POST`, blindly retry a write with an ambiguous outcome, or
+overwrite an ID whose ownership/content is uncertain; stop and require
+maintainer review for that collision or read-access limitation.
+
+Only repeat this workflow against the explicitly approved, locked lab with
+reviewed identities/content, the exact-scope write approval immediately before
+the operation, required permissions, and the existing disabled-state and
+post-deployment verification gates. Repeatability does not authorize writes to
+production, unrelated resources, or enabled content, and it does not waive
+review of unexpected existing IDs.
+
 Deploy every reviewed AR and CD disabled. Verify Azure RBAC and Microsoft Graph
 scopes separately. A successful write without live read verification is
 blocked, not passed. Never infer Azure resource permissions from Entra Global
@@ -830,6 +1223,87 @@ do not pass or wait for a `what-if` result for that route. An ordinary ARM
 preview cannot prove extension acceptance, and ARM template validation must
 not be represented as validating extension behavior. The approved actual
 deployment followed by readback remains required.
+
+#### Post-validation ARM template deployment acceptance-only step
+
+This optional step is separate from pair-first deployment, verified
+full-package installation, alert activation, and alert parity. Run it only in
+Qualification after creating the final V3.1 package and passing the repository
+build-and-validate script. For each exact solution/run member, collect its
+`build-and-validate-report.md` in validation-only mode, against the current
+V3.1 package report:
+
+```powershell
+pwsh .script/local-validation/build-and-validate.ps1 `
+  -SolutionName "<solution-folder>" `
+  -ContentRoot "<content-repository-root>" `
+  -SkipPackaging `
+  -PackageReportPath "Logs/sentinel-xdr-migration/<run-id>/packaging.v3_1.json" `
+  -VersionBump none `
+  -ValidationSkip ""
+```
+
+The runner emits `build-and-validate-binding.json` beside that report. It binds
+the final package report/run and artifact hashes, package inputs and
+`Package/` fingerprints before and after validation, successful validator
+results, selected solution, and `ContentRoot`. The producer records
+`sourcePathSemantics` only when the complete source-input fingerprint matches
+the package report under POSIX or Windows Python `Path` ordering; the
+acceptance consumer honors that recorded ordering across hosts. `Package/`
+fingerprints keep their separate ordinal ordering. Windows ordering lowercases
+each component before ordinal component comparison, matching `PureWindowsPath`
+rather than .NET `OrdinalIgnoreCase` string ordering. Missing, ambiguous,
+unmatched, stale, or changed inputs fail closed. The earlier migration
+`stages.validation` status is not a substitute. This acceptance-only
+readiness is not gated on mock ingestion, DCR readiness, or parity.
+
+Plan the exact same-PR/lab workstream batch, then review its hash, locked
+target, parameters, and every selected solution before the immediate
+write-approval command:
+
+```powershell
+sentinel-xdr-migration plan-arm-template-acceptance-batch `
+  --member "<solution-path-1>::<run-id-1>" `
+  --validation-receipt "<solution-1-build-and-validate-report.md>" `
+  --member "<solution-path-2>::<run-id-2>" `
+  --validation-receipt "<solution-2-build-and-validate-report.md>" `
+  --shared-decisions "<shared-pr-lab-decisions.json>"
+
+sentinel-xdr-migration deploy-arm-template-acceptance-batch `
+  --member "<solution-path-1>::<run-id-1>" `
+  --validation-receipt "<solution-1-build-and-validate-report.md>" `
+  --member "<solution-path-2>::<run-id-2>" `
+  --validation-receipt "<solution-2-build-and-validate-report.md>" `
+  --shared-decisions "<shared-pr-lab-decisions.json>" `
+  --expected-batch-plan-sha256 "<batchPlanSha256>" `
+  --actor "<approver>" `
+  --confirm-exact-scope-write "I approve the exact enumerated ARM template deployment acceptance batch"
+```
+
+Repeat both member and receipt arguments, in the same order, for each
+approved solution. The reviewed batch must match the user-confirmed shared PR
+and lab decision. Deployment submits the exact approved V3.1
+`Package/mainTemplate.json` bytes through Azure CLI's documented
+resource-group ARM route in Incremental mode, supplying the locked workspace
+and every package-declared `Deploy*` content flag explicitly as `true`.
+Undeclared flags are never invented. The executor binds the exact template
+snapshot, parameters, package identity and batch to immediate approval,
+persists write intent before submission, and records the deployment identity
+and outcome. A per-member durable reservation blocks blind resubmission after
+an ambiguous attempt, including when a later invocation reorders the batch.
+One batch approval covers only its enumerated members; it does not authorize
+an expanded batch.
+
+For this acceptance-only receipt, require only recorded terminal ARM
+`provisioningState: Succeeded` for each member. Do not require `what-if`,
+resource-group resource reads, per-resource read-back, or behavioral tests
+for this result. `Failed`, nonterminal, missing-state, timed-out, or partial
+outcomes remain durable failure/unknown evidence and must be reconciled, not
+blindly retried. ARM `Succeeded` is deployment-submission acceptance only: it
+does not prove MicrosoftSecurity import behavior, exact content installation
+or read-back, activation of disabled detections, alert parity, or completed
+Qualification. Incremental mode does not guarantee no impact. Keep verified
+installation, post-install activation, and optional parity as separate gates.
 
 ### Mock ingestion — qualification only
 

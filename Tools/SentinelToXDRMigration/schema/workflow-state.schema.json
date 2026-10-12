@@ -31,7 +31,8 @@
         "inProgress",
         "blocked",
         "failed",
-        "completed"
+        "completed",
+        "partialCompleted"
       ]
     },
     "createdAt": {

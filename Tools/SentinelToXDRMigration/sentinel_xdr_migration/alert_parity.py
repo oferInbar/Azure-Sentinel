@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -19,6 +20,8 @@ from .artifacts import artifact_path, migrate_legacy_artifact, write_json_artifa
 from .converter import validate_document, xdr_detection_files
 from .content_paths import detection_reference
 from .deployment import DEPLOYMENT_ENDPOINT, _deployment_token, _graph_request
+from .graph_client_config import azure_cli_credential
+from .onboarding import _state_dir
 from .target_context import require_locked_target
 
 ARM_SCOPE = "https://management.azure.com/.default"
@@ -31,10 +34,10 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _arm_token() -> str:
-    from azure.identity import AzureCliCredential
-
-    return AzureCliCredential().get_token(ARM_SCOPE).token
+def _arm_token(state_dir: str | Path | None = None) -> str:
+    return azure_cli_credential(
+        state_root=_state_dir(state_dir)
+    ).get_token(ARM_SCOPE).token
 
 
 def _arm_request(
@@ -89,7 +92,25 @@ def _load_pairs(
     output = root / "XDR Detections"
     files = xdr_detection_files(output)
     available = [path.relative_to(output).as_posix() for path in files]
+    from .packaging_selection import current_applied_package_selection
+
+    applied_selection = current_applied_package_selection(root)
+    allowed = None
+    if applied_selection is not None:
+        allowed = {
+            Path(str(value).replace("\\", "/")).relative_to("XDR Detections").as_posix()
+            for value in (applied_selection["plan"].get("selection") or {}).get(
+                "xdrDetections", []
+            )
+        }
+        if not allowed:
+            raise ValueError("current applied package selection contains no parity-ready detections")
     wanted = {detection_reference(name, available) for name in selected or []}
+    if allowed is not None:
+        if wanted and not wanted.issubset(allowed):
+            raise ValueError("requested parity detections exceed the current applied package selection")
+        if not wanted:
+            wanted = allowed
     pairs: list[dict[str, Any]] = []
     for path in files:
         detection_name = path.relative_to(output).as_posix()
@@ -127,6 +148,66 @@ def _load_pairs(
     if not pairs:
         raise ValueError(f"no converted detections selected under {output}")
     return root, pairs
+
+
+def _qualification_scope(
+    root: Path,
+    pairs: list[dict[str, Any]],
+    applied_selection: dict[str, Any] | None,
+) -> dict[str, Any]:
+    plan = applied_selection.get("plan") if isinstance(applied_selection, dict) else None
+    plan = plan if isinstance(plan, dict) else {}
+    selection = plan.get("selection") if isinstance(plan.get("selection"), dict) else {}
+    planned_paths = sorted(
+        Path(str(value).replace("\\", "/")).relative_to("XDR Detections").as_posix()
+        for value in selection.get("xdrDetections", [])
+    )
+    selected_paths = sorted(str(pair["detection"]).replace("\\", "/") for pair in pairs)
+    detections = []
+    for pair in pairs:
+        path = root / "XDR Detections" / str(pair["detection"])
+        try:
+            content = path.read_bytes()
+        except OSError:
+            content = json.dumps(
+                pair, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        digest = hashlib.sha256(content).hexdigest()
+        detections.append({
+            "path": str(pair["detection"]).replace("\\", "/"),
+            "sourceId": str(pair.get("analyticRuleId") or "").casefold(),
+            "detectionId": str(pair.get("customDetectionId") or "").casefold(),
+            "fileSha256": digest,
+        })
+    detections.sort(key=lambda item: item["path"].casefold())
+    summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
+    return {
+        "kind": "applied-package-selection" if plan else "current-detection-content",
+        "planSha256": plan.get("planSha256"),
+        "selectedDetectionPaths": selected_paths,
+        "selectedSourceIds": sorted({item["sourceId"] for item in detections}),
+        "detectionContentSha256": hashlib.sha256(
+            json.dumps(detections, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "selectionComplete": bool(plan) and selected_paths == planned_paths,
+        "coverage": summary or None,
+    }
+
+
+def _verify_qualification_scope(root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    stored = state.get("qualificationScope")
+    if not isinstance(stored, dict):
+        raise ValueError("alert parity state has no exact qualification-scope binding")
+    pairs = state.get("rules")
+    if not isinstance(pairs, list) or not pairs:
+        raise ValueError("alert parity state has no tested detection identities")
+    from .packaging_selection import current_applied_package_selection
+
+    applied = current_applied_package_selection(root)
+    current = _qualification_scope(root, pairs, applied)
+    if stored != current:
+        raise ValueError("alert parity qualification scope no longer matches the current selection and detection content")
+    return current
 
 
 def _contains_marker(value: Any, marker: str) -> bool:
@@ -250,7 +331,7 @@ def _disable_all(
     graph_token: str | None = None,
     state_dir: str | Path | None = None,
 ) -> list[dict[str, Any]]:
-    arm = arm_token or _arm_token()
+    arm = arm_token or _arm_token(state_dir)
     target = state.get("target") or {}
     graph = graph_token or _deployment_token(
         state_dir,
@@ -385,6 +466,10 @@ def start_alert_parity(
     if not expected_keys:
         raise ValueError("at least one expected match key is required")
     root, pairs = _load_pairs(solution, detections)
+    from .packaging_selection import current_applied_package_selection
+
+    applied_selection = current_applied_package_selection(root)
+    qualification_scope = _qualification_scope(root, pairs, applied_selection)
     state_path = migrate_legacy_artifact(root, STATE_FILE_NAME)
     if state_path.exists():
         existing = json.loads(state_path.read_text(encoding="utf-8"))
@@ -393,7 +478,7 @@ def start_alert_parity(
                 "an alert parity run is already active; complete or abort it first"
             )
 
-    arm_token = _arm_token()
+    arm_token = _arm_token(state_dir)
     graph_token = _deployment_token(state_dir, tenant_id=target["tenantId"])
     _read_rule_states(pairs, workspace_resource_id, arm_token, graph_token)
     started_at = _utc_now()
@@ -406,6 +491,7 @@ def start_alert_parity(
         "target": target,
         "scenarioMarker": marker,
         "expectedMatchKeys": expected_keys,
+        "qualificationScope": qualification_scope,
         "contract": str(Path(contract).expanduser().resolve()),
         "payload": str(Path(payload).expanduser().resolve()),
         "rules": pairs,
@@ -481,6 +567,10 @@ def start_alert_parity_batch(
         raise ValueError("batch parity plan must contain a non-empty fixtures list")
 
     root, pairs = _load_pairs(solution)
+    from .packaging_selection import current_applied_package_selection
+
+    applied_selection = current_applied_package_selection(root)
+    qualification_scope = _qualification_scope(root, pairs, applied_selection)
     pairs_by_name = {pair["detection"]: pair for pair in pairs}
     fixture_by_detection: dict[str, dict[str, Any]] = {}
     for fixture in fixtures:
@@ -533,7 +623,7 @@ def start_alert_parity_batch(
                 "an alert parity run is already active; complete or abort it first"
             )
 
-    arm_token = _arm_token()
+    arm_token = _arm_token(state_dir)
     graph_token = _deployment_token(state_dir, tenant_id=target["tenantId"])
     _read_rule_states(pairs, workspace_resource_id, arm_token, graph_token)
     started_at = _utc_now()
@@ -551,6 +641,7 @@ def start_alert_parity_batch(
             detection: fixture["expectedMatchKeys"]
             for detection, fixture in fixture_by_detection.items()
         },
+        "qualificationScope": qualification_scope,
         "rules": pairs,
     }
     write_json_artifact(root, state_path, state)
@@ -755,9 +846,12 @@ def complete_alert_parity(
         raise ValueError("alert parity state does not match the locked target")
 
     comparison_error: str | None = None
+    scope_error: str | None = None
+    verified_scope: dict[str, Any] | None = None
     comparisons: list[dict[str, Any]] = []
     cleanup: list[dict[str, Any]] = []
     try:
+        verified_scope = _verify_qualification_scope(root, state)
         raw = json.loads(
             Path(results_path).expanduser().read_text(encoding="utf-8-sig")
         )
@@ -773,14 +867,18 @@ def complete_alert_parity(
                 ).items()
             },
         )
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        comparison_error = str(exc)
+    except Exception as exc:
+        if verified_scope is None:
+            scope_error = str(exc)
+        else:
+            comparison_error = str(exc)
     finally:
         cleanup = _disable_all(state, state_dir=state_dir)
 
     cleanup_ok = all(item["disabled"] for item in cleanup)
     passed = (
         comparison_error is None
+        and scope_error is None
         and bool(comparisons)
         and all(item["passed"] for item in comparisons)
         and cleanup_ok
@@ -794,7 +892,19 @@ def complete_alert_parity(
         "fixtures": state.get("fixtures") or [],
         "strictParity": True,
         "comparisonError": comparison_error,
+        "scopeVerificationError": scope_error,
+        "qualificationScopeVerified": verified_scope is not None and scope_error is None,
+        "selectionPlanSha256": (
+            verified_scope.get("planSha256") if verified_scope else None
+        ),
+        "testedDetectionPaths": (
+            verified_scope.get("selectedDetectionPaths") if verified_scope else []
+        ),
+        "testedSourceIds": (
+            verified_scope.get("selectedSourceIds") if verified_scope else []
+        ),
         "comparisons": comparisons,
+        "qualificationScope": verified_scope or state.get("qualificationScope"),
         "cleanup": cleanup,
     }
     report_path = artifact_path(root, REPORT_FILE_NAME, create_parent=True)

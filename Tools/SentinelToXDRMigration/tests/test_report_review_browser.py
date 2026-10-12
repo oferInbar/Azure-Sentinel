@@ -65,6 +65,45 @@ class ReportReviewBrowserTests(unittest.TestCase):
         if confirm:
             section.locator('input[data-choice="confirmed"]').check()
 
+    def test_details_opens_with_source_and_converted_queries_visible(self) -> None:
+        self.page.get_by_role("button", name="Details for First").click()
+        detail = self.page.locator("#rule-detail-0")
+        self.assertTrue(detail.is_visible())
+        self.assertIn("Source Sentinel KQL", detail.inner_text())
+        self.assertIn("Converted XDR KQL", detail.inner_text())
+        self.assertIn("DeviceEvents", detail.inner_text())
+        self.assertLess(
+            detail.inner_text().index("Source Sentinel KQL"),
+            detail.inner_text().index("Recorded checks"),
+        )
+        self.assertFalse(detail.locator("details > summary", has_text="queries").count())
+        self.assertIn("not proof of semantic equivalence", detail.inner_text())
+
+    def test_empty_inventory_and_unrecorded_consent_are_omitted_but_denial_is_visible(self) -> None:
+        self.value["deploymentPlanning"] = {
+            "deploymentPlan": {
+                "packageResourceInventory": [],
+                "planningConsent": {"status": "not-recorded"},
+            },
+        }
+        self.page.set_content(render_dashboard(self.value))
+        self.assertEqual(self.page.get_by_role("heading", name="Package resource inventory").count(), 0)
+        self.assertEqual(self.page.locator(".planning-summary-card", has_text="Advance planning consent").count(), 0)
+
+        self.value["deploymentPlanning"]["deploymentPlan"].update({
+            "packageResourceInventory": [{
+                "type": "Microsoft.Security/detectionRules",
+                "apiVersion": "2026-06-01-preview",
+                "count": 1,
+            }],
+            "planningConsent": {"status": "denied"},
+        })
+        self.page.set_content(render_dashboard(self.value))
+        self.assertEqual(self.page.get_by_role("heading", name="Package resource inventory").count(), 1)
+        self.assertIn("Microsoft.Security/detectionRules", self.page.locator("#deployment-planning").inner_text())
+        self.assertEqual(self.page.locator(".planning-summary-card", has_text="Advance planning consent").count(), 1)
+        self.assertIn("denied", self.page.locator("#deployment-planning").inner_text())
+
     def test_bulk_refuses_incompatible_rules_and_requires_individual_confirmation(self) -> None:
         self.select_rules()
         self.page.locator("#bulk-tactic").select_option("Execution")

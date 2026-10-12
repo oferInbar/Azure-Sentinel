@@ -12,12 +12,15 @@ import yaml
 from sentinel_xdr_migration.converter import (
     build_xdr_document,
     convert_solution,
+    custom_detail_binding_warnings,
     custom_detail_schema_errors,
     runtime_validation_plan,
     validate_document,
+    validate_solution,
 )
 from sentinel_xdr_migration.deployment import graph_detection_payload
 from sentinel_xdr_migration.runtime import record_runtime_validation, validate_advanced_hunting
+from sentinel_xdr_migration.solution_report import build_solution_report
 from test_conversion_semantics import HOST_QUERY, entity
 from test_converter import RULE
 
@@ -201,6 +204,125 @@ class SupplementalCustomDetailsTests(unittest.TestCase):
         self.assertTrue(any("requires runtime output-schema" in value for value in self.conversion(document)["warnings"]))
         self.assertTrue(custom_detail_schema_errors(document, [{"Name": "Other"}]))
         self.assertEqual(custom_detail_schema_errors(document, [{"name": "DeviceName"}]), [])
+
+    def test_sftp_aggregate_bindings_are_warnings_and_survive_validation_and_reports(self):
+        query = (
+            "let fileRows = SftpFileEvents\n"
+            "| where TimeGenerated > ago(1h)\n"
+            "| project DeviceId, DeviceName, SourceIP, FilePath, FolderPath;\n"
+            "let joinedRows = SftpProcessEvents\n"
+            "| join kind=inner (fileRows) on DeviceId\n"
+            "| project-away ProcessId;\n"
+            "joinedRows\n"
+            "| summarize count_distinct_filepath=dcount(FilePath), "
+            "fileslist=make_set(FilePath), count_distinct_dirpath=dcount(FolderPath), "
+            "dirlist=make_set(FolderPath) by DeviceName, SourceIP"
+        )
+        details = {
+            "FilePathCount": "count_distinct_filepath",
+            "FileList": "fileslist",
+            "FolderPathCount": "count_distinct_dirpath",
+            "FolderList": "dirlist",
+        }
+        self.rule["query"] = query
+        self.rule["customDetails"] = details
+        self.rule["entityMappings"] = [entity("IP", Address="SourceIP")]
+
+        document = self.build()
+        conversion = self.conversion(document)
+        alert = self.alert(document)
+        warning = "static analysis cannot establish its output"
+
+        self.assertEqual(alert["customDetails"], details)
+        self.assertEqual(document["properties"]["queryCondition"]["queryText"], query)
+        self.assertEqual(conversion["status"], "converted")
+        self.assertFalse(conversion["reviewRequired"])
+        self.assertFalse(conversion["errors"])
+        self.assertEqual(validate_document(document), [])
+        self.assertEqual(len(custom_detail_binding_warnings(document)), 4)
+        unproven_warnings = [
+            value for value in conversion["warnings"]
+            if "unproven output binding" in value
+        ]
+        self.assertEqual(len(unproven_warnings), 4)
+        self.assertTrue(all(warning in value for value in unproven_warnings))
+        self.assertTrue(custom_detail_schema_errors(document, [{"Name": "Other"}]))
+        self.assertEqual(
+            custom_detail_schema_errors(
+                document,
+                [{"Name": column} for column in details.values()],
+            ),
+            [],
+        )
+
+        conversion_result = convert_solution(self.solution)
+        self.assertEqual(conversion_result["converted"], 1)
+        validation = validate_solution(self.solution)
+        self.assertEqual(validation["valid"], 1)
+        self.assertTrue(any(warning in item for item in validation["results"][0]["warnings"]))
+        report = build_solution_report(self.solution)
+        self.assertEqual(report["rules"][0]["customDetection"]["structuralStatus"], "passed")
+        self.assertTrue(any(warning in item for item in report["rules"][0]["warnings"]))
+        self.assertTrue(any("4 KB per-alert limit" in item for item in report["rules"][0]["warnings"]))
+
+    def test_missing_final_project_project_away_and_rename_remain_errors(self):
+        for query in (
+            "DeviceEvents | project DeviceName, SourceIP",
+            "DeviceEvents | project DeviceName, SourceIP, Evidence | project-away Evidence",
+            "DeviceEvents | project DeviceName, SourceIP, Evidence | project-rename Other=Evidence",
+        ):
+            with self.subTest(query=query):
+                self.rule["query"] = query
+                self.rule["customDetails"] = {"OriginalEvidence": "Evidence"}
+                self.rule["entityMappings"] = [entity("IP", Address="SourceIP")]
+                document = self.build()
+                conversion = self.conversion(document)
+                self.assertEqual(
+                    self.alert(document)["customDetails"],
+                    {"OriginalEvidence": "Evidence"},
+                )
+                self.assertTrue(any("is missing from the final query output" in item
+                                    for item in conversion["errors"]))
+                self.assertFalse(any("unproven output binding" in item
+                                     for item in conversion["warnings"]))
+                self.assertTrue(any("is missing from the final query output" in item
+                                    for item in validate_document(document)))
+
+    @patch("sentinel_xdr_migration.runtime._advanced_hunting_token", return_value="test-only")
+    @patch("sentinel_xdr_migration.runtime.run_advanced_hunting_query")
+    def test_runtime_missing_schema_column_remains_error_for_unproven_explicit_binding(
+        self, run_query, _token,
+    ):
+        self.rule["query"] = (
+            "let fileRows = SftpFileEvents | project DeviceId, SourceIP, FilePath;\n"
+            "let joinedRows = SftpProcessEvents\n"
+            "| join kind=inner (fileRows) on DeviceId\n"
+            "| project-away ProcessId;\n"
+            "joinedRows | summarize count_distinct_filepath=dcount(FilePath) by DeviceId, SourceIP"
+        )
+        self.rule["customDetails"] = {"FilePathCount": "count_distinct_filepath"}
+        self.rule["entityMappings"] = [entity("IP", Address="SourceIP")]
+        document = self.build()
+        self.assertEqual(self.conversion(document)["status"], "converted")
+        self.assertTrue(any(
+            "unproven output binding" in value
+            for value in self.conversion(document)["warnings"]
+        ))
+        convert_solution(self.solution)
+        run_query.return_value = {
+            "ok": True,
+            "statusCode": 200,
+            "rowCount": 0,
+            "schema": [{"Name": "DeviceId"}],
+            "error": None,
+            "errorDetails": None,
+        }
+
+        result = validate_advanced_hunting(self.solution)
+
+        self.assertEqual(result["invalid"], 1)
+        self.assertIn("FilePathCount", result["results"][0]["error"])
+        self.assertIn("absent from the runtime output schema", result["results"][0]["error"])
 
     def test_collision_suffixes_existing_keys_and_duplicate_values(self):
         self.rule["customDetails"] = {"HostFullName": "Evidence", "Original": "Other"}

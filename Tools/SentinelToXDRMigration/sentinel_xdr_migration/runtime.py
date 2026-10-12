@@ -14,26 +14,40 @@ from typing import Any
 
 import yaml
 
-from .artifacts import report_directory, portable_artifact, write_json_artifact
-from .catalog import referenced_catalog_tables, referenced_custom_tables
+from .artifacts import (
+    existing_artifact_path,
+    report_directory,
+    portable_artifact,
+    write_json_artifact,
+)
 from .converter import custom_detail_schema_errors, xdr_detection_files
-from .content_paths import content_path, yaml_files
+from .content_paths import content_path
+from .graph_auth import validate_delegated_graph_claims
 from .onboarding import (
     AUTH_RECORD_NAME,
     CONFIG_NAME,
-    GRAPH_CLIENT_ID,
     GRAPH_SCOPE,
     TOKEN_CACHE_NAME,
     _load_auth_record,
     _read_json,
     _state_dir,
 )
+from .graph_client_config import (
+    graph_auth_record_path,
+    graph_token_cache_name,
+    resolve_graph_client_id,
+    verify_graph_auth_binding,
+)
 from .report import write_runtime_validation_report
+from .runtime_consent import require_runtime_query_consent
+from .source_runtime_waiver import SOURCE_PROVIDERS
+from .target_context import require_locked_target
 
 ADVANCED_HUNTING_ENDPOINT = "https://graph.microsoft.com/v1.0/security/runHuntingQuery"
 MAX_GRAPH_IN_FLIGHT_REQUESTS = 5
 MAX_ADVANCED_HUNTING_RETRIES = 3
 ADVANCED_HUNTING_RETRY_BUDGET_SECONDS = 5 * 60
+MAX_ADVANCED_HUNTING_SAMPLE_ROWS = 10
 _GRAPH_REQUEST_SEMAPHORE = threading.BoundedSemaphore(MAX_GRAPH_IN_FLIGHT_REQUESTS)
 PROVIDER_PLATFORMS = {
     "graph": "Microsoft Defender XDR Advanced Hunting",
@@ -64,22 +78,172 @@ def _detection_files(output: Path) -> list[Path]:
     return xdr_detection_files(output)
 
 
-def _referenced_solution_functions(root: Path, query: str) -> set[str]:
-    functions: set[str] = set()
-    parser_root = root / "Parsers"
-    if not parser_root.exists():
-        return functions
-    for path in yaml_files(parser_root):
-        try:
-            document = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
-        except (OSError, yaml.YAMLError):
+def _effective_sdk_target(
+    solution: Path,
+    supplied_target: dict[str, str],
+) -> dict[str, str]:
+    workflow_state = existing_artifact_path(solution, "workflow-state.json")
+    if not workflow_state.is_file():
+        return supplied_target
+    locked = require_locked_target(solution, materialize_missing=False)
+    fields = (
+        "tenantId",
+        "subscriptionId",
+        "resourceGroup",
+        "workspaceResourceId",
+        "workspaceCustomerId",
+    )
+    mismatches = [
+        field
+        for field in fields
+        if not isinstance(supplied_target.get(field), str)
+        or supplied_target[field].strip().casefold()
+        != str(locked[field]).strip().casefold()
+    ]
+    if mismatches:
+        raise ValueError(
+            "SDK target conflicts with the locked Qualification target: "
+            + ", ".join(mismatches)
+        )
+    return {field: str(locked[field]) for field in fields}
+
+
+def _workflow_profile(root: Path) -> str | None:
+    workflow_state = existing_artifact_path(root, "workflow-state.json")
+    if not workflow_state.is_file():
+        return None
+    try:
+        state = json.loads(workflow_state.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return "unknown"
+    profile = (state.get("context") or {}).get("workflowProfile")
+    return profile if isinstance(profile, str) else "unknown"
+
+
+def _assert_graph_auth_tenant_scope(
+    state_root: Path,
+    *,
+    locked_tenant_id: str,
+    requested_tenant_id: str | None,
+) -> dict[str, Any]:
+    if (
+        requested_tenant_id
+        and requested_tenant_id.strip().casefold()
+        != locked_tenant_id.casefold()
+    ):
+        raise ValueError("requested Graph tenant does not match the selected workflow tenant")
+    graph_client_id = resolve_graph_client_id(state_root, "advancedHunting")
+    record_path = graph_auth_record_path(
+        state_root,
+        "advancedHunting",
+        graph_client_id,
+        AUTH_RECORD_NAME,
+    )
+    record = _load_auth_record(record_path)
+    record_tenant = getattr(record, "tenant_id", None) if record is not None else None
+    config = _read_json(state_root / CONFIG_NAME)
+    configured_tenant = config.get("tenantId")
+    if not isinstance(record_tenant, str) or not record_tenant.strip():
+        raise ValueError(
+            "Graph authentication record has no tenant identity for the selected workflow tenant"
+        )
+    if record_tenant.strip().casefold() != locked_tenant_id.casefold():
+        raise ValueError(
+            "Graph authentication record tenant does not match the selected workflow tenant"
+        )
+    if (
+        configured_tenant
+        and str(configured_tenant).strip().casefold() != locked_tenant_id.casefold()
+    ):
+        raise ValueError(
+            "Graph authentication configuration tenant does not match the selected workflow tenant"
+        )
+    return config
+
+
+def _assert_graph_auth_scope(
+    state_root: Path,
+    *,
+    locked_target: dict[str, str],
+    requested_tenant_id: str | None,
+) -> None:
+    config = _assert_graph_auth_tenant_scope(
+        state_root,
+        locked_tenant_id=locked_target["tenantId"],
+        requested_tenant_id=requested_tenant_id,
+    )
+    expected_config = {
+        "subscriptionId": locked_target["subscriptionId"],
+        "workspaceResourceId": locked_target["workspaceResourceId"],
+        "workspaceCustomerId": locked_target["workspaceCustomerId"],
+    }
+    for field, expected in expected_config.items():
+        configured = config.get(field)
+        if not configured:
             continue
-        name = str(document.get("FunctionName") or "").strip()
-        if name and re.search(
-            rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", query
-        ):
-            functions.add(name)
-    return functions
+        actual = str(configured).strip().rstrip("/")
+        expected_value = str(expected).strip().rstrip("/")
+        if actual.casefold() != expected_value.casefold():
+            raise ValueError(
+                f"Graph authentication configuration {field} does not match "
+                "the locked Qualification target"
+            )
+
+
+def _same_execution_scope(
+    dispatch_snapshot: dict[str, Any],
+    current_consent: dict[str, Any],
+) -> bool:
+    family = dispatch_snapshot.get("family")
+    if (
+        dispatch_snapshot.get("status") != "approved"
+        or family not in {"sentinelSourceQueryFamily", "defenderXdrQueryFamily"}
+        or dispatch_snapshot.get("provider") != current_consent.get("provider")
+        or family != current_consent.get("family")
+    ):
+        return False
+    dispatch_binding = dispatch_snapshot.get("binding")
+    current_binding = current_consent.get("binding")
+    if not isinstance(dispatch_binding, dict) or not isinstance(current_binding, dict):
+        return False
+    identity_fields = (
+        "solution",
+        "workflowProfile",
+        "runId",
+        "targetFingerprintSha256",
+    )
+    if any(
+        dispatch_binding.get(field) != current_binding.get(field)
+        for field in identity_fields
+    ):
+        return False
+    dispatch_families = dispatch_binding.get("families")
+    current_families = current_binding.get("families")
+    return (
+        isinstance(dispatch_families, dict)
+        and isinstance(current_families, dict)
+        and dispatch_families.get(family) == current_families.get(family)
+    )
+
+
+def _runtime_consent_for_import(
+    root: Path,
+    *,
+    provider: str,
+    source_provider: str,
+) -> dict[str, Any] | None:
+    workflow_state = existing_artifact_path(root, "workflow-state.json")
+    if workflow_state.is_file():
+        state = json.loads(workflow_state.read_text(encoding="utf-8-sig"))
+        if (state.get("context") or {}).get("workflowProfile") == "authoring":
+            return None
+    return require_runtime_query_consent(
+        root,
+        family="sentinelSourceQueryFamily",
+        provider=provider,
+        source_provider=source_provider,
+        allow_legacy=True,
+    )
 
 
 def _write_runtime_artifacts(
@@ -91,6 +255,8 @@ def _write_runtime_artifacts(
     provider_fallback: dict[str, Any] | None = None,
     provider_failure: dict[str, Any] | None = None,
     family_complete: bool | None = None,
+    runtime_query_consent: dict[str, Any] | None = None,
+    runtime_query_dispatch_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output = report_directory(root, create=True)
     summary = {
@@ -105,12 +271,155 @@ def _write_runtime_artifacts(
         "notRun": sum(item["status"] == "not-run" for item in results),
         "tableAvailability": table_availability or {},
         "providerFallback": provider_fallback,
+        "runtimeQueryConsent": {
+            "status": (
+                "not-applicable-authoring"
+                if runtime_query_consent is None
+                and _workflow_profile(root) == "authoring"
+                else "not-required-legacy-workflow"
+                if runtime_query_consent is None
+                else "approved"
+            ),
+            "family": runtime_query_consent.get("family")
+            if runtime_query_consent
+            else None,
+            "provider": runtime_query_consent.get("provider")
+            if runtime_query_consent
+            else None,
+            "workflowProfile": runtime_query_consent.get("workflowProfile")
+            if runtime_query_consent
+            else _workflow_profile(root),
+            "planSha256": runtime_query_consent.get("planSha256")
+            if runtime_query_consent
+            else None,
+            "consentScope": runtime_query_consent.get("consentScope")
+            if runtime_query_consent
+            else None,
+            "labConsentSha256": runtime_query_consent.get("labConsentSha256")
+            if runtime_query_consent
+            else None,
+            "authoringConsentSha256": runtime_query_consent.get(
+                "authoringConsentSha256"
+            )
+            if runtime_query_consent
+            else None,
+            "queryHashesAreConsentBindings": (
+                runtime_query_consent.get("consentScope")
+                == "one-run-authoring-query-only"
+                if runtime_query_consent
+                else False
+            ),
+            "runSnapshotPath": runtime_query_consent.get("runSnapshotPath")
+            if runtime_query_consent
+            else None,
+            "authenticationClassification": runtime_query_consent.get(
+                "authenticationClassification"
+            )
+            if runtime_query_consent
+            else None,
+            "binding": runtime_query_consent.get("binding")
+            if runtime_query_consent
+            else None,
+            "interactiveAuthenticationAuthorized": False,
+            "environmentWritesAuthorized": False,
+        },
+        "runtimeQueryDispatchSnapshot": (
+            runtime_query_dispatch_snapshot
+            if runtime_query_dispatch_snapshot is not None
+            else runtime_query_consent
+        ),
         "results": results,
     }
     if family_complete is not None:
         summary["familyComplete"] = family_complete
     if provider_failure:
         summary["providerFailure"] = provider_failure
+    if provider in SOURCE_PROVIDERS:
+        from .source_runtime_waiver import missing_schema_whitelist_match
+
+        detection_paths = {
+            path.relative_to(root / "XDR Detections").as_posix(): path
+            for path in _detection_files(root / "XDR Detections")
+        }
+        expected_query_hashes = {
+            name: current_runtime_query_hash(root, path, provider=provider)
+            for name, path in detection_paths.items()
+        }
+        classified = []
+        hash_bound_names: set[str] = set()
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("detection") or "").replace("\\", "/")
+            match = missing_schema_whitelist_match(item, provider=provider)
+            if match:
+                expected_hash = expected_query_hashes.get(name)
+                hash_matches = (
+                    expected_hash is not None
+                    and item.get("querySha256") == expected_hash
+                )
+                assessment = {
+                    "detection": item.get("detection"),
+                    "querySha256": item.get("querySha256"),
+                    **match,
+                    "status": "candidate-blocked",
+                    "applied": False,
+                }
+                if hash_matches:
+                    hash_bound_names.add(name)
+                else:
+                    assessment["blockedReason"] = (
+                        "The failed result query hash does not match the current "
+                        "source query hash."
+                    )
+                classified.append(assessment)
+        result_names = [
+            str(item.get("detection") or "").replace("\\", "/")
+            for item in results
+            if isinstance(item, dict)
+        ]
+        inventory_matches = (
+            len(result_names) == len(expected_query_hashes)
+            and len(result_names) == len(set(result_names))
+            and set(result_names) == set(expected_query_hashes)
+        )
+        family_can_apply = (
+            bool(hash_bound_names)
+            and provider_failure is None
+            and provider_fallback is None
+            and family_complete is True
+            and inventory_matches
+            and all(isinstance(item, dict) for item in results)
+            and all(
+                (
+                    item.get("status") == "passed"
+                    and item.get("querySha256")
+                    == expected_query_hashes.get(
+                        str(item.get("detection") or "").replace("\\", "/")
+                    )
+                )
+                or (
+                    item.get("status") == "failed"
+                    and str(item.get("detection") or "").replace("\\", "/")
+                    in hash_bound_names
+                    and item.get("querySha256")
+                    == expected_query_hashes.get(
+                        str(item.get("detection") or "").replace("\\", "/")
+                    )
+                )
+                for item in results
+            )
+        )
+        for item in classified:
+            name = str(item.get("detection") or "").replace("\\", "/")
+            item["applied"] = family_can_apply and name in hash_bound_names
+            if item["applied"]:
+                item["status"] = "source-waived"
+            elif "blockedReason" not in item:
+                item["blockedReason"] = (
+                    "The complete source family contains another failure or is not confirmed complete."
+                )
+        summary["sourceWhitelist"] = classified
     json_path = output / f"runtime-validation.{provider}.json"
     html_path = output / f"runtime-validation.{provider}.html"
     summary["jsonReport"] = str(json_path)
@@ -181,50 +490,179 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
         provider: str,
         report_path: Path,
         expected_hashes: dict[str, str],
-    ) -> tuple[bool, list[str]]:
+        *,
+        require_actual_schema: bool = False,
+    ) -> tuple[bool, list[str], bool, list[dict[str, Any]]]:
         if not report_path.is_file():
-            return False, [f"{provider} runtime report is missing"]
+            return False, [f"{provider} runtime report is missing"], False, []
         try:
             report = json.loads(report_path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
-            return False, [f"{provider} runtime report is invalid"]
+            return False, [f"{provider} runtime report is invalid"], False, []
         if not isinstance(report, dict) or report.get("provider") != provider:
-            return False, [f"{provider} runtime report provider does not match"]
+            return False, [f"{provider} runtime report provider does not match"], False, []
         entries = report.get("results")
         if not isinstance(entries, list):
-            return False, [f"{provider} runtime report has no results list"]
+            return False, [f"{provider} runtime report has no results list"], False, []
+        from .source_runtime_waiver import missing_schema_whitelist_match
+
+        def candidate_assessments() -> list[dict[str, Any]]:
+            if provider not in SOURCE_PROVIDERS:
+                return []
+            candidates = []
+            for candidate in entries:
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_name = str(candidate.get("detection") or "").replace("\\", "/")
+                expected_hash = expected_hashes.get(candidate_name)
+                if expected_hash is None:
+                    continue
+                match = missing_schema_whitelist_match(
+                    candidate,
+                    provider=provider,
+                    expected_query_sha256=expected_hash,
+                )
+                if match:
+                    candidates.append({
+                        "detection": candidate_name,
+                        "querySha256": expected_hash,
+                        **match,
+                        "status": "candidate-blocked",
+                        "applied": False,
+                        "blockedReason": (
+                            "The source report has a provider, surface, family-completion, "
+                            "fallback, or inventory failure."
+                        ),
+                    })
+            return candidates
+
+        if (
+            report.get("querySurface") not in (
+                None,
+                PROVIDER_QUERY_SURFACES.get(provider),
+            )
+            or report.get("providerFailure")
+            or report.get("familyComplete") is False
+        ):
+            return False, [
+                f"{provider} runtime report has a provider, surface, or family-completion failure"
+            ], False, candidate_assessments()
         by_name: dict[str, dict[str, Any]] = {}
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
             name = str(entry.get("detection") or "").replace("\\", "/")
             if name in by_name:
-                return False, [f"{provider} runtime report has duplicate results for {name}"]
+                return False, [f"{provider} runtime report has duplicate results for {name}"], False, candidate_assessments()
             by_name[name] = entry
         if set(by_name) != set(expected_hashes):
             return False, [
                 f"{provider} runtime report is not a complete detection family "
                 f"(missing={sorted(set(expected_hashes) - set(by_name))}, "
                 f"unknown={sorted(set(by_name) - set(expected_hashes))})"
-            ]
+            ], False, candidate_assessments()
+        source_whitelist: list[dict[str, Any]] = []
+
         failures = []
         for name, expected_hash in expected_hashes.items():
             entry = by_name[name]
             hash_matches = entry.get("querySha256") == expected_hash
+            source_match = (
+                missing_schema_whitelist_match(
+                    entry,
+                    provider=provider,
+                    expected_query_sha256=expected_hash,
+                )
+                if provider in SOURCE_PROVIDERS
+                and not report.get("providerFallback")
+                else None
+            )
+            if source_match:
+                source_whitelist.append({
+                    "detection": name,
+                    "querySha256": expected_hash,
+                    **source_match,
+                })
+            if (
+                provider == "graph"
+                and require_actual_schema
+                and entry.get("status") == "passed"
+                and hash_matches
+            ):
+                schema = entry.get("schema")
+                if not isinstance(schema, list):
+                    failures.append(
+                        "graph output schema is missing for "
+                        f"{name}; schemaColumnCount is not sufficient evidence"
+                    )
+                else:
+                    schema_columns = []
+                    malformed_schema = False
+                    seen_schema_names: set[str] = set()
+                    for column in schema:
+                        if not isinstance(column, dict):
+                            malformed_schema = True
+                            break
+                        column_name = column.get("name", column.get("Name"))
+                        column_type = column.get("type", column.get("Type"))
+                        if (
+                            not isinstance(column_name, str)
+                            or not column_name.strip()
+                            or not isinstance(column_type, str)
+                            or not column_type.strip()
+                            or column_name.casefold() in seen_schema_names
+                        ):
+                            malformed_schema = True
+                            break
+                        seen_schema_names.add(column_name.casefold())
+                        schema_columns.append(column)
+                    if not schema_columns or malformed_schema:
+                        failures.append(
+                            "graph output schema for "
+                            f"{name} must contain usable, uniquely named columns with types"
+                        )
+                        continue
+                    try:
+                        document = yaml.safe_load(
+                            paths[name].read_text(encoding="utf-8-sig")
+                        ) or {}
+                    except (OSError, yaml.YAMLError) as exc:
+                        failures.append(
+                            f"cannot verify current XDR output bindings for {name}: {exc}"
+                        )
+                    else:
+                        binding_errors = custom_detail_schema_errors(document, schema)
+                        failures.extend(
+                            f"graph output schema for {name}: {error}"
+                            for error in binding_errors
+                        )
             if entry.get("status") == "failed" and hash_matches:
+                if source_match:
+                    continue
                 current_query_failures.append(
                     f"{provider} query validation failed for {name}: "
                     f"{entry.get('error') or 'provider reported a KQL/runtime failure'}"
                 )
             if entry.get("status") != "passed":
                 failures.append(f"{provider} validation for {name} is {entry.get('status')!r}")
-            elif not hash_matches:
+            if not hash_matches:
                 failures.append(
                     f"{provider} validation for {name} is stale or unbound to the exact current query"
                 )
-        return not failures, failures
+        waived_failure = bool(source_whitelist) and not failures
+        for item in source_whitelist:
+            item["applied"] = waived_failure
+            if not waived_failure:
+                item["status"] = "candidate-blocked"
+                item["blockedReason"] = (
+                    "The complete source query family has another failed, blocked, "
+                    "not-run, stale, or incomplete result."
+                )
+        return not failures and not waived_failure, failures, waived_failure, source_whitelist
 
     source_passed = False
+    source_waiver_only_blocker = False
+    source_whitelist: list[dict[str, Any]] = []
     source_provider_used = None
     source_issues: list[str] = []
     available_source_reports = [
@@ -233,6 +671,15 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
         if report_path.is_file()
     ]
     for index, (provider, report_path) in enumerate(available_source_reports):
+        try:
+            selected_report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            break
+        unverified_fallback_claim = (
+            index == 0
+            and isinstance(selected_report, dict)
+            and bool(selected_report.get("providerFallback"))
+        )
         if index:
             previous_provider, previous_path = available_source_reports[0]
             try:
@@ -245,11 +692,7 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
                 or not isinstance(previous_report.get("providerFailure"), dict)
             ):
                 break
-            try:
-                fallback_report = json.loads(report_path.read_text(encoding="utf-8-sig"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                break
-            proof = fallback_report.get("providerFallback") if isinstance(fallback_report, dict) else None
+            proof = selected_report.get("providerFallback") if isinstance(selected_report, dict) else None
             if (
                 not isinstance(proof, dict)
                 or proof.get("mcpProvider") != "triage-mcp"
@@ -260,7 +703,7 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
             ):
                 continue
         current_failures_before = len(current_query_failures)
-        passed, family_issues = inspect_family(
+        passed, family_issues, waiver_only, current_whitelist = inspect_family(
             provider,
             report_path,
             {
@@ -268,10 +711,26 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
                 for name, path in paths.items()
             },
         )
-        if passed:
+        if passed and not unverified_fallback_claim:
             source_passed = True
             source_provider_used = provider
+            source_whitelist = current_whitelist
             break
+        if unverified_fallback_claim:
+            source_issues.extend(family_issues)
+            source_issues.append(
+                f"{provider} runtime report claims an unverified provider fallback"
+            )
+            if len(current_query_failures) > current_failures_before:
+                break
+            break
+        if waiver_only:
+            source_whitelist = current_whitelist
+            source_waiver_only_blocker = True
+            source_provider_used = provider
+            break
+        if current_whitelist:
+            source_whitelist = current_whitelist
         source_issues.extend(family_issues)
         if len(current_query_failures) > current_failures_before:
             break
@@ -285,15 +744,36 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
             or not isinstance(report.get("providerFailure"), dict)
         ):
             break
-    if not source_passed:
+    if not source_passed and not source_waiver_only_blocker:
         issues.extend(source_issues or ["no Sentinel runtime validation report is available"])
 
-    graph_passed, graph_issues = inspect_family("graph", graph_path, graph_hashes)
+    graph_passed, graph_issues, _, _ = inspect_family(
+        "graph",
+        graph_path,
+        graph_hashes,
+        require_actual_schema=bool(source_whitelist),
+    )
     if not graph_passed:
         issues.extend(graph_issues)
+    source_waived = source_waiver_only_blocker
+    source_waiver_only_blocker = source_waiver_only_blocker and graph_passed
+    if source_waiver_only_blocker:
+        issues.append(
+            "Sentinel source IdentityInfo query remains failed in raw evidence; "
+            "the built-in source table whitelist is not runtime success"
+        )
     return {
         "passed": source_passed and graph_passed,
         "sentinelProvider": source_provider_used,
+        "sourceStatus": (
+            "source-waived"
+            if source_waived
+            else "passed"
+            if source_passed
+            else "blocked"
+        ),
+        "sourceWhitelist": source_whitelist,
+        "sourceWaiverOnlyBlocker": source_waiver_only_blocker,
         "currentQueryFailures": current_query_failures,
         "issues": issues,
         "sentinelReport": (
@@ -360,7 +840,11 @@ def _advanced_hunting_token(
 ) -> str:
     from azure.identity import DeviceCodeCredential, TokenCachePersistenceOptions
 
-    record = _load_auth_record(state_root / AUTH_RECORD_NAME)
+    client_id = resolve_graph_client_id(state_root, "advancedHunting")
+    record_path = graph_auth_record_path(
+        state_root, "advancedHunting", client_id, AUTH_RECORD_NAME
+    )
+    record = _load_auth_record(record_path)
     if record is None:
         raise RuntimeError(
             "Advanced Hunting authentication is missing; run "
@@ -368,18 +852,41 @@ def _advanced_hunting_token(
         )
     config = _read_json(state_root / CONFIG_NAME)
     configured_tenant = config.get("tenantId") or getattr(record, "tenant_id", None)
+    try:
+        verify_graph_auth_binding(
+            record_path,
+            record,
+            purpose="advancedHunting",
+            client_id=client_id,
+            tenant_id=tenant_id or configured_tenant,
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
     if tenant_id and configured_tenant and tenant_id.lower() != configured_tenant.lower():
         raise RuntimeError(
             "Advanced Hunting authentication tenant does not match the locked target"
         )
     credential = DeviceCodeCredential(
-        client_id=GRAPH_CLIENT_ID,
+        client_id=client_id,
         tenant_id=tenant_id or configured_tenant,
         authentication_record=record,
-        cache_persistence_options=TokenCachePersistenceOptions(name=TOKEN_CACHE_NAME),
+        cache_persistence_options=TokenCachePersistenceOptions(
+            name=graph_token_cache_name(
+                "advancedHunting", client_id, TOKEN_CACHE_NAME
+            )
+        ),
         disable_automatic_authentication=True,
     )
-    return credential.get_token(GRAPH_SCOPE).token
+    token = credential.get_token(GRAPH_SCOPE).token
+    from .graph_readiness import _token_claims
+
+    validate_delegated_graph_claims(
+        _token_claims(token),
+        tenant_id=tenant_id or configured_tenant or "",
+        required_scopes=(GRAPH_SCOPE,),
+        purpose="Advanced Hunting",
+    )
+    return token
 
 
 def _retry_after_seconds(value: str | None) -> float | None:
@@ -402,6 +909,49 @@ def _http_retry_after(exc: urllib.error.HTTPError) -> float | None:
     headers = getattr(exc, "headers", None)
     value = headers.get("Retry-After") if headers is not None else None
     return _retry_after_seconds(value)
+
+
+def _hunting_query_response_error(body: Any) -> str | None:
+    if not isinstance(body, dict):
+        return "Graph Advanced Hunting returned a JSON value instead of an object"
+    provider_error = body.get("error")
+    if provider_error:
+        if isinstance(provider_error, dict):
+            message = provider_error.get("message")
+            if isinstance(message, str) and message.strip():
+                return f"Graph Advanced Hunting returned an error: {message[:2000]}"
+        return "Graph Advanced Hunting returned an error object"
+    schema = body.get("schema", body.get("Schema"))
+    if not isinstance(schema, list) or not schema:
+        return "Graph Advanced Hunting response is missing its non-empty output schema"
+    seen_names: set[str] = set()
+    for column in schema:
+        if not isinstance(column, dict):
+            return "Graph Advanced Hunting output schema contains a non-object column"
+        name = column.get("name", column.get("Name"))
+        column_type = column.get("type", column.get("Type"))
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(column_type, str)
+            or not column_type.strip()
+        ):
+            return "Graph Advanced Hunting output schema columns require actual names and types"
+        if name.casefold() in seen_names:
+            return "Graph Advanced Hunting output schema contains duplicate column names"
+        seen_names.add(name.casefold())
+    rows = body.get("results", body.get("Results"))
+    if not isinstance(rows, list):
+        return "Graph Advanced Hunting response is missing its results array"
+    if any(not isinstance(row, dict) for row in rows):
+        return "Graph Advanced Hunting results contain a non-object row"
+    if any(
+        not isinstance(name, str) or name.casefold() not in seen_names
+        for row in rows
+        for name in row
+    ):
+        return "Graph Advanced Hunting result columns do not match its declared schema"
+    return None
 
 
 def run_advanced_hunting_query(
@@ -453,14 +1003,51 @@ def run_advanced_hunting_query(
             if remaining <= 0:
                 break
             with urllib.request.urlopen(request, timeout=min(timeout, remaining)) as response:
-                body = json.loads(response.read().decode("utf-8"))
                 status_code = response.status
-            rows = body.get("results") or body.get("Results") or []
+                try:
+                    response_text = response.read().decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    return {
+                        "ok": False,
+                        "statusCode": status_code,
+                        "rowCount": 0,
+                        "schema": [],
+                        "error": "Graph Advanced Hunting returned non-UTF-8 JSON",
+                        "errorDetails": str(exc),
+                        "failureKind": "provider",
+                    }
+            try:
+                body = json.loads(response_text)
+            except json.JSONDecodeError as exc:
+                return {
+                    "ok": False,
+                    "statusCode": status_code,
+                    "rowCount": 0,
+                    "schema": [],
+                    "error": "Graph Advanced Hunting returned invalid JSON",
+                    "errorDetails": f"{exc}: {response_text[:8000]}",
+                    "failureKind": "provider",
+                }
+            response_error = _hunting_query_response_error(body)
+            if response_error:
+                return {
+                    "ok": False,
+                    "statusCode": status_code,
+                    "rowCount": 0,
+                    "schema": [],
+                    "error": response_error,
+                    "errorDetails": response_text[:8000],
+                    "failureKind": "provider",
+                }
+            rows = body.get("results", body.get("Results"))
+            schema = body.get("schema", body.get("Schema"))
             return {
                 "ok": True,
                 "statusCode": status_code,
                 "rowCount": len(rows),
-                "schema": body.get("schema") or body.get("Schema") or [],
+                "schema": schema,
+                "sampleRows": rows[:MAX_ADVANCED_HUNTING_SAMPLE_ROWS],
+                "sampleRowsTruncated": len(rows) > MAX_ADVANCED_HUNTING_SAMPLE_ROWS,
                 "error": None,
                 "errorDetails": None,
             }
@@ -543,6 +1130,64 @@ def validate_advanced_hunting(
     provider_gap_evidence: str | Path | None = None,
 ) -> dict[str, Any]:
     root = Path(solution).expanduser().resolve()
+    workflow_state = existing_artifact_path(root, "workflow-state.json")
+    profile = _workflow_profile(root)
+    locked_target = None
+    if workflow_state.is_file():
+        if profile == "qualification":
+            locked_target = require_locked_target(root, materialize_missing=False)
+        elif profile == "authoring":
+            try:
+                state = json.loads(workflow_state.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    "selected Authoring workflow state is unavailable"
+                ) from exc
+            context = state.get("context") if isinstance(state, dict) else None
+            configured_tenant = (
+                context.get("tenantId") if isinstance(context, dict) else None
+            )
+            if not isinstance(configured_tenant, str) or not configured_tenant:
+                raise ValueError(
+                    "Authoring Advanced Hunting requires the explicit tenant in "
+                    "the selected workflow run"
+                )
+            locked_target = {"tenantId": configured_tenant}
+            if tenant_id and tenant_id.strip().casefold() != configured_tenant.casefold():
+                raise ValueError(
+                    "requested Graph tenant does not match the selected Authoring run"
+                )
+            tenant_id = configured_tenant
+        else:
+            raise ValueError(
+                "Advanced Hunting requires a recognized selected workflow profile"
+            )
+    if (
+        locked_target is not None
+        and tenant_id
+        and tenant_id.strip().casefold() != locked_target["tenantId"].casefold()
+    ):
+        raise ValueError("requested Graph tenant does not match the locked Qualification tenant")
+    effective_state_dir = Path(_state_dir(state_dir)).expanduser().resolve()
+    if locked_target is not None:
+        if profile == "authoring":
+            _assert_graph_auth_tenant_scope(
+                effective_state_dir,
+                locked_tenant_id=locked_target["tenantId"],
+                requested_tenant_id=tenant_id,
+            )
+        else:
+            _assert_graph_auth_scope(
+                effective_state_dir,
+                locked_target=locked_target,
+                requested_tenant_id=tenant_id,
+            )
+    consent = require_runtime_query_consent(
+        root,
+        family="defenderXdrQueryFamily",
+        provider="graph",
+        allow_legacy=True,
+    )
     provider_fallback = _load_provider_fallback(
         provider_gap_evidence,
         query_family="advanced-hunting",
@@ -550,8 +1195,10 @@ def validate_advanced_hunting(
     )
     output = root / "XDR Detections"
     results: list[dict[str, Any]] = []
-    token = _advanced_hunting_token(_state_dir(state_dir), tenant_id=tenant_id)
-    table_status: dict[str, dict[str, Any]] = {}
+    token = _advanced_hunting_token(
+        effective_state_dir,
+        tenant_id=locked_target["tenantId"] if locked_target is not None else tenant_id,
+    )
     detections: list[tuple[Path, dict[str, Any], str]] = []
     for path in _detection_files(output):
         with path.open(encoding="utf-8-sig") as handle:
@@ -563,63 +1210,6 @@ def validate_advanced_hunting(
     for path, document, query in detections:
         if provider_failure:
             results.append(_not_run_result(path, output, query))
-            continue
-        unavailable: list[str] = []
-        dependencies = (
-            referenced_catalog_tables(query)
-            | referenced_custom_tables(query)
-            | _referenced_solution_functions(root, query)
-        )
-        for dependency in sorted(dependencies):
-            if dependency not in table_status:
-                table_status[dependency] = run_advanced_hunting_query(
-                    f"{dependency} | take 0", _token=token
-                )
-            if not table_status[dependency]["ok"]:
-                unavailable.append(dependency)
-                if table_status[dependency].get("failureKind") == "provider":
-                    break
-        if unavailable:
-            provider_error = next(
-                (
-                    table_status[dependency]
-                    for dependency in unavailable
-                    if table_status[dependency].get("failureKind") == "provider"
-                ),
-                None,
-            )
-            if provider_error:
-                provider_failure = {
-                    "provider": "graph",
-                    "statusCode": provider_error["statusCode"],
-                    "error": provider_error["error"],
-                    "errorDetails": provider_error["errorDetails"],
-                }
-                results.append(
-                    _not_run_result(
-                        path,
-                        output,
-                        query,
-                        status_code=provider_error["statusCode"],
-                    )
-                )
-                continue
-            results.append(
-                {
-                    "detection": path.relative_to(output).as_posix(),
-                    "status": "blocked",
-                    "valid": False,
-                    "querySha256": _query_sha256(query),
-                    "statusCode": 0,
-                    "rowCount": 0,
-                    "schemaColumnCount": 0,
-                    "error": (
-                        "required Advanced Hunting table or function is unavailable in the "
-                        f"current tenant: {', '.join(unavailable)}"
-                    ),
-                    "errorDetails": None,
-                }
-            )
             continue
         runtime = run_advanced_hunting_query(query, _token=token)
         if runtime.get("failureKind") == "provider":
@@ -645,6 +1235,9 @@ def validate_advanced_hunting(
                 "statusCode": runtime["statusCode"],
                 "rowCount": runtime["rowCount"],
                 "schemaColumnCount": len(runtime["schema"]),
+                "schema": runtime["schema"],
+                "sampleRows": runtime.get("sampleRows", []),
+                "sampleRowsTruncated": runtime.get("sampleRowsTruncated", False),
                 "error": "; ".join(binding_errors) if binding_errors else runtime["error"],
                 "errorDetails": runtime["errorDetails"],
             }
@@ -653,16 +1246,9 @@ def validate_advanced_hunting(
         root,
         "graph",
         results,
-        table_availability={
-            table: {
-                "available": status["ok"],
-                "statusCode": status["statusCode"],
-                "error": status["error"],
-            }
-            for table, status in table_status.items()
-        },
         provider_fallback=provider_fallback,
         provider_failure=provider_failure,
+        runtime_query_consent=consent,
     )
 
 
@@ -694,6 +1280,13 @@ def validate_sentinel_sdk(
 
     root, analytic, output = solution_paths(solution)
     provider = "azure-monitor-sdk"
+    effective_target = _effective_sdk_target(root, target)
+    consent = require_runtime_query_consent(
+        root,
+        family="sentinelSourceQueryFamily",
+        provider=provider,
+        allow_legacy=True,
+    )
     provider_fallback = _load_provider_fallback(
         provider_gap_evidence,
         query_family="sentinel",
@@ -754,15 +1347,15 @@ def validate_sentinel_sdk(
     provider_failure = None
     scope_verifier = _scope_verifier or verify_azure_cli_target
     try:
-        scope_verifier(target)
+        scope_verifier(effective_target)
         credential_factory = _credential_factory or azure_cli_credential
         client_factory = _client_factory or logs_query_client
-        credential = credential_factory(target)
+        credential = credential_factory(effective_target)
         client = client_factory(credential, retry_total=0)
         try:
             results = query_family(
                 client,
-                target["workspaceCustomerId"],
+                effective_target["workspaceCustomerId"],
                 queries,
                 request_timeout_seconds=request_timeout_seconds,
                 family_timeout_seconds=(
@@ -827,6 +1420,7 @@ def validate_sentinel_sdk(
         provider_gap_evidence=provider_gap_evidence,
         provider_failure=provider_failure,
         family_complete=family_complete,
+        runtime_query_consent=consent,
     )
     return report
 
@@ -840,12 +1434,29 @@ def record_runtime_validation(
     provider_gap_evidence: str | Path | None = None,
     provider_failure: dict[str, Any] | None = None,
     family_complete: bool | None = None,
+    source_provider: str = "azure-monitor-sdk",
+    runtime_query_consent: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if provider not in SUPPORTED_EXTERNAL_PROVIDERS:
         raise ValueError(
             f"unsupported external runtime provider {provider!r}; "
             f"expected one of {sorted(SUPPORTED_EXTERNAL_PROVIDERS)}"
         )
+    root = Path(solution).expanduser().resolve()
+    consent = _runtime_consent_for_import(
+        root,
+        provider=provider,
+        source_provider=source_provider,
+    )
+    if runtime_query_consent is not None and (
+        consent is None
+        or not _same_execution_scope(runtime_query_consent, consent)
+    ):
+        raise ValueError(
+            "runtime-query dispatch snapshot no longer matches the current "
+            "target, query inventory, provider route, or authentication scope"
+        )
+    dispatch_snapshot = runtime_query_consent or consent
     provider_fallback = _load_provider_fallback(
         provider_gap_evidence,
         query_family="sentinel",
@@ -853,7 +1464,6 @@ def record_runtime_validation(
     )
     if provider_fallback and provider != provider_fallback["fallbackProvider"]:
         raise ValueError("Sentinel MCP fallback results must be recorded under the approved fallback provider")
-    root = Path(solution).expanduser().resolve()
     output = root / "XDR Detections"
     detection_paths = {path.relative_to(output).as_posix(): path for path in _detection_files(output)}
     expected = set(detection_paths)
@@ -950,9 +1560,23 @@ def record_runtime_validation(
                 "error": error,
                 "errorDetails": entry.get("errorDetails"),
             }
-        for field in ("tables", "partialError", "failureKind", "attempts", "durationMs"):
+        for field in (
+            "tables",
+            "partialError",
+            "failureKind",
+            "attempts",
+            "durationMs",
+            "schema",
+        ):
             if field in entry:
                 normalized_entry[field] = entry[field]
+        sample_rows = entry.get("sampleRows")
+        if isinstance(sample_rows, list):
+            normalized_entry["sampleRows"] = sample_rows[:MAX_ADVANCED_HUNTING_SAMPLE_ROWS]
+            normalized_entry["sampleRowsTruncated"] = (
+                entry.get("sampleRowsTruncated") is True
+                or len(sample_rows) > MAX_ADVANCED_HUNTING_SAMPLE_ROWS
+            )
         if entry.get("partial") is True:
             normalized_entry["partial"] = True
         normalized.append(normalized_entry)
@@ -994,6 +1618,8 @@ def record_runtime_validation(
         provider_fallback=provider_fallback,
         provider_failure=provider_failure,
         family_complete=family_complete,
+        runtime_query_consent=consent,
+        runtime_query_dispatch_snapshot=dispatch_snapshot,
     )
     if fallback_rejection:
         raise ValueError(

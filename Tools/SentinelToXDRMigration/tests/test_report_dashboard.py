@@ -236,7 +236,71 @@ class ReportDashboardTests(unittest.TestCase):
         item["queries"]["converted"] = None
         self.assertIn("Comparison unavailable", render_dashboard(report(item)))
         item.pop("queries")
-        self.assertNotIn("<summary>Source / converted queries", render_dashboard(report(item)))
+        self.assertIn("Source and converted queries were not recorded", render_dashboard(report(item)))
+
+    def test_query_pair_is_expanded_and_precedes_diagnostics_in_details(self) -> None:
+        html = render_dashboard(report(rule()))
+        query_position = html.index('<section class="query-review">')
+        checks_position = html.index("<h4>Recorded checks</h4>")
+        self.assertLess(query_position, checks_position)
+        self.assertNotIn("<summary>Source / converted queries</summary>", html)
+
+    def test_empty_inventory_and_unrecorded_consent_panels_are_omitted(self) -> None:
+        value = report(rule())
+        value["deploymentPlanning"] = {
+            "profile": "qualification",
+            "deploymentPlan": {
+                "selectedProfile": "qualification",
+                "status": "provisional",
+                "packageResourceInventory": [{}],
+                "planningConsent": {"status": "not-recorded"},
+                "components": {
+                    "empty": {
+                        "status": "not-recorded",
+                        "planningConsent": "not-recorded",
+                        "resourceTypes": [],
+                    },
+                },
+            },
+        }
+        html = render_dashboard(value)
+        self.assertNotIn("Package resource inventory", html)
+        self.assertNotIn("Advance planning consent", html)
+        self.assertNotIn("Component plans and advance consent", html)
+
+    def test_unrecorded_consent_is_summarized_only_when_a_stage_records_it_as_blocking(self) -> None:
+        value = report(rule())
+        value["deploymentPlanning"] = {
+            "deploymentPlan": {
+                "planningConsent": {"status": "not-recorded"},
+            },
+        }
+        value["workflow"]["stages"]["deployment"] = {
+            "status": "blocked",
+            "message": "Advance planning consent is required before this stage.",
+        }
+        html = render_dashboard(value)
+        self.assertIn("Not recorded · blocking at deployment stage", html)
+
+    def test_real_inventory_and_denied_or_stale_consent_remain_visible(self) -> None:
+        for status in ("denied", "stale"):
+            with self.subTest(status=status):
+                value = report(rule())
+                value["deploymentPlanning"] = {
+                    "deploymentPlan": {
+                        "packageResourceInventory": [{
+                            "type": "Microsoft.Security/detectionRules",
+                            "apiVersion": "2026-06-01-preview",
+                            "count": 1,
+                        }],
+                        "planningConsent": {"status": status},
+                    },
+                }
+                html = render_dashboard(value)
+                self.assertIn("Package resource inventory", html)
+                self.assertIn("Microsoft.Security/detectionRules", html)
+                self.assertIn("Advance planning consent", html)
+                self.assertIn(status, html)
 
     def test_warning_never_implies_error_review_or_failed_readiness(self) -> None:
         item = rule()
@@ -459,10 +523,14 @@ class ReportDashboardTests(unittest.TestCase):
         self.assertLess(html.index('class="panel subway-panel"'), html.index('id="deployment-planning"'))
         self.assertLess(html.index('data-flow-station="setup"'), html.index('data-flow-station="discovery"'))
         self.assertIn("Necessary setup / initial preflight", html)
-        self.assertIn("does not run doctor, authenticate, inspect auth caches, or make network calls", html)
+        self.assertIn(
+            "does not run doctor, authenticate, or make provider/network calls",
+            html,
+        )
+        self.assertIn("Advance read-only runtime-query consent", html)
         self.assertIn('data-flow-station="validation"', html)
         self.assertIn("Informational snapshot · no write authorization", html)
-        self.assertIn("Advance planning consent", html)
+        self.assertNotIn("Advance planning consent", html)
         self.assertIn("Exact-scope write approval", html)
 
     def test_planning_inventory_has_a_readable_scrolling_table_and_collapsed_hashes(self) -> None:

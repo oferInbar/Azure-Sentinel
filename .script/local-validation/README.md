@@ -248,6 +248,47 @@ The selected solution must be a non-symlink direct child of that content root's
 configuration, and ARM-TTK dependencies remain in the toolkit root, while current
 solution files and scoped .NET/PowerShell validation use the selected content root.
 
+For post-V3.1 ARM deployment acceptance, run the existing validation checks in
+validation-only mode and provide the exact V3.1 package report for the selected
+workflow run:
+
+```powershell
+pwsh .script/local-validation/build-and-validate.ps1 `
+  -SolutionName "MySolution" `
+  -ContentRoot /path/to/content-checkout `
+  -SkipPackaging `
+  -PackageReportPath "Logs/sentinel-xdr-migration/<run-id>/packaging.v3_1.json" `
+  -VersionBump none `
+  -ValidationSkip ""
+```
+
+`-PackageReportPath` is optional for ordinary use. When supplied, the runner
+requires `-SkipPackaging` and active validation, verifies that the V3.1 report
+and its referenced artifacts are current, checks the report's package-input
+fingerprint against current solution inputs before validation, and records the
+package report's workflow/attempt IDs and exact artifact hashes. It fingerprints
+all package inputs and every file in `Package/` before and after the existing
+validation steps; changed content, package bytes, package report, `ContentRoot`,
+or runner scripts makes the binding fail. The ignored evidence run contains
+`build-and-validate-binding.json`, and the human-readable report contains its
+path and SHA-256. The acceptance planner independently checks those emitted
+fingerprints against current V3.1 package state and current files; it does not
+infer validated hashes from the files' current state or use report timestamps.
+This adds no validator and does not turn skipped checks into passes.
+
+V3.1 package-input identities use Python `Path` ordering, which is
+case-sensitive on POSIX and case-insensitive on Windows. The producer computes
+both component-wise orderings and records only the semantics whose full file
+fingerprint matches the package report's own `packageInputs.after.sha256`;
+it also records the validation runner's platform. A cross-host validation run
+therefore follows the packager identity rather than the runner's local sort.
+Windows ordering lowercases each path component before ordinal component
+comparison, matching `PureWindowsPath` rather than .NET's
+`OrdinalIgnoreCase` string ordering.
+If neither ordering matches, or Windows-equivalent paths make ordering
+ambiguous, evidence capture fails closed. The independent `Package/` file
+inventory retains its existing ordinal, case-sensitive path ordering.
+
 The runner accepts `-EvidenceDirectory` only under the toolkit's ignored
 `.script/local-validation/Logs/` folder. It creates a unique run subdirectory with the
 complete TypeScript results JSON, separate TypeScript stdout/stderr logs, compile
