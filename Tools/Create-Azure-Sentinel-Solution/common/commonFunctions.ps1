@@ -1,16 +1,147 @@
 $jsonConversionDepth = 50
+
+function Assert-SolutionName {
+    param(
+        [Parameter(Mandatory = $true)][string]$SolutionName,
+        [Parameter(Mandatory = $true)][string]$SelectedSolutionName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SolutionName) -or
+        $SolutionName -in @('.', '..') -or
+        $SolutionName -match '[/\\:]' -or
+        -not [string]::Equals(
+            $SolutionName,
+            $SelectedSolutionName,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "Solution Data Name must match the selected solution folder and must not be a path."
+    }
+}
+
+function Assert-NoSolutionContentSymlinks {
+    param([Parameter(Mandatory = $true)][string]$SolutionRoot)
+
+    $root = [System.IO.Path]::GetFullPath($SolutionRoot)
+    foreach ($item in Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop) {
+        $relative = [System.IO.Path]::GetRelativePath($root, $item.FullName)
+        $parts = $relative.Split([System.IO.Path]::DirectorySeparatorChar)
+        if ($parts | Where-Object {
+            $_.ToLowerInvariant() -in @('package', 'logs', 'reports', 'evidence') -or
+            $_.ToLowerInvariant() -eq '.env' -or $_.ToLowerInvariant().StartsWith('.env.')
+        }) {
+            continue
+        }
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Solution content symlink paths are not supported: $($item.FullName)"
+        }
+    }
+}
+
+function Resolve-SolutionContentPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$SolutionRoot,
+        [Parameter(Mandatory = $true)][string]$SolutionName,
+        [Parameter(Mandatory = $true)][string]$ContentPath,
+        [switch]$RequireFile
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ContentPath) -or
+        $ContentPath -match '\A[A-Za-z][A-Za-z0-9+.-]*:' -or
+        $ContentPath -match '(^|[\\/])\.{1,2}([\\/]|$)') {
+        throw "Solution content path must be a local, relative path without traversal: $ContentPath"
+    }
+    $normalized = $ContentPath.Replace('\', '/')
+    if ($normalized.StartsWith('/') -or $normalized.Contains('//')) {
+        throw "Solution content path must be a local, relative path without traversal: $ContentPath"
+    }
+    $parts = $normalized.Split('/')
+    if ($parts -contains '') {
+        throw "Solution content path must be a local, relative path without traversal: $ContentPath"
+    }
+    if ($parts[0] -ceq 'Solutions') {
+        if ($parts.Count -lt 3 -or $parts[1] -cne $SolutionName) {
+            throw "Repository-relative content path must name the selected solution: $ContentPath"
+        }
+        $normalized = $parts[2..($parts.Count - 1)] -join '/'
+    }
+
+    $root = [System.IO.Path]::GetFullPath($SolutionRoot).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+    if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Solution content root must not be a symlink: $root"
+    }
+    $fullPath = [System.IO.Path]::GetFullPath((Join-Path $root $normalized))
+    $prefix = $root + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $fullPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Solution content path resolves outside the selected solution: $ContentPath"
+    }
+
+    $relative = $fullPath.Substring($prefix.Length)
+    $current = $root
+    foreach ($segment in $relative.Split([System.IO.Path]::DirectorySeparatorChar)) {
+        $current = Join-Path $current $segment
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Solution content symlink paths are not supported: $current"
+            }
+        }
+    }
+    if ($RequireFile -and -not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "Referenced solution content is not a local file: $ContentPath"
+    }
+    [PSCustomObject]@{
+        FullPath = $fullPath
+        RelativePath = $relative.Replace('\', '/')
+    }
+}
+
+function Convert-SolutionDataContentArrays {
+    param([Parameter(Mandatory = $true)]$Content)
+
+    $encodedArrayNames = @(
+        'parsers', 'data connectors', 'dataconnectors', 'playbooks', 'workbooks',
+        'analytic rules', 'analytics rules', 'hunting queries', 'watchlists',
+        'summary rules', 'summaryrules', 'xdr detections', 'custom detections',
+        'savedsearches'
+    )
+    foreach ($property in $Content.PSObject.Properties) {
+        $propertyName = $property.Name.ToLowerInvariant()
+        $value = $property.Value
+        if ($value -is [string] -and $propertyName -in $encodedArrayNames) {
+            try {
+                $value = ConvertFrom-Json -InputObject $value -NoEnumerate -ErrorAction Stop
+            }
+            catch {
+                throw "Solution Data content array '$($property.Name)' must be a JSON-encoded array."
+            }
+            if ($value -isnot [array]) {
+                throw "Solution Data content array '$($property.Name)' must be a JSON-encoded array."
+            }
+            $property.Value = $value
+        }
+        if ($value -is [array] -and $propertyName -notin @(
+            'dependentdomainsolutionids', 'staticdataconnectorids',
+            'xdr detections', 'custom detections'
+        )) {
+            foreach ($reference in $value) {
+                if ($reference -isnot [string] -or [string]::IsNullOrWhiteSpace($reference)) {
+                    throw "Solution Data content array '$($property.Name)' must contain only non-empty path strings."
+                }
+            }
+        }
+    }
+    return $Content
+}
+
 function Assert-NoOperationalContent {
     param([Parameter(Mandatory = $true)]$Content)
+    $Content = Convert-SolutionDataContentArrays -Content $Content
     foreach ($property in $Content.PSObject.Properties) {
         $references = $property.Value
-        if ($references -is [string] -and $property.Name -in @(
-            'Parsers', 'Data Connectors', 'DataConnectors', 'Playbooks', 'Workbooks',
-            'Analytic Rules', 'Hunting Queries', 'Watchlists', 'Summary Rules',
-            'SummaryRules', 'XDR Detections', 'Custom Detections'
-        )) {
-            try { $references = @($references | ConvertFrom-Json -ErrorAction Stop) }
-            catch { $references = @($references) }
-        }
         if ($references -is [array]) {
             foreach ($reference in $references) {
                 if ($reference -is [string] -and $reference -match '(?i)(^|[\\/])(Logs|Reports|Evidence)([\\/]|$)') {
@@ -76,30 +207,21 @@ $ContentKindDict.Add("Standalone", "sa")
 $ContentKindDict.Add("SummaryRule", "sr")
 
 function ReadFileContent($filePath) {
-    try {
-        # Case-insensitive file existence check
-        $parentDir = Split-Path -Path $filePath -Parent
-        $fileName = [System.IO.Path]::GetFileName($filePath)
-        $actualFile = Get-ChildItem -Path $parentDir -Filter "*" | Where-Object { $_.Name -ieq $fileName }
-        if ($null -eq $actualFile) {
-            Write-Host "filePath $filePath (not found, case-insensitive check)"
-            return $null
-        }
-        $filePath = $actualFile.FullName
-        $content = Get-Content -Raw -Path $filePath
-        if ($null -eq $content) {
-            Write-Host "Error in reading file $filePath"
-            return $null;
-        }
-        else {
-            $fileContent = $content | ConvertFrom-Json;
-            return $fileContent;
-        }
+    $parentDir = Split-Path -Path $filePath -Parent
+    $fileName = [System.IO.Path]::GetFileName($filePath)
+    $matches = @(
+        Get-ChildItem -LiteralPath $parentDir -File -Force -ErrorAction Stop |
+            Where-Object { $_.Name -ieq $fileName }
+    )
+    if ($matches.Count -eq 0) {
+        Write-Host "filePath $filePath (not found, case-insensitive check)"
+        return $null
     }
-    catch {
-        Write-Host "Error occured in ReadFileContent. Error details : $_" -ForegroundColor Red
-        return $null;
+    if ($matches.Count -gt 1) {
+        throw "Ambiguous case-insensitive file path: $filePath"
     }
+    $content = Get-Content -LiteralPath $matches[0].FullName -Raw -ErrorAction Stop
+    return $content | ConvertFrom-Json -ErrorAction Stop
 }
 
 function handleEmptyInstructionProperties ($inputObj) {

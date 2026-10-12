@@ -327,10 +327,40 @@ try {
     $ccpTablesFilePaths = @();
     $ccpTablesCounter = 1; 
     $isCCPConnector = $false;
+    Assert-NoSolutionContentSymlinks -SolutionRoot $solutionFolderBasePath
     foreach ($inputFile in $(Get-ChildItem -Path "$solutionFolderBasePath\$dataFolderName\$dataFileName")) {
-        #$inputJsonPath = Join-Path -Path $path -ChildPath "$($inputFile.Name)"
-        $contentToImport = Get-Content -Raw $inputFile | Out-String | ConvertFrom-Json
+        $inputFileRelativePath = $inputFile.FullName.Substring($solutionFolderBasePath.Length).TrimStart('\', '/')
+        $resolvedInputFile = Resolve-SolutionContentPath `
+            -SolutionRoot $solutionFolderBasePath `
+            -SolutionName $solutionName `
+            -ContentPath $inputFileRelativePath `
+            -RequireFile
+        $contentToImport = Get-Content -LiteralPath $resolvedInputFile.FullPath -Raw -ErrorAction Stop | Out-String | ConvertFrom-Json
         Assert-NoOperationalContent -Content $contentToImport
+        Assert-SolutionName `
+            -SolutionName ([string]$contentToImport.Name) `
+            -SelectedSolutionName $solutionName
+        $metadataReference = Resolve-SolutionContentPath `
+            -SolutionRoot $solutionFolderBasePath `
+            -SolutionName $solutionName `
+            -ContentPath ([string]$contentToImport.Metadata) `
+            -RequireFile
+        $metadataPath = $metadataReference.FullPath
+        foreach ($property in $contentToImport.PSObject.Properties) {
+            if ($property.Value -is [System.Array] -and
+                $property.Name.ToLowerInvariant() -notin @(
+                    'dependentdomainsolutionids', 'staticdataconnectorids',
+                    'xdr detections', 'custom detections'
+                )) {
+                foreach ($reference in $property.Value) {
+                    $null = Resolve-SolutionContentPath `
+                        -SolutionRoot $solutionFolderBasePath `
+                        -SolutionName $solutionName `
+                        -ContentPath ([string]$reference) `
+                        -RequireFile
+                }
+            }
+        }
 
         $has1PConnectorProperty = [bool]($contentToImport.PSobject.Properties.Name -match "Is1PConnector")
         if ($has1PConnectorProperty) {
@@ -350,10 +380,8 @@ try {
         }
 
         $solutionName = $contentToImport.Name
-        #$metadataPath = "$PSScriptRoot/../../../Solutions/$($contentToImport.Name)/$($contentToImport.Metadata)"
-        $metadataPath = $solutionBasePath + "$($contentToImport.Name)/$($contentToImport.Metadata)"
 
-        $baseMetadata = Get-Content -Raw $metadataPath | Out-String | ConvertFrom-Json
+        $baseMetadata = Get-Content -LiteralPath $metadataPath -Raw -ErrorAction Stop | Out-String | ConvertFrom-Json
         if ($null -eq $baseMetadata) {
             Write-Host "Please verify if the given path is correct and/or Solution folder name and Data file Name attribute value is correct!"
             exit 1
@@ -439,16 +467,19 @@ try {
             }
             if ($objectProperties.Value -is [System.Array] -and $objectProperties.Name.ToLower() -ne 'dependentdomainsolutionids' -and $objectProperties.Name.ToLower() -ne 'staticdataconnectorids') {
                 foreach ($file in $objectProperties.Value) {
-                    $file = $file.Replace("$basePath/", "").Replace("Solutions/", "").Replace("$solutionName/", "") 
-                    $finalPath = ($basePath + $solutionName + "/" + $file).Replace("//", "/")
+                    $resolvedContent = Resolve-SolutionContentPath `
+                        -SolutionRoot $solutionFolderBasePath `
+                        -SolutionName $solutionName `
+                        -ContentPath ([string]$file) `
+                        -RequireFile
+                    $file = $resolvedContent.RelativePath
+                    $finalPath = $resolvedContent.FullPath
                     $rawData = $null
                     try {
-                        Write-Host "Downloading $finalPath"
-                        $rawData = (New-Object System.Net.WebClient).DownloadString($finalPath)
+                        $rawData = Get-Content -LiteralPath $finalPath -Raw -ErrorAction Stop
                     }
                     catch {
-                        Write-Host "Failed to download $finalPath -- Please ensure that it exists in $([System.Uri]::EscapeUriString($basePath))" -ForegroundColor Red
-                        break;
+                        throw "Failed to read contained solution content $finalPath`: $($_.Exception.Message)"
                     }
 
                     try {
@@ -531,36 +562,20 @@ try {
                 }
             }
             elseif ($objectProperties.Name.ToLower() -eq "metadata") {
+                $finalPath = $metadataPath
+                $rawData = Get-Content -LiteralPath $finalPath -Raw -ErrorAction Stop
                 try {
-                    $finalPath = $metadataPath
-                    $rawData = $null
-                    try {
-                        Write-Host "Downloading $finalPath"
-                        $rawData = (New-Object System.Net.WebClient).DownloadString($finalPath)
-                    }
-                    catch {
-                        Write-Host "Failed to download $finalPath -- Please ensure that it exists in $([System.Uri]::EscapeUriString($basePath))" -ForegroundColor Red
-                        break;
-                    }
-                        
-                    try {
-                        $json = ConvertFrom-Json $rawData -ErrorAction Stop; # Determine whether content is JSON or YAML
-                        $validJson = $true;
-                    }
-                    catch {
-                        $validJson = $false;
-                    }
-                    
-                    if ($validJson -and $json) {
-                        PrepareSolutionMetadata -solutionMetadataRawContent $json -contentResourceDetails $contentResourceDetails -defaultPackageVersion $defaultPackageVersion
-                    }
-                    else {
-                        Write-Host "Failed to load Metadata file $file -- Please ensure that it exists in $([System.Uri]::EscapeUriString($basePath))" -ForegroundColor Red
-                    }
+                    $json = ConvertFrom-Json $rawData -ErrorAction Stop
+                    $validJson = $true
                 }
                 catch {
-                    Write-Host "Failed to load Metadata file $file -- Please ensure that the SolutionMetadata file exists in $([System.Uri]::EscapeUriString($basePath))" -ForegroundColor Red
-                    break;
+                    $validJson = $false
+                }
+                if ($validJson -and $json) {
+                    PrepareSolutionMetadata -solutionMetadataRawContent $json -contentResourceDetails $contentResourceDetails -defaultPackageVersion $defaultPackageVersion
+                }
+                else {
+                    throw "Failed to load contained solution metadata $finalPath as JSON."
                 }
             }
         }

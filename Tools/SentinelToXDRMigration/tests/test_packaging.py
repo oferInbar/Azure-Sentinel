@@ -18,6 +18,7 @@ from sentinel_xdr_migration.packaging import (
     V31_TOOLKIT_PATHS,
     _verify_package_selection,
     _xdr_references,
+    _validate_solution_package_inputs,
     package_input_file_hashes,
     package_input_identity,
     package_solution_v3_1,
@@ -880,6 +881,378 @@ class PackagingTests(unittest.TestCase):
         data.write_text(json.dumps(document))
         with self.assertRaisesRegex(ValueError, "local .env configuration"):
             package_solution_v3_1(self.solution, version_bump="none")
+
+    def test_rejects_unsafe_general_content_paths_before_powershell(self) -> None:
+        data_file = self.solution / "Data" / "Solution_Sample.json"
+        outside = self.repository / "harmless-synthetic.json"
+        outside.write_text('{"fixture":"PATH_TRAVERSAL_FIXTURE_ONLY"}', encoding="utf-8")
+        references = (
+            "../harmless-synthetic.json",
+            r"..\harmless-synthetic.json",
+            r"Workbooks\..\..\harmless-synthetic.json",
+            "/var/harmless-synthetic.json",
+            r"C:\synthetic\harmless-synthetic.json",
+            r"\\synthetic-host\share\harmless-synthetic.json",
+            "https://example.invalid/synthetic.json",
+            "file:///synthetic.json",
+        )
+        with (
+            mock.patch("sentinel_xdr_migration.packaging.subprocess.run") as run,
+            mock.patch("sentinel_xdr_migration.packaging.shutil.which") as which,
+        ):
+            for reference in references:
+                with self.subTest(reference=reference):
+                    document = json.loads(data_file.read_text(encoding="utf-8"))
+                    document["Workbooks"] = [reference]
+                    data_file.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        package_solution_v3_1(self.solution, version_bump="none")
+            run.assert_not_called()
+            which.assert_not_called()
+
+        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip") as archive:
+            self.assertNotIn(
+                b"PATH_TRAVERSAL_FIXTURE_ONLY",
+                b"".join(archive.read(name) for name in archive.namelist()),
+            )
+
+    def test_rejects_path_like_solution_name_and_metadata_before_powershell(self) -> None:
+        data_file = self.solution / "Data" / "Solution_Sample.json"
+        original = json.loads(data_file.read_text(encoding="utf-8"))
+        outside = self.repository / "harmless-synthetic.json"
+        outside.write_text('{"fixture":"METADATA_FIXTURE_ONLY"}', encoding="utf-8")
+        with (
+            mock.patch("sentinel_xdr_migration.packaging.subprocess.run") as run,
+            mock.patch("sentinel_xdr_migration.packaging.shutil.which") as which,
+        ):
+            for field, values in (
+                ("Name", ("../Sample", r"..\Sample", "/Sample", r"C:\Sample", "https://x.invalid/Sample")),
+                ("Metadata", ("../harmless-synthetic.json", r"..\harmless-synthetic.json",
+                              "/var/harmless-synthetic.json", r"C:\synthetic\metadata.json",
+                              r"\\synthetic-host\share\metadata.json",
+                              "https://example.invalid/metadata.json")),
+            ):
+                for value in values:
+                    with self.subTest(field=field, value=value):
+                        document = dict(original)
+                        document[field] = value
+                        data_file.write_text(json.dumps(document), encoding="utf-8")
+                        with self.assertRaises(ValueError):
+                            package_solution_v3_1(self.solution, version_bump="none")
+            run.assert_not_called()
+            which.assert_not_called()
+
+        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip") as archive:
+            self.assertNotIn(
+                b"METADATA_FIXTURE_ONLY",
+                b"".join(archive.read(name) for name in archive.namelist()),
+            )
+
+    def test_accepts_contained_family_and_repository_relative_paths(self) -> None:
+        workbooks = self.solution / "Workbooks"
+        workbooks.mkdir()
+        (workbooks / "Workbook With Spaces.json").write_text(
+            '{"fixture":"contained"}', encoding="utf-8",
+        )
+        metadata = self.solution / "SolutionMetadata.json"
+        metadata.write_text('{"name":"Sample"}', encoding="utf-8")
+        references = (
+            "Workbooks/Workbook With Spaces.json",
+            "Solutions/Sample/Workbooks/Workbook With Spaces.json",
+            r"Solutions\Sample\Workbooks\Workbook With Spaces.json",
+        )
+        for reference in references:
+            with self.subTest(reference=reference):
+                _validate_solution_package_inputs(self.solution, {
+                    "Name": "Sample",
+                    "Metadata": "Solutions/Sample/SolutionMetadata.json",
+                    "Workbooks": [reference],
+                    "DependentDomainSolutionIds": ["synthetic-id"],
+                })
+
+    def test_rejects_symlink_content_escape(self) -> None:
+        workbooks = self.solution / "Workbooks"
+        workbooks.mkdir()
+        outside = self.repository / "harmless-synthetic.json"
+        outside.write_text('{"fixture":"SYMLINK_FIXTURE_ONLY"}', encoding="utf-8")
+        link = workbooks / "outside.json"
+        try:
+            link.symlink_to(outside)
+        except OSError as exc:
+            self.skipTest(f"symlink creation is unavailable: {exc}")
+        with self.assertRaisesRegex(ValueError, "symlink|escapes its root"):
+            _validate_solution_package_inputs(self.solution, {
+                "Name": "Sample",
+                "Workbooks": ["Workbooks/outside.json"],
+            })
+
+    def test_rejects_symlink_solution_data_file_before_reading(self) -> None:
+        data_file = self.solution / "Data" / "Solution_Sample.json"
+        outside = self.repository / "harmless-synthetic.json"
+        outside.write_text('{"fixture":"DATA_SYMLINK_FIXTURE_ONLY"}', encoding="utf-8")
+        data_file.unlink()
+        try:
+            data_file.symlink_to(outside)
+        except OSError as exc:
+            self.skipTest(f"symlink creation is unavailable: {exc}")
+        with (
+            mock.patch("sentinel_xdr_migration.packaging.subprocess.run") as run,
+            mock.patch("sentinel_xdr_migration.packaging.shutil.which") as which,
+        ):
+            with self.assertRaisesRegex(ValueError, "escapes its root|symlink"):
+                package_solution_v3_1(self.solution, version_bump="none")
+        run.assert_not_called()
+        which.assert_not_called()
+
+    def test_validates_json_encoded_and_malformed_content_arrays(self) -> None:
+        connectors = self.solution / "Data Connectors"
+        connectors.mkdir()
+        (connectors / "definition[1].json").write_text(
+            '{"fixture":"CONTAINED_CONNECTOR_ONLY"}', encoding="utf-8",
+        )
+        allowed = {
+            "Name": "Sample",
+            "Data Connectors": json.dumps([
+                "Data Connectors/definition[1].json",
+            ]),
+        }
+        _validate_solution_package_inputs(self.solution, allowed)
+        self.assertEqual(
+            ["Data Connectors/definition[1].json"],
+            allowed["Data Connectors"],
+        )
+        _validate_solution_package_inputs(self.solution, {
+            "Name": "Sample",
+            "Data Connectors": json.dumps([
+                "Solutions/Sample/Data Connectors/definition[1].json",
+            ]),
+        })
+
+        outside = self.repository / "harmless-synthetic.json"
+        outside.write_text('{"fixture":"ENCODED_ESCAPE_FIXTURE_ONLY"}', encoding="utf-8")
+        data_file = self.solution / "Data" / "Solution_Sample.json"
+        original = json.loads(data_file.read_text(encoding="utf-8"))
+        invalid_values = (
+            "../../harmless-synthetic.json",
+            r"..\harmless-synthetic.json",
+            "/var/harmless-synthetic.json",
+            r"C:\synthetic\harmless-synthetic.json",
+            r"\\synthetic-host\share\harmless-synthetic.json",
+            "https://example.invalid/synthetic.json",
+        )
+        with (
+            mock.patch("sentinel_xdr_migration.packaging.subprocess.run") as run,
+            mock.patch("sentinel_xdr_migration.packaging.shutil.which") as which,
+        ):
+            for value in invalid_values:
+                with self.subTest(value=value):
+                    document = dict(original)
+                    document["Data Connectors"] = json.dumps([value])
+                    data_file.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        package_solution_v3_1(self.solution, version_bump="none")
+            for malformed in (
+                "{not-json",
+                json.dumps("not-an-array"),
+                json.dumps(["Data Connectors/definition[1].json", 7]),
+            ):
+                with self.subTest(malformed=malformed):
+                    document = dict(original)
+                    document["Data Connectors"] = malformed
+                    data_file.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "JSON-encoded content array"):
+                        package_solution_v3_1(self.solution, version_bump="none")
+            document = dict(original)
+            document["Data Connectors"] = ["Data Connectors/definition[1].json", 7]
+            data_file.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid local path reference"):
+                package_solution_v3_1(self.solution, version_bump="none")
+            run.assert_not_called()
+            which.assert_not_called()
+
+        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip") as archive:
+            self.assertNotIn(
+                b"ENCODED_ESCAPE_FIXTURE_ONLY",
+                b"".join(archive.read(name) for name in archive.namelist()),
+            )
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell 7 is required")
+    def test_powershell_ccp_reader_validates_encoded_arrays_and_literal_paths(self) -> None:
+        common = Path(__file__).resolve().parents[3] / (
+            "Tools/Create-Azure-Sentinel-Solution/common/commonFunctions.ps1"
+        )
+        ccp_script = common.with_name("get-ccp-details.ps1")
+        connectors = self.solution / "Data Connectors"
+        connectors.mkdir()
+        exact_file = connectors / "definition[1].json"
+        exact_file.write_text(
+            '{"fixture":"CONTAINED_CONNECTOR_ONLY"}', encoding="utf-8",
+        )
+        (connectors / "definition1.json").write_text(
+            '{"fixture":"WILDCARD_WRONG_TARGET"}', encoding="utf-8",
+        )
+        outside = self.repository / "harmless-synthetic.json"
+        outside.write_text('{"fixture":"ENCODED_ESCAPE_FIXTURE_ONLY"}', encoding="utf-8")
+        common_literal = str(common).replace("'", "''")
+        ccp_literal = str(ccp_script).replace("'", "''")
+        exact_literal = str(exact_file).replace("'", "''")
+        solutions_literal = str(self.solution.parent).replace("'", "''")
+
+        direct_reader = subprocess.run(
+            [
+                "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                f". '{common_literal}'; "
+                f"$result = ReadFileContent -filePath '{exact_literal}'; "
+                "if ($result.fixture -cne 'CONTAINED_CONNECTOR_ONLY') { throw 'wildcard read mismatch' }; "
+                "Write-Output 'DIRECT_READ_OK'",
+            ],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertEqual(0, direct_reader.returncode, direct_reader.stderr)
+        self.assertIn("DIRECT_READ_OK", direct_reader.stdout)
+
+        def invoke_ccp(encoded: str) -> subprocess.CompletedProcess[str]:
+            escaped = encoded.replace("'", "''")
+            command = (
+                f". '{common_literal}'; . '{ccp_literal}'; "
+                f"$data = [pscustomobject]@{{ 'Data Connectors' = '{escaped}' }}; "
+                f"$null = Get-CCP-Dict -dataFileMetadata $data "
+                f"-baseFolderPath '{solutions_literal}' -solutionName 'Sample' "
+                "-DCFolderName 'Data Connectors'; Write-Output 'CCP_READ_OK'"
+            )
+            return subprocess.run(
+                ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+                check=False, capture_output=True, text=True,
+            )
+
+        for reference in (
+            "Data Connectors/definition[1].json",
+            "Solutions/Sample/Data Connectors/definition[1].json",
+        ):
+            with self.subTest(reference=reference):
+                valid = invoke_ccp(json.dumps([reference]))
+                self.assertEqual(0, valid.returncode, valid.stderr)
+                self.assertIn("CCP_READ_OK", valid.stdout)
+
+        for invalid in (
+            json.dumps(["../../harmless-synthetic.json"]),
+            json.dumps([r"..\harmless-synthetic.json"]),
+            "{malformed-json",
+            json.dumps("not-an-array"),
+            json.dumps(["Data Connectors/definition[1].json", 7]),
+        ):
+            with self.subTest(invalid=invalid):
+                denied = invoke_ccp(invalid)
+                self.assertNotEqual(0, denied.returncode)
+                self.assertNotIn(
+                    "ENCODED_ESCAPE_FIXTURE_ONLY",
+                    denied.stdout + denied.stderr,
+                )
+        native_mixed = (
+            f". '{common_literal}'; . '{ccp_literal}'; "
+            "$data = [pscustomobject]@{ 'Data Connectors' = @('Data Connectors/definition[1].json', 7) }; "
+            f"Get-CCP-Dict -dataFileMetadata $data -baseFolderPath '{solutions_literal}' "
+            "-solutionName 'Sample' -DCFolderName 'Data Connectors'"
+        )
+        denied_mixed = subprocess.run(
+            ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", native_mixed],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertNotEqual(0, denied_mixed.returncode)
+        self.assertNotIn(
+            "ENCODED_ESCAPE_FIXTURE_ONLY",
+            denied_mixed.stdout + denied_mixed.stderr,
+        )
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell 7 is required")
+    def test_powershell_contained_reader_rejects_escape_and_accepts_approved_forms(self) -> None:
+        common = Path(__file__).resolve().parents[3] / (
+            "Tools/Create-Azure-Sentinel-Solution/common/commonFunctions.ps1"
+        )
+        root = self.solution
+        (root / "Workbooks").mkdir()
+        allowed = root / "Workbooks" / "Workbook With Spaces.json"
+        allowed.write_text('{"fixture":"contained"}', encoding="utf-8")
+        outside = self.repository / "harmless-synthetic.json"
+        outside.write_text('{"fixture":"POWERSHELL_OUTSIDE_FIXTURE_ONLY"}', encoding="utf-8")
+        common_literal = str(common).replace("'", "''")
+        root_literal = str(root).replace("'", "''")
+        outside_literal = str(outside).replace("'", "''")
+        deny = subprocess.run(
+            [
+                "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                f". '{common_literal}'; "
+                f"$result = Resolve-SolutionContentPath -SolutionRoot '{root_literal}' "
+                f"-SolutionName 'Sample' -ContentPath '../{outside.name}' -RequireFile; "
+                "Get-Content -LiteralPath $result.FullPath -Raw",
+            ],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertNotEqual(0, deny.returncode)
+        self.assertNotIn("POWERSHELL_OUTSIDE_FIXTURE_ONLY", deny.stdout + deny.stderr)
+        invalid_name = subprocess.run(
+            [
+                "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                f". '{common_literal}'; "
+                "Assert-SolutionName -SolutionName '../Sample' -SelectedSolutionName 'Sample'; "
+                f"Get-Content -LiteralPath '{outside_literal}' -Raw",
+            ],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertNotEqual(0, invalid_name.returncode)
+        self.assertNotIn("POWERSHELL_OUTSIDE_FIXTURE_ONLY", invalid_name.stdout + invalid_name.stderr)
+        symlink = root / "Workbooks" / "outside.json"
+        try:
+            symlink.symlink_to(outside)
+        except OSError:
+            symlink = None
+        if symlink is not None:
+            symlink_result = subprocess.run(
+                [
+                    "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                    f". '{common_literal}'; "
+                    f"$result = Resolve-SolutionContentPath -SolutionRoot '{root_literal}' "
+                    "-SolutionName 'Sample' -ContentPath 'Workbooks/outside.json' -RequireFile; "
+                    "Get-Content -LiteralPath $result.FullPath -Raw",
+                ],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, symlink_result.returncode)
+            self.assertNotIn(
+                "POWERSHELL_OUTSIDE_FIXTURE_ONLY",
+                symlink_result.stdout + symlink_result.stderr,
+            )
+            scan_result = subprocess.run(
+                [
+                    "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                    f". '{common_literal}'; "
+                    f"Assert-NoSolutionContentSymlinks -SolutionRoot '{root_literal}'",
+                ],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, scan_result.returncode)
+            self.assertIn("symlink", scan_result.stderr.lower())
+
+        references = (
+            "Workbooks/Workbook With Spaces.json",
+            "Solutions/Sample/Workbooks/Workbook With Spaces.json",
+            r"Solutions\Sample\Workbooks\Workbook With Spaces.json",
+        )
+        for reference in references:
+            escaped_reference = reference.replace("'", "''")
+            with self.subTest(reference=reference):
+                allowed_result = subprocess.run(
+                    [
+                        "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                        f". '{common_literal}'; "
+                        f"$result = Resolve-SolutionContentPath -SolutionRoot '{root_literal}' "
+                        f"-SolutionName 'Sample' -ContentPath '{escaped_reference}' -RequireFile; "
+                        "Get-Content -LiteralPath $result.FullPath -Raw",
+                    ],
+                    check=False, capture_output=True, text=True,
+                )
+                self.assertEqual(0, allowed_result.returncode, allowed_result.stderr)
+                self.assertIn('"fixture":"contained"', allowed_result.stdout)
 
     @mock.patch("sentinel_xdr_migration.packaging.shutil.which", return_value="pwsh")
     @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
@@ -11,6 +12,7 @@ def content_path(root: Path, relative: str | Path) -> Path:
     if (
         reference.is_absolute()
         or PureWindowsPath(value).drive
+        or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value)
         or ".." in reference.parts
         or not reference.parts
     ):
