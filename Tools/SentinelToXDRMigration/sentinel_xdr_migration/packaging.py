@@ -64,6 +64,28 @@ V31_TOOLKIT_PATHS = (
     "Tools/Create-Azure-Sentinel-Solution/arm-ttk/run-arm-ttk-in-automation.ps1",
     "Tools/SentinelToXDRMigration/kql/rename-parser-bindings.cjs",
 )
+_NON_PATH_ARRAYS = {
+    "dependentdomainsolutionids",
+    "staticdataconnectorids",
+    "xdr detections",
+    "custom detections",
+}
+_ENCODED_CONTENT_ARRAYS = {
+    "parsers",
+    "data connectors",
+    "dataconnectors",
+    "playbooks",
+    "workbooks",
+    "analytic rules",
+    "analytics rules",
+    "hunting queries",
+    "watchlists",
+    "summary rules",
+    "summaryrules",
+    "xdr detections",
+    "custom detections",
+    "savedsearches",
+}
 
 
 def validate_v31_target_version(version: str | None) -> str:
@@ -202,6 +224,7 @@ def _deployment_parameters(
 
 
 def _solution_data_file(data_directory: Path) -> Path:
+    solution = data_directory.parent.resolve()
     candidates = sorted(
         path
         for path in data_directory.glob("*.json")
@@ -212,7 +235,98 @@ def _solution_data_file(data_directory: Path) -> Path:
             f"expected exactly one solution data JSON in {data_directory}, "
             f"found {len(candidates)}"
         )
-    return candidates[0]
+    return content_path(solution, candidates[0].relative_to(solution))
+
+
+def _validate_solution_name(name: Any, solution: Path) -> None:
+    if (
+        not isinstance(name, str)
+        or not name.strip()
+        or name in {".", ".."}
+        or "/" in name
+        or "\\" in name
+        or ":" in name
+        or name.casefold() != solution.name.casefold()
+    ):
+        raise ValueError(
+            "solution Data Name must match the selected solution folder and must not be a path"
+        )
+
+
+def _solution_relative_reference(solution: Path, reference: Any, label: str) -> Path:
+    if not isinstance(reference, str) or not reference.strip():
+        raise ValueError(f"solution Data {label} contains an invalid local path reference")
+    normalized = reference.replace("\\", "/")
+    if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", normalized):
+        raise ValueError(f"solution Data {label} must use a local solution-relative path")
+    parts = normalized.split("/")
+    if normalized.startswith("/") or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError(f"solution Data {label} path must be relative and contained: {reference!r}")
+    if parts[0] == "Solutions":
+        if len(parts) < 3 or parts[1] != solution.name:
+            raise ValueError(
+                f"solution Data {label} repository path must name the selected solution"
+            )
+        normalized = "/".join(parts[2:])
+        parts = normalized.split("/")
+    if any(part.lower() in {"logs", "reports", "evidence"} for part in parts):
+        raise ValueError("solution Data content arrays must never include Logs, Reports or Evidence")
+    if any(part.lower() == ".env" or part.lower().startswith(".env.") for part in parts):
+        raise ValueError(
+            "solution Data content arrays must never include local .env configuration"
+        )
+    candidate = content_path(solution, normalized)
+    if candidate.is_symlink() or not candidate.is_file():
+        raise ValueError(f"referenced solution content does not exist as a local file: {reference}")
+    return candidate.resolve()
+
+
+def _validate_solution_package_inputs(solution: Path, document: dict[str, Any]) -> None:
+    name = _value(document, "Name")
+    _validate_solution_name(name, solution)
+
+    metadata = _value(document, "Metadata")
+    if metadata is not None:
+        metadata_path = _solution_relative_reference(solution, metadata, "Metadata")
+        if not metadata_path.is_relative_to(solution.resolve()):
+            raise ValueError("solution Data Metadata path resolves outside the selected solution")
+
+    for key, value in list(document.items()):
+        if isinstance(value, str) and key.casefold() in _ENCODED_CONTENT_ARRAYS:
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"solution Data {key} must be a JSON-encoded content array"
+                ) from exc
+            if not isinstance(value, list) or any(
+                not isinstance(reference, str) or not reference.strip()
+                for reference in value
+            ):
+                raise ValueError(f"solution Data {key} must be a JSON-encoded content array")
+            document[key] = value
+        if not isinstance(value, list):
+            continue
+        if key.casefold() in {"xdr detections", "custom detections"}:
+            for reference in value:
+                if isinstance(reference, str):
+                    parts = reference.replace("\\", "/").split("/")
+                    if any(part.lower() in {"logs", "reports", "evidence"} for part in parts):
+                        raise ValueError(
+                            "solution Data content arrays must never include Logs, Reports or Evidence"
+                        )
+                    if any(
+                        part.lower() == ".env" or part.lower().startswith(".env.")
+                        for part in parts
+                    ):
+                        raise ValueError(
+                            "solution Data content arrays must never include local .env configuration"
+                        )
+            continue
+        if key.casefold() in _NON_PATH_ARRAYS:
+            continue
+        for reference in value:
+            _solution_relative_reference(solution, reference, key)
 
 
 def _validate_v31_toolkit_root(toolkit_root: str | Path) -> Path:
@@ -684,26 +798,7 @@ def package_solution_v3_1(
 
     data_file = _solution_data_file(data_directory)
     before = _read_json(data_file)
-    for values in before.values():
-        if isinstance(values, list):
-            for value in values:
-                parts = (
-                    value.replace("\\", "/").split("/")
-                    if isinstance(value, str)
-                    else []
-                )
-                if any(
-                    part.lower() in {"logs", "reports", "evidence"}
-                    for part in parts
-                ):
-                    raise ValueError("solution Data content arrays must never include Logs, Reports or Evidence")
-                if any(
-                    part.lower() == ".env" or part.lower().startswith(".env.")
-                    for part in parts
-                ):
-                    raise ValueError(
-                        "solution Data content arrays must never include local .env configuration"
-                    )
+    _validate_solution_package_inputs(root, before)
     xdr_files = _xdr_references(root, before)
     script = (
         selected_toolkit_root

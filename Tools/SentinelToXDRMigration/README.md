@@ -3,6 +3,9 @@
 This toolkit converts the analytic rules in a Microsoft Sentinel solution into
 versioned Defender XDR Custom Detection YAML files.
 
+See [tracked follow-up areas](FOLLOW_UPS.md) for curated capability and
+operator-experience work that may be considered separately.
+
 ## Product goal and operator flow
 
 **Product goal:** Allow autonomous migration of Sentinel solutions to Defender

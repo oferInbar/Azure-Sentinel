@@ -72,7 +72,13 @@ function Save-V31LocalPackageVersion {
     param([string]$DataFilePath, [string]$Version)
 
     $data = Get-Content -LiteralPath $DataFilePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-    $metadataPath = Join-Path (Split-Path (Split-Path $DataFilePath -Parent) -Parent) $data.Metadata
+    $solutionRoot = Split-Path (Split-Path $DataFilePath -Parent) -Parent
+    $metadataReference = Resolve-SolutionContentPath `
+        -SolutionRoot $solutionRoot `
+        -SolutionName ([System.IO.Path]::GetFileName($solutionRoot)) `
+        -ContentPath ([string]$data.Metadata) `
+        -RequireFile
+    $metadataPath = $metadataReference.FullPath
     $metadata = Get-Content -LiteralPath $metadataPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
     $data | Add-Member -NotePropertyName Version -NotePropertyValue $Version -Force
     $metadata | Add-Member -NotePropertyName version -NotePropertyValue $Version -Force
