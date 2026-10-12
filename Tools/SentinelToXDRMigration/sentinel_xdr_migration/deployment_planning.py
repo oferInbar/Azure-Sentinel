@@ -18,6 +18,7 @@ from .artifacts import (
     write_json_artifact,
 )
 from .content_paths import content_path
+from .analytic_rule import analytic_rule_payload
 from .converter import (
     analytic_rule_files,
     build_xdr_document,
@@ -516,7 +517,6 @@ def _eligible_analytic_rule_ids(
 ) -> tuple[list[str], list[str]]:
     eligible: list[str] = []
     ineligible: list[str] = []
-    from .analytic_deployment import analytic_rule_payload
 
     for key, item in sorted(rules.items()):
         try:

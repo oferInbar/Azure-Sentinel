@@ -25,6 +25,7 @@ from .catalog import (
 )
 from .columns import projected_columns
 from .content_paths import content_path, yaml_files
+from .durations import iso_duration
 from .parser_bindings import normalize_parser_bindings
 from .report import write_transformation_report
 
@@ -228,26 +229,6 @@ def configure_logging(solution: str | Path | None = None) -> None:
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug[:72] or "custom-detection"
-
-
-def iso_duration(value: Any, default: str = "PT1H") -> tuple[str, str | None]:
-    text = str(value or "").strip().lower()
-    iso = text.upper()
-    if re.fullmatch(
-        r"P(?:(?:\d+D)(?:T(?:\d+H)?(?:\d+M)?(?:\d+S)?)?|T(?:\d+H)?(?:\d+M)?(?:\d+S)?)",
-        iso,
-    ):
-        return iso, None
-    match = re.fullmatch(r"(\d+)\s*([smhd])", text)
-    if not match:
-        return default, f"unrecognized queryFrequency {value!r}; defaulted to {default}"
-    amount, unit = match.groups()
-    return {
-        "s": f"PT{amount}S",
-        "m": f"PT{amount}M",
-        "h": f"PT{amount}H",
-        "d": f"P{amount}D",
-    }[unit], None
 
 
 def solution_paths(solution: str | Path) -> tuple[Path, Path, Path]:

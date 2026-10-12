@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 import tempfile
@@ -42,15 +43,67 @@ def document() -> dict:
 
 
 class AnalyticDeploymentTests(unittest.TestCase):
+    def test_package_import_graph_has_no_analytic_or_parity_cycle(self) -> None:
+        package = Path(__file__).resolve().parents[1] / "sentinel_xdr_migration"
+        modules = {path.stem: path for path in package.glob("*.py")}
+        graph = {name: set() for name in modules}
+        for name, path in modules.items():
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ImportFrom) or node.level != 1:
+                    continue
+                if node.module and node.module.split(".")[0] in modules:
+                    graph[name].add(node.module.split(".")[0])
+                elif node.module is None:
+                    graph[name].update(
+                        alias.name for alias in node.names if alias.name in modules
+                    )
+
+        for root in ("analytic_deployment", "alert_parity"):
+            pending = [root]
+            visited = {root}
+            while pending:
+                module = pending.pop()
+                for dependency in graph[module]:
+                    if dependency == root:
+                        self.fail(f"import cycle returns to {root} through {module}")
+                    if dependency not in visited:
+                        visited.add(dependency)
+                        pending.append(dependency)
+
     def test_analytic_and_parity_imports_work_in_either_order(self) -> None:
         package_root = Path(__file__).resolve().parents[1]
         for imports in (
-            "from sentinel_xdr_migration import analytic_deployment, alert_parity, arm_client\n"
+            "import sentinel_xdr_migration.analytic_deployment as analytic_deployment\n"
+            "import sentinel_xdr_migration.alert_parity as alert_parity\n"
+            "import sentinel_xdr_migration.analytic_rule as analytic_rule\n"
+            "import sentinel_xdr_migration.arm_client as arm_client\n"
+            "import sentinel_xdr_migration.deployment_planning as deployment_planning\n"
             "assert analytic_deployment._arm_request is arm_client._arm_request\n"
-            "assert alert_parity._arm_request is arm_client._arm_request",
-            "from sentinel_xdr_migration import alert_parity, analytic_deployment, arm_client\n"
+            "assert alert_parity._arm_request is arm_client._arm_request\n"
+            "assert (\n"
+            "    analytic_deployment.analytic_rule_payload\n"
+            "    is analytic_rule.analytic_rule_payload\n"
+            ")\n"
+            "assert (\n"
+            "    deployment_planning.analytic_rule_payload\n"
+            "    is analytic_rule.analytic_rule_payload\n"
+            ")",
+            "import sentinel_xdr_migration.deployment_planning as deployment_planning\n"
+            "import sentinel_xdr_migration.alert_parity as alert_parity\n"
+            "import sentinel_xdr_migration.analytic_deployment as analytic_deployment\n"
+            "import sentinel_xdr_migration.analytic_rule as analytic_rule\n"
+            "import sentinel_xdr_migration.arm_client as arm_client\n"
             "assert analytic_deployment._arm_request is arm_client._arm_request\n"
-            "assert alert_parity._arm_request is arm_client._arm_request",
+            "assert alert_parity._arm_request is arm_client._arm_request\n"
+            "assert (\n"
+            "    analytic_deployment.analytic_rule_payload\n"
+            "    is analytic_rule.analytic_rule_payload\n"
+            ")\n"
+            "assert (\n"
+            "    deployment_planning.analytic_rule_payload\n"
+            "    is analytic_rule.analytic_rule_payload\n"
+            ")",
         ):
             with self.subTest(imports=imports):
                 subprocess.run(
