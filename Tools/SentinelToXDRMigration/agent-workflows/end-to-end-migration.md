@@ -1,7 +1,8 @@
 # Sentinel to Defender XDR migration workflow
 
 This is the canonical, agent-neutral workflow for authoring and migrating
-Microsoft Sentinel solution content to Defender XDR Custom Detections. Agent
+Microsoft Sentinel solution content to Defender XDR Custom Detections and
+Defender Workbooks. Agent
 adapters must reference this document rather than redefine the process.
 
 Deterministic behavior belongs to:
@@ -68,8 +69,85 @@ disabled-by-default, and exact-scope authorization gates remain in force.
 
 `Discovery -> Conversion -> Validation -> Packaging -> Report`
 
-This is the ISV publishing workflow. It does not require a tenant, workspace,
-deployment, mock ingestion, or alert-parity test.
+Legacy offline Authoring does not require a tenant, workspace, deployment, mock
+ingestion, or alert-parity test. New capability-version-1 CLI runs use the
+candidate ARM lifecycle below; their default lab route requires an approved
+target and independently verified deployment evidence before package acceptance.
+
+### Versioned workbook and candidate ARM lifecycle
+
+New CLI runs persist `workbookCapabilityVersion=1` and default to
+`armValidationMethod=lab-deployment`, in either explicitly selected profile.
+Authoring may explicitly choose `--arm-validation-method arm-ttk`. Existing
+runs never silently acquire workbook scope or change their validation method;
+direct library initialization retains legacy defaults unless capability 1 is
+explicitly requested.
+
+The order is:
+
+`Discovery -> Conversion -> content/static Validation -> V3.1 candidate ->
+remaining official checks -> selected ARM validation -> accepted Packaging`
+
+Keep frozen recursive workbook inventory and explicit selections separate from
+detection coverage. Workbook-only solutions need no invented Analytic Rules,
+rule IDs, runtime manifests, ingestion or alert parity. Exclusions remain
+visible, and explicit empty `XDR Workbooks` selections stay empty.
+
+A candidate is not accepted packaging or a successful release. Preserve its
+artifacts and consumed version action for same-version retries. Use the official
+`build-and-validate.ps1` receipt bound to the current candidate. Lab validation
+replaces only ARM-TTK; remaining applicable official checks are mandatory.
+For selected Defender Workbooks, both methods additionally require independent
+installation, registration/provenance readback and repeat-install/update
+contract evidence. ARM-TTK alone cannot establish that contract.
+
+Versioned lab consent binds the selected run/lab, deployment operation and
+allowed content/resource types. Hash/count changes within that scope require
+fresh evidence, not automatically broader approval. Changed labs, operations
+or type sets require renewed approval. Revocation blocks dispatch. The executor
+also requires explicit immediate confirmation and verified access, disabled
+content and ownership; consent never grants permissions or authorizes ingestion,
+activation or cleanup. This is not a reinterpretation of legacy consent.
+
+**Production dispatch remains blocked:** the current provider adapter does not
+jointly verify non-production target, ARM/extension access, disabled content and
+workbook ownership. Do not replace this blocker with asserted readiness flags,
+infer support from a mock, or treat local tests as provider acceptance.
+
+New workbook-only Qualification runs record `validationMode=workbook-content`
+before packaging, with query/UI checks not run. They require current independent
+query and UI evidence before final Report. Mixed solutions retain all detection
+runtime prerequisites before candidate generation; workbook UI proof remains
+post-installation. A passed ARM candidate contract can supply workbook-only
+Deployment evidence; do not run a detection-only deployer or invent detections.
+
+### Workbook Qualification and browser QA
+
+`workbook-query-plan/review/execute` bind the exact reviewed fixture harness
+family to the locked Qualification target. Linux Machines has 202 queries
+across independent Sentinel and Advanced Hunting providers. Exact result
+assertions, including schema, cells, multiplicity and ordering, are mandatory.
+This fixture route does not authorize ingestion or prove live-panel telemetry.
+
+`workbook-ui-plan/review/execute` use a reviewed, hash-bound browser configuration,
+an existing private session and independently observed tenant, canonical content
+and installed instance IDs. Require all seven check kinds: pickers, dependent
+refresh, filters, drill-down, reload, layout and conditional visibility.
+Selectors, expected values, request URLs, navigation and timeouts require review;
+no guessed production DOM bindings or automatic sign-in. Save/Edit and cleanup
+are prohibited. Browser/network checks are not a browser-wide no-write sandbox.
+
+The optional `browser` extra provides Playwright. UI assertions compare reviewed
+expectations, not automatically fetched API results. Query evidence, browser
+evidence and full ARM/Content Hub acceptance remain separate. Existing
+`workbook-ui-import` accepts explicitly reviewed external captures; it does not
+launch a browser. Live browser execution needs separate exact-scope approval.
+
+Public Graph beta metadata exposes `security/workbooks` and the security
+workbook `name`/open `content` model. It does not establish write permissions,
+create/update ID semantics or provider acceptance. Retain the ARM candidate
+route until those are verified; a future direct-API smoke test cannot replace
+full V3.1 package acceptance.
 
 #### Optional explicitly approved Advanced Hunting read validation
 
@@ -1151,8 +1229,10 @@ full inventory. If initialization selected `version-bump=none` but a first
 versioned release is required, inspect the current package-input SHA-256 and
 explicitly plan one `patch`, `minor`, or `major` action against that exact hash
 before invoking V3.1. Do not reuse stale selection, skip review gates, or
-consume a second version action. Qualification still requires its exact
-runtime-bound selection and all Qualification gates before packaging.
+consume a second version action. Detection-bearing Qualification still requires
+its exact runtime-bound selection before packaging. The versioned workbook
+route described above requires workbook query/UI evidence after installation,
+before final Qualification completion.
 
 ### Advance deployment-scope planning and consent
 

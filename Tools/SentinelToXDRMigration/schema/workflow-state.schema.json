@@ -13,9 +13,17 @@
       "else": {
         "not": {"required": ["workbooks"]},
         "properties": {"context": {"not": {"anyOf": [
-          {"required": ["armValidationMethod"]}, {"required": ["workbookFullInventory"]}
+          {"required": ["armValidationMethod"]}, {"required": ["workbookFullInventory"]},
+          {"required": ["workbookQualificationAfterArm"]}
         ]}}}
       }
+    },
+    {
+      "if": {"properties": {"context": {"required": ["workbookQualificationAfterArm"]}}},
+      "then": {"properties": {"context": {"properties": {
+        "workflowProfile": {"const": "qualification"},
+        "targetContextLocked": {"const": true}
+      }, "required": ["targetContextLocked"]}}}
     }
   ],
   "required": [
@@ -136,6 +144,10 @@
         },
         "targetContextLocked": {
           "type": "boolean"
+        },
+        "workbookQualificationAfterArm": {
+          "const": true,
+          "description": "New workbook-only Qualification runs validate content before ARM acceptance; query/UI proof remains mandatory before completion."
         },
         "versionBump": {
           "enum": [

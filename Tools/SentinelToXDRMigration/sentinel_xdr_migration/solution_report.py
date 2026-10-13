@@ -1434,7 +1434,12 @@ def build_solution_report(
 ) -> dict[str, Any]:
     from . import workbook_workflow
     root = Path(solution).expanduser().resolve()
-    current_workflow = workbook_workflow.current_state(root)
+    workflow = _read_json(existing_artifact_path(root, "workflow-state.json"))
+    workbook_context = workflow.get("context")
+    has_workbook_state = "workbooks" in workflow or (
+        isinstance(workbook_context, dict) and "workbookCapabilityVersion" in workbook_context
+    )
+    current_workflow = workbook_workflow.current_state(root) if has_workbook_state else None
     workbook_only = bool(current_workflow and workbook_workflow.enabled(current_workflow)
                          and not workbook_workflow.has_analytic_rules(root))
     if workbook_only:
@@ -1443,7 +1448,6 @@ def build_solution_report(
         root, analytic, output = solution_paths(solution)
     reports = report_directory(root, create=True)
     manifest = _read_json(existing_artifact_path(root, "manifest.json"))
-    workflow = _read_json(existing_artifact_path(root, "workflow-state.json"))
     runtime_consent = {"status": "notApplicable"} if workbook_only else runtime_query_consent_status(root)
     manifest_by_source = {}
     for item in manifest.get("results") or []:

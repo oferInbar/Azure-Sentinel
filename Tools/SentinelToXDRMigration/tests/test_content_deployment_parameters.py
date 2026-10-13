@@ -176,9 +176,15 @@ class ContentDeploymentTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         template = json.loads(result.stdout)["template"]
         self.assertEqual(set(CONTRACT), set(template["parameters"]))
-        self.assertNotIn("DeployDefenderWorkbook", template["parameters"])
+        self.assertIs(False, template["parameters"]["DeployDefenderWorkbook"]["defaultValue"])
+        workbook = next(
+            resource for resource in template["resources"]
+            if resource["name"] == "DefenderWorkbook"
+        )
+        self.assertEqual(
+            "[parameters('DeployDefenderWorkbook')]", workbook["condition"]
+        )
         for resource in (
-            registration("DefenderWorkbook", "unsupported-workbook"),
             registration("FutureKind", "future-kind"),
             {"type": "Microsoft.Resources/deployments", "name": "unowned-deployment", "properties": {}},
         ):

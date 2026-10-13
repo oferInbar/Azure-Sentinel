@@ -171,6 +171,29 @@ def test_candidate_is_not_accepted_and_binds_every_artifact(case):
     assert validation.refresh_arm_candidate(CONTEXT, candidate) == candidate
 
 
+def test_workbook_only_qualification_candidate_precedes_query_and_ui_proof(case):
+    context = {
+        **CONTEXT, **TARGET, "workflowProfile": "qualification",
+        "targetContextLocked": True, "workbookQualificationAfterArm": True,
+    }
+    candidate = validation.create_arm_candidate(
+        context, solution=case["solution"], package_report="Logs/packaging.v3_1.json",
+        validation_receipt=case["receipt"], prerequisite_evidence=case["gates"],
+    )
+    assert candidate["accepted"] is False
+    assert validation.plan_lab_arm_validation(
+        context, candidate, target=TARGET, selected_flags=FLAGS,
+    )["status"] == "ready"
+    assert validation.refresh_arm_candidate(context, candidate) == candidate
+    case["report"]["xdrDetectionCount"] = 1
+    (case["solution"] / "Logs/packaging.v3_1.json").write_text(json.dumps(case["report"]))
+    with pytest.raises(ValueError, match="cannot bypass detection runtime"):
+        validation.create_arm_candidate(
+            context, solution=case["solution"], package_report="Logs/packaging.v3_1.json",
+            validation_receipt=case["receipt"], prerequisite_evidence=case["gates"],
+        )
+
+
 def test_production_input_manifest_is_verified_without_rejecting_additive_fields(case):
     recorded = case["report"]["packageInputs"]["after"]
     assert set(recorded) == {"sha256", "fileCount", "files"}

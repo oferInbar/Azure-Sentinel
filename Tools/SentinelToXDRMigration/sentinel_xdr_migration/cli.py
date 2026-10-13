@@ -970,16 +970,10 @@ def main(argv: list[str] | None = None) -> int:
 
     runs_parser = subparsers.add_parser("workflow-runs", help="List run IDs without selecting or modifying state.")
     runs_parser.add_argument("--solution", required=True)
-    try:
-        from .workbook_qualification_cli import (
-            register_workbook_qualification_commands, dispatch_workbook_qualification,
-        )
-    except ModuleNotFoundError as exc:
-        if exc.name != "sentinel_xdr_migration.workbook_qualification_cli":
-            raise
-        qualification_commands = ()
-    else:
-        qualification_commands = register_workbook_qualification_commands(subparsers)
+    from .workbook_qualification_cli import (
+        register_workbook_qualification_commands, dispatch_workbook_qualification,
+    )
+    qualification_commands = register_workbook_qualification_commands(subparsers)
     for subparser in subparsers.choices.values():
         if any(action.dest == "solution" for action in subparser._actions):
             subparser.add_argument("--run-id", help="Select an existing run; required when multiple runs exist.")

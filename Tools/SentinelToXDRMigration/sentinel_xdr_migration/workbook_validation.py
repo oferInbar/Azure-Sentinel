@@ -117,7 +117,21 @@ def create_arm_candidate(
         or manifest_sha256 != inputs["sha256"]
     ):
         raise ValueError("candidate package input file manifest is missing, incomplete or stale")
-    required_gates = (*_GATES, "qualification") if context["workflowProfile"] == "qualification" else _GATES
+    post_arm_workbook_qualification = context.get("workbookQualificationAfterArm") is True
+    if post_arm_workbook_qualification:
+        from .workbook_workflow import has_analytic_rules
+
+        if (
+            context["workflowProfile"] != "qualification"
+            or has_analytic_rules(root)
+            or report.get("xdrDetectionCount") not in (None, 0)
+        ):
+            raise ValueError("post-ARM workbook qualification cannot bypass detection runtime prerequisites")
+    required_gates = (
+        (*_GATES, "qualification")
+        if context["workflowProfile"] == "qualification" and not post_arm_workbook_qualification
+        else _GATES
+    )
     if set(prerequisite_evidence) != set(required_gates):
         raise ValueError("candidate requires fresh conversion, review, structure and package gate evidence")
     gates = {}

@@ -2094,12 +2094,18 @@ def run_workbook_only_authoring(solution: str | Path) -> dict[str, Any]:
                     result = action(root)
                 if name == "conversion" and result.get("workbooks", {}).get("selectedBlocked"):
                     raise ValueError("workbook conversion contains unresolved review or technical blockers")
-                if name == "validation" and state["context"]["workflowProfile"] == "qualification":
+                if (
+                    name == "validation"
+                    and state["context"]["workflowProfile"] == "qualification"
+                    and state["context"].get("workbookQualificationAfterArm") is not True
+                ):
                     _complete_workflow_stage_unlocked(root, name, path, status="blocked",
                         message="Workbook query/UI Qualification evidence is still required; no detection ingestion/parity is requested.")
                     break
                 _complete_workflow_stage_unlocked(root, name, path, status="passed",
-                    artifacts=({"runtimeStatus": "not-run", "validationMode": "offline-authoring"}
+                    artifacts=({"runtimeStatus": "not-run", "validationMode":
+                                "workbook-content" if state["context"]["workflowProfile"] == "qualification"
+                                else "offline-authoring"}
                                if name == "validation" else {}))
             except BudgetError as exc:
                 _stop_budget_run(path, _load(root)[1], name, str(exc))
@@ -2849,6 +2855,7 @@ def initialize_workflow(
         if yolo and workbook_only:
             state["context"]["workbookFullInventory"] = True
         if workbook_only and workflow_profile == "qualification":
+            state["context"]["workbookQualificationAfterArm"] = True
             for name in ("mockIngestion", "alertParity"):
                 state["stages"][name] = _stage_result(name, required=False)
     if frozen_inventory is not None:
@@ -6026,9 +6033,14 @@ def _complete_workflow_stage_unlocked(
         and not workbook_workflow.has_analytic_rules(solution)
         and state["context"]["workflowProfile"] == "qualification"
     ):
-        from .workbook_qualification import require_current_qualification
-        require_current_qualification(solution, state)
-        final_artifacts["validationMode"] = "workbook-qualification"
+        if state["context"].get("workbookQualificationAfterArm") is True:
+            final_artifacts["validationMode"] = "workbook-content"
+            final_artifacts["workbookQueryStatus"] = "not-run"
+            final_artifacts["workbookUiStatus"] = "not-run"
+        else:
+            from .workbook_qualification import require_current_qualification
+            require_current_qualification(solution, state)
+            final_artifacts["validationMode"] = "workbook-qualification"
     elif stage == "validation" and status == "passed":
         runtime_status = final_artifacts.get("runtimeStatus")
         from .runtime import current_runtime_evidence
@@ -6135,6 +6147,17 @@ def _complete_workflow_stage_unlocked(
         and state.get("packaging")
     ):
         _verify_current_package_state(Path(solution).expanduser().resolve(), state)
+    if (
+        status == "passed" and stage == "deployment"
+        and state["context"].get("workbookQualificationAfterArm") is True
+    ):
+        workbook_workflow.require_accepted(solution, state)
+        final_artifacts["deploymentMode"] = "candidate-arm-lab-validation"
+        final_artifacts.update({
+            key: value
+            for key, value in state["stages"]["packaging"]["artifacts"].items()
+            if key in {"armCandidate", "workbookContractPlan", "workbookContractEvidence", "workbookContractResult"}
+        })
     current.update(
         {
             "status": status,

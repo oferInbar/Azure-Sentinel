@@ -5,8 +5,8 @@ description: Package a complete Microsoft Sentinel and Defender XDR solution thr
 
 # Package a Sentinel and Defender XDR solution
 
-Use this skill after solution content and any `XDR Detections/*.yaml` files are
-complete and structurally validated.
+Use this skill after solution content, any `XDR Detections/*.yaml`, and selected
+`XDR Workbooks/*.json` files are complete and structurally validated.
 
 The XDR Solution Manager workflow always runs V3.1. Legacy V3 remains available outside
 this workflow for legacy Sentinel-only packaging and intentionally ignores XDR
@@ -19,6 +19,29 @@ Detections are declared, it also supports hybrid installation:
 - `DeployCustomDetection=true` (default false) installs Custom Detections and their
   Content Hub registrations independently. Both selections may be true.
 - Custom Detections are always packaged disabled.
+- `DeployDefenderWorkbook=true` (default false) installs Defender Workbooks and
+  their registrations independently of Sentinel `DeployWorkbook`.
+
+## Defender Workbook candidate boundary
+
+Use the explicit solution Data `XDR Workbooks` selection. An empty array emits no
+Defender Workbook resources or deployment flag; never scan to repopulate it.
+Each selected file retains a complete `Notebook/1.0`, distinct canonical content
+and installation GUIDs, exact raw source-file and query provenance, resolved
+prerequisites, and explicit false review markers. Content versions inherit the
+selected solution release; the Notebook format version is unchanged.
+
+Installation and stored installation templates carry exactly the resolved
+package/content identity quartet. Full registration also retains prerequisites.
+Do not rewrite source workbooks, remove panels, silently resolve blockers, or
+treat conversion findings as permission to change toolkit implementation.
+
+The installation/registration provider contract is unverified. A generated
+candidate is not accepted packaging. Require independent approved lab
+installation, registration/provenance readback, repeat-install and update
+evidence before claiming contract acceptance. ARM success, ARM-TTK, and local
+tests do not establish workbook UI or query qualification. No packaging command
+implicitly authorizes environment writes.
 
 ## Scope
 

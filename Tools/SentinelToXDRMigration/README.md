@@ -1,7 +1,8 @@
 # Microsoft Sentinel to Defender XDR migration toolkit
 
-This toolkit converts the analytic rules in a Microsoft Sentinel solution into
-versioned Defender XDR Custom Detection YAML files.
+This toolkit converts Microsoft Sentinel analytic rules into versioned Defender
+XDR Custom Detection YAML files and provides offline workbook conversion with
+candidate V3.1 Defender Workbook packaging.
 
 See [tracked follow-up areas](FOLLOW_UPS.md) for curated capability and
 operator-experience work that may be considered separately.
@@ -13,8 +14,9 @@ XDR solutions at scale and with quality. Once a user defines the solution, the
 toolkit should prepare the best-supported migration candidate, run the
 applicable automated checks, and clearly surface assumptions and evidence for
 human review. For optional Qualification, the user must also define an approved
-non-production test environment and provide the required permissions. Offline
-Authoring does not require a test environment.
+non-production test environment and provide the required permissions. Legacy
+offline Authoring does not require a test environment. New CLI runs
+default to the versioned lab ARM-validation route described below.
 
 The intended operator flow is:
 
@@ -47,9 +49,9 @@ The intended operator flow is:
 5. **Package and, only if approved, qualify.** Build the package from the
    reviewed, current candidate inputs through the V3.1 route. Packaging,
    deployment readiness, and runtime qualification remain separate. Deployment
-   and ingestion are Qualification-only writes requiring explicit,
-   exact-scope approval immediately before the operation; candidate acceptance
-   does not authorize them.
+   requires explicit approval under the selected versioned ARM route; ingestion
+   remains Qualification-only. Neither candidate generation nor review acceptance
+   authorizes environment writes.
 
 **Implementation status:** This is the desired product direction, not a claim
 that end-to-end autonomous semantic mapping, general uncertainty handling,
@@ -96,6 +98,117 @@ planning-only. Offline emission does not prove live Graph/Content Hub support
 for this candidate contract. Reviewed YAML dependency edits invalidate package
 evidence; reconversion preserves declarations only while source/target queries
 and source connector metadata remain unchanged.
+
+## Defender Workbook candidate contract
+
+Workbook support retains the complete `Notebook/1.0` document under
+`XDR Workbooks/<relative-source-path>.json`. Source `Workbooks/` files are not
+rewritten. Authored `xdrMetadata` distinguishes the canonical content GUID from
+the stable installation GUID; its content version inherits the selected solution
+release. The Notebook format version and original source metadata version remain
+separate.
+
+`sentinel_xdr_migration.workbooks` exposes `inventory_workbooks`,
+`convert_workbooks`, `validate_workbooks`, and `selected_workbook_files`.
+Conversion is offline. Reviewed resolution records bind each original query
+JSON pointer to its exact raw query hash, complete source tables, and evidence.
+Unknown dependencies, saved functions, unsupported providers, stale resolution,
+and unresolved review findings remain blockers. The converter records all
+source items in `workbooks-manifest.json`, separate from detection `manifest.json`.
+Queries removed as proven scope-only helpers remain in provenance.
+
+The explicit solution Data `XDR Workbooks` array selects deployable content.
+An empty array selects none; packaging never repopulates it by scanning files.
+V3.1 emits workbook installation and Content Hub registration together under
+`DeployDefenderWorkbook=false`, independent of Sentinel `DeployWorkbook`.
+Deployment copies omit authored `xdrMetadata` and carry exactly the four resolved
+package/content identity and version keys. Full registration also retains
+`requiredWorkloads` and `requiredDataConnectors`. Layout and ARM-looking literals
+are preserved; literal escaping applies only to package copies.
+
+**Provider contract unverified:** generated templates and successful local tests
+are candidate evidence, not accepted installation or publication evidence.
+Independent, approved lab installation, registration/provenance readback, repeat
+installation, and update evidence are required for contract acceptance. ARM
+success alone does not establish those checks or workbook UI/query correctness.
+The known provenance `packageId` ARM-TTK finding remains a failure; no broad
+validator waiver or identifier rewrite is applied.
+
+The Microsoft-authored conversion slice is package-local and MIT-licensed.
+It has no sibling-checkout, authentication, or live resolver dependency.
+`_workbook_core/import-manifest.json` records the imported file hashes and
+adaptations. Refreshing this slice is a deliberate maintainer change requiring
+reviewed import evidence and the differential workbook fixture tests, not an
+automatic runtime fetch.
+
+### Versioned ARM route and workbook QA
+
+New CLI runs persist workbook capability 1 and default to lab ARM validation in
+either explicitly selected profile. Authoring can select
+`--arm-validation-method arm-ttk`; existing runs retain their scope and method.
+Direct library initialization retains legacy defaults unless explicitly opted
+in. The [canonical workflow](agent-workflows/end-to-end-migration.md) defines
+the versioned candidate, consent and acceptance boundaries.
+
+Static content validation precedes V3.1 candidate generation. A draft cannot
+satisfy accepted Packaging. Independent approved ARM and workbook-contract
+evidence is required; missing consent or provider support blocks the route,
+without fallback or another version increment. Production dispatch is currently
+blocked because an accountable provider adapter does not yet verify the lab,
+ARM/extension access, disabled content and workbook ownership together.
+
+Workbook-only Qualification records `validationMode=workbook-content` before
+candidate generation. Exact query and UI evidence is mandatory before final
+Report, not before installation. Mixed solutions preserve detection runtime
+prerequisites. Frozen workbook inventory and exclusions never inflate detection
+coverage.
+
+Qualification query commands are `workbook-query-plan`, `workbook-query-review`,
+`workbook-query-execute` and `workbook-query-revoke`. The reviewed Linux Machines
+fixture runs 202 harness queries through independent Sentinel/AH providers with
+exact result assertions and no ingestion.
+
+The optional `browser` extra provides Playwright. Provision it with a supported
+interpreter and `python -m playwright install chromium` only when requested.
+`workbook-ui-plan` additionally accepts a reviewed `--browser-config`, containing
+exact DOM assertions, observed tenant/content/instance identities, session/error
+guards, request/navigation allowlists, timeouts and viewport. All seven UI check
+kinds and their expected values must be reviewed. No production selectors are
+supplied or presumed verified.
+
+```bash
+sentinel-xdr-migration workbook-ui-review \
+  --solution "$SOLUTION" --run-id "$RUN_ID" \
+  --plan "$PLAN_PATH" --plan-sha256 "$PLAN_SHA256" \
+  --actor "$REVIEWER" --reference "$APPROVAL_REFERENCE" --decision approved
+
+sentinel-xdr-migration workbook-ui-execute \
+  --solution "$SOLUTION" --run-id "$RUN_ID" \
+  --plan "$PLAN_PATH" --plan-sha256 "$PLAN_SHA256" \
+  --storage-state "Logs/sentinel-xdr-migration/$RUN_ID/private/browser-state.json"
+```
+
+Plan/input paths are solution-relative; keep private inputs under the selected
+run's excluded evidence directory. Session state must already exist, match the
+reviewed hash, be user-owned and have no group/other permissions or symlinks.
+Ownership enforcement is currently POSIX-only. No automatic authentication,
+installation, Save/Edit, permission changes or cleanup occurs. Missing browser
+support fails explicitly. Current UI assertions compare reviewed expectations,
+not automatically fetched API results. Network classifications are reviewed
+attestations, not a browser-wide no-write sandbox.
+
+Receipts under `Logs/sentinel-xdr-migration/<run-id>/workbook-ui.<content-id>.json`
+contain sanitized events and hashed observations; failed retries replace current
+success and archive previous evidence. No screenshots, raw trace, HAR or session
+state are exported. `workbook-ui-import` remains available for reviewed external
+captures. Live portal execution still requires separate exact-scope approval.
+
+[Public Graph beta metadata](https://graph.microsoft.com/beta/$metadata) confirms
+`security/workbooks` and the `microsoft.graph.security.workbook` model's
+`name`/open `content` properties. Write permissions, ID allocation/update
+semantics and runtime acceptance remain unverified. Direct Graph deployment
+is not implemented; retain ARM until that contract is confirmed. A future
+direct-API smoke test will not replace full V3.1 Content Hub acceptance.
 
 ## Requirements
 
@@ -3113,7 +3226,7 @@ python -m unittest discover -s Tools\SentinelToXDRMigration\tests -p "test_*.py"
 
 ## Planned milestones
 
-- workbook conversion;
+- approved live Defender Workbook contract and query/UI qualification evidence;
 - solution migration dashboard;
 - optional retrieval-assisted guidance for schemas, prior art, and historical
   findings.

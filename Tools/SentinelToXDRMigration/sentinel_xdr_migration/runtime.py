@@ -975,6 +975,7 @@ def run_advanced_hunting_query(
     timeout: int = 90,
     retries: int = 2,
     _token: str | None = None,
+    capture_full_results: bool = False,
 ) -> dict[str, Any]:
     """Run one Graph Advanced Hunting read within this process's provider bounds.
 
@@ -983,6 +984,8 @@ def run_advanced_hunting_query(
     Transient attempts share a five-minute wall-clock budget, including request
     durations and retry waits. The public retry default remains two.
     """
+    if not isinstance(capture_full_results, bool):
+        raise ValueError("capture_full_results must be a boolean")
     token = _token or _advanced_hunting_token(_state_dir(state_dir))
     request = urllib.request.Request(
         ADVANCED_HUNTING_ENDPOINT,
@@ -1062,6 +1065,7 @@ def run_advanced_hunting_query(
                 "schema": schema,
                 "sampleRows": rows[:MAX_ADVANCED_HUNTING_SAMPLE_ROWS],
                 "sampleRowsTruncated": len(rows) > MAX_ADVANCED_HUNTING_SAMPLE_ROWS,
+                **({"results": rows} if capture_full_results else {}),
                 "error": None,
                 "errorDetails": None,
             }

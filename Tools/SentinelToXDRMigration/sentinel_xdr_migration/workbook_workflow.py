@@ -424,12 +424,13 @@ def create_candidate(solution: str | Path, *, validation_receipt: str | Path | N
         if context["workflowProfile"] == "authoring":
             workflow._validate_offline_authoring_gates(root, state_path, state)
         else:
-            from .workbook_qualification import require_current_qualification
-            require_current_qualification(root, state)
             if has_analytic_rules(root):
                 from .runtime import current_runtime_evidence
                 if current_runtime_evidence(root).get("passed") is not True:
                     raise ValueError("combined Qualification still requires all current detection runtime gates")
+            elif context.get("workbookQualificationAfterArm") is not True:
+                from .workbook_qualification import require_current_qualification
+                require_current_qualification(root, state)
         artifacts = state["stages"]["packaging"].get("artifacts") or {}
         workflow._validate_packaging_evidence(state, artifacts, root, allow_candidate=True)
         report_path = resolve_artifact_reference(root, artifacts["packageReport"])
@@ -459,7 +460,7 @@ def create_candidate(solution: str | Path, *, validation_receipt: str | Path | N
                 raise RuntimeError(f"official candidate static validation failed ({completed.returncode}): {completed.stdout[-4000:]}\n{completed.stderr[-1000:]}")
             validation_receipt = evidence / "build-and-validate-report.md"
         gate_names = ["conversion", "review", "structure", "package"]
-        if context["workflowProfile"] == "qualification":
+        if context["workflowProfile"] == "qualification" and context.get("workbookQualificationAfterArm") is not True:
             gate_names.append("qualification")
         gates = {}
         for name in gate_names:
@@ -471,7 +472,7 @@ def create_candidate(solution: str | Path, *, validation_receipt: str | Path | N
                     "review": "selected outputs have no unresolved technical/dependency/query review findings",
                     "structure": "current deterministic content structure and full package workbook projection",
                     "package": "V3.1 current attempt artifacts, selections and ZIP",
-                    "qualification": "independent current workbook qualification and combined detection runtime",
+                    "qualification": "Existing detection runtime prerequisites; workbook query/UI qualification remains post-ARM.",
                 }[name],
             }
             if name in {"structure", "package"}:

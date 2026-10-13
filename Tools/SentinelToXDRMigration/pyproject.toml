@@ -18,6 +18,9 @@ dependencies = [
   "jsonschema>=4.0,<5"
 ]
 
+[project.optional-dependencies]
+browser = ["playwright>=1.49,<2"]
+
 [project.scripts]
 sentinel-xdr-migrate = "sentinel_xdr_migration.cli:main"
 sentinel-xdr-migration = "sentinel_xdr_migration.cli:main"

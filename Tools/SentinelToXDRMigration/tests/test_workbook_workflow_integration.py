@@ -169,6 +169,17 @@ def test_workbook_only_offline_authoring_is_first_class(solution):
     assert current["runtimeAssessment"]["runtimeStatus"] == "not-run"
 
 
+def test_reports_do_not_ignore_invalid_versioned_workbook_state(solution):
+    from sentinel_xdr_migration.solution_report import build_solution_report
+
+    initialize(solution)
+    state_path, state = workflow._load(solution)
+    del state["workbooks"]
+    state_path.write_text(json.dumps(state))
+    with pytest.raises(ValueError, match="workbooks.*required property"):
+        build_solution_report(solution)
+
+
 def test_explicit_empty_selection_remains_empty_and_exclusions_visible(solution):
     data = solution / "Data/Solution_Fixture.json"
     document = json.loads(data.read_bytes())
