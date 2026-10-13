@@ -11,7 +11,9 @@ param(
     [string]$ToolkitRootPath = $null,
     [bool]$IncludeXdrDetections = $false,
     [bool]$EnforceV31Versions = $false,
-    [switch]$SkipAttributionLookup
+    [switch]$SkipAttributionLookup,
+    [ValidateSet("arm-ttk", "lab-deployment")]
+    [string]$ArmValidationMethod = "arm-ttk"
 )
 
 Write-Host "=======Starting Package Creation using $EntryPointName tool========="
@@ -607,7 +609,12 @@ try {
         if ($EnforceV31Versions -and $VersionMode -eq 'local' -and ($VersionBump -ne 'none' -or -not [string]::IsNullOrWhiteSpace($TargetVersion))) {
             Save-V31LocalPackageVersion -DataFilePath $inputFile.FullName -Version $contentToImport.Version
         }
-        RunArmTtkOnPackage -solutionName $solutionName -isPipelineRun $false;
+        if ($ArmValidationMethod -eq "arm-ttk") {
+            RunArmTtkOnPackage -solutionName $solutionName -isPipelineRun $false;
+        }
+        else {
+            Write-Host "ARM-VALIDATION: Method=lab-deployment Status=pending CandidateGenerated=true Accepted=false"
+        }
 
         # check if mainTemplate and createUiDefinition json files are valid or not
         CheckJsonIsValid($solutionFolderBasePath)

@@ -81,6 +81,7 @@ def _parse_build_validation_receipt(
     *,
     package_report_path: Path,
     package_identity: dict[str, Any],
+    arm_validation_method: str | None = None,
 ) -> dict[str, Any]:
     candidate = Path(receipt_path).expanduser()
     if candidate.is_symlink() or not candidate.is_file():
@@ -146,7 +147,10 @@ def _parse_build_validation_receipt(
         raise ValueError(
             "validation receipt does not reference the repository build-and-validate evidence layout"
         )
-    if field("Result") != "PASSED" or "**BUILD SUCCESSFUL**" not in report:
+    candidate_route = arm_validation_method == "lab-deployment"
+    expected_result = "CANDIDATE_GENERATED" if candidate_route else "PASSED"
+    expected_banner = "**CANDIDATE GENERATED — NOT ACCEPTED**" if candidate_route else "**BUILD SUCCESSFUL**"
+    if field("Result") != expected_result or expected_banner not in report:
         raise ValueError("repository build-and-validate receipt did not report success")
     if field("Validation binding result") != "PASSED":
         raise ValueError("repository build-and-validate producer binding did not report success")
@@ -215,6 +219,24 @@ def _parse_build_validation_receipt(
         raise ValueError(f"validation binding artifact is invalid JSON: {exc}") from exc
     if not isinstance(binding, dict) or binding.get("schemaVersion") != 1:
         raise ValueError("validation binding artifact has an unsupported schema")
+    recorded_method = binding.get("armValidationMethod", "arm-ttk")
+    if recorded_method not in {"arm-ttk", "lab-deployment"}:
+        raise ValueError("validation binding has an unsupported ARM validation method")
+    if recorded_method != (arm_validation_method or "arm-ttk"):
+        raise ValueError("validation binding ARM validation method does not match this route")
+    if candidate_route and (
+        binding.get("armValidationStatus") != "pending"
+        or binding.get("packageLifecycleStatus") != "candidate-generated"
+        or binding.get("packageAccepted") is not False
+        or binding.get("workbookCapabilityVersion") != 1
+        or len([row for row in validator_rows if row["validator"] == "ARM-TTK" and row["status"] == "SKIP"]) != 1
+        or any(row["validator"] == "ARM-TTK" and row["status"] != "SKIP" for row in validator_rows)
+    ):
+        raise ValueError("lab validation binding must be a pending, unaccepted versioned candidate")
+    if arm_validation_method == "arm-ttk" and not any(
+        row["validator"] == "ARM-TTK" and row["status"] == "PASS" for row in validator_rows
+    ):
+        raise ValueError("the selected ARM-TTK method requires an actual passed ARM-TTK result")
     source_path_semantics = binding.get("sourcePathSemantics")
     producer_platform = binding.get("producerPlatform")
     if (
