@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1.2.0",
+  "solution": ".",
+  "workflowStatus": "inProgress",
+  "createdAt": "2026-01-01T00:00:00+00:00",
+  "updatedAt": "2026-01-01T00:00:00+00:00",
+  "context": {
+    "workspaceResourceId": "/subscriptions/42382e39-f157-46d1-a931-b8cfd779ece5/resourceGroups/rg-test/providers/Microsoft.OperationalInsights/workspaces/ws-test",
+    "tenantId": "39768270-33ce-4b90-a1a6-e0caeb3ba0ab",
+    "subscriptionId": "42382e39-f157-46d1-a931-b8cfd779ece5",
+    "workspaceCustomerId": "756386d8-e2d4-4f09-905a-74b24313721f",
+    "targetContextLocked": true,
+    "versionBump": "none",
+    "workflowProfile": "qualification",
+    "profileSelectionConfirmed": true
+  },
+  "stages": {
+    "mockIngestion": {
+      "status": "pending",
+      "artifacts": {}
+    }
+  }
+}
