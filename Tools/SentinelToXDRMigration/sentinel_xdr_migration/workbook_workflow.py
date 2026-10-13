@@ -532,33 +532,35 @@ def withdraw_scope(solution: str | Path, *, actor: str, reference: str) -> dict[
     return consent
 
 
-def _production_identity_check(target: dict[str, Any]) -> dict[str, Any]:
-    # Existing ARM batch checks do not prove tenant-extension ownership or disabled state.
-    raise ValueError(
-        "production candidate dispatch is blocked: no accountable provider adapter currently "
-        "verifies non-production target, ARM/extension access, disabled content and workbook "
-        "ownership together; a maintainer implementation is required, not asserted readiness flags"
-    )
-
-
 def execute_candidate(solution: str | Path, *, expected_plan_sha256: str, actor: str,
                       reference: str, confirmation: str, identity_check=None,
                       command_runner=None) -> dict[str, Any]:
     from .workbook_validation import execute_lab_arm_validation
     from .arm_acceptance_support import _run_cli
+    from .workbook_preflight_workflow import production_identity_check, execution_profile
 
     state = current_state(solution)
     context = _context(state or {})
     candidate = _read_run_json(solution, "arm-candidate.json")
     plan = _read_run_json(solution, "arm-validation-plan.json")
+    profile = execution_profile() if identity_check is None or command_runner is None else None
+
+    def dispatch(command: list[str]):
+        from .graph_client_config import azure_cli_profile
+
+        if execution_profile() != profile:
+            raise ValueError("ARM execution authentication profile changed before dispatch")
+        with azure_cli_profile(profile):
+            return _run_cli(command)
+
     result = execute_lab_arm_validation(
         context, candidate, target=_plan_target(plan), selected_flags=plan["selectedFlags"],
         expected_plan_sha256=expected_plan_sha256, actor=actor, approval_reference=reference,
         confirmation=confirmation, evidence_directory=report_directory(solution),
         refresh_candidate=lambda: _read_run_json(solution, "arm-candidate.json"),
         read_consent=lambda: _read_run_json(solution, "arm-validation-consent.json"),
-        identity_check=identity_check or _production_identity_check,
-        command_runner=command_runner or _run_cli,
+        identity_check=identity_check or (lambda target: production_identity_check(solution, target, profile=profile)),
+        command_runner=command_runner or dispatch,
     )
     _write_run_json(solution, "arm-validation-result.json", result)
     return result

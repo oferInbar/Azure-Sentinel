@@ -169,9 +169,31 @@ the versioned candidate, consent and acceptance boundaries.
 Static content validation precedes V3.1 candidate generation. A draft cannot
 satisfy accepted Packaging. Independent approved ARM and workbook-contract
 evidence is required; missing consent or provider support blocks the route,
-without fallback or another version increment. Production dispatch is currently
-blocked because an accountable provider adapter does not yet verify the lab,
-ARM/extension access, disabled content and workbook ownership together.
+without fallback or another version increment. Evidence-based metadata preflight
+now checks the selected lab, authenticated ARM principal, effective control-plane
+access, applicable role/deny assignments, disabled content and exact resource
+identities. Unresolved evidence blocks dispatch rather than asserting readiness.
+The MicrosoftSecurity extension authentication/write contract remains unverified,
+so the current default adapter still blocks Defender workbook deployment.
+
+After `workflow-arm-plan`, use `workflow-arm-preflight-plan` to display the
+bounded metadata read operations, then `workflow-arm-preflight-review` with
+`--preflight-plan-sha256`, `--actor`, `--reference` and `--decision approved`.
+Execute with `workflow-arm-preflight-execute --preflight-plan-sha256 <hash>`;
+all commands also require the solution and explicit run ID.
+`workflow-arm-preflight-revoke` withdraws that read approval.
+
+Metadata-read approval is separate from deployment consent and immediate write
+confirmation. Same-target, same-operation scope can retain read consent across
+managed same-ID content updates, but plans and execution evidence must be current.
+Changed read URLs, identities or target require renewed approval. The default
+reader uses the existing pinned Azure CLI profile and correlates actual ARM
+responses with the same bearer. Consent explicitly permits acquisition/refresh
+of the scoped ARM token through the existing cached identity, not sign-in, new
+credentials, permission grants or Graph/AH token reuse.
+Graph extension observations remain explicitly unverified, without borrowing
+an Advanced Hunting token. Prior receipts are archived, blocked runs return
+nonzero, and these commands never write to the environment.
 
 Workbook-only Qualification records `validationMode=workbook-content` before
 candidate generation. Exact query and UI evidence is mandatory before final

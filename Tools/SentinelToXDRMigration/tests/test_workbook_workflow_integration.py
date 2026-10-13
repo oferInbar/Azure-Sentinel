@@ -403,8 +403,6 @@ def test_local_lifecycle_commands_require_explicit_run_and_no_implicit_write_con
     with pytest.raises(SystemExit) as exc:
         cli.main(["workflow-arm-plan", "--solution", str(solution), "--target", "lab.json", "--selected-flags", "flags.json"])
     assert exc.value.code == 2
-    with pytest.raises(ValueError, match="production candidate dispatch is blocked"):
-        integration._production_identity_check(TARGET)
 
 
 def emit_current_package(root):
@@ -536,7 +534,7 @@ def test_scope_review_withdrawal_and_immediate_exact_approval_are_independent(re
     consent = integration.review_scope(root, actor="owner", reference="scope-review", approved=True,
                                        expected_plan_sha256=plan["planSha256"])
     assert consent["activationAuthorized"] is False
-    with mock.patch.object(integration, "_production_identity_check") as identity, \
+    with mock.patch("sentinel_xdr_migration.workbook_preflight_workflow.production_identity_check") as identity, \
          mock.patch("sentinel_xdr_migration.arm_acceptance_support._run_cli") as runner:
         with pytest.raises(ValueError, match="immediate exact-plan"):
             integration.execute_candidate(root, expected_plan_sha256=plan["planSha256"], actor="owner",
@@ -545,12 +543,95 @@ def test_scope_review_withdrawal_and_immediate_exact_approval_are_independent(re
         runner.assert_not_called()
     withdrawn = integration.withdraw_scope(root, actor="owner", reference="withdraw")
     assert withdrawn["status"] == "withdrawn"
-    with mock.patch.object(integration, "_production_identity_check") as identity:
+    with mock.patch("sentinel_xdr_migration.workbook_preflight_workflow.production_identity_check") as identity:
         result = integration.execute_candidate(root, expected_plan_sha256=plan["planSha256"], actor="owner",
             reference="execute-review", confirmation=validation.LAB_ARM_CONFIRMATION)
         identity.assert_not_called()
     assert result["status"] == "blocked"
     assert result["writeAttempted"] is False
+
+
+def test_write_consent_does_not_implicitly_authorize_preflight_reads(ready_candidate):
+    from sentinel_xdr_migration import workbook_preflight_workflow as preflight
+
+    root, _, _ = ready_candidate
+    plan = integration.plan_candidate(root, target=TARGET, selected_flags={"DeployDefenderWorkbook": True})
+    integration.review_scope(
+        root, actor="owner", reference="write-scope", approved=True,
+        expected_plan_sha256=plan["planSha256"],
+    )
+    preflight.create_plan(root)
+    with mock.patch("sentinel_xdr_migration.arm_acceptance_support._run_cli") as runner, \
+         mock.patch("sentinel_xdr_migration.graph_client_config.azure_cli_credential") as credential:
+        result = integration.execute_candidate(
+            root, expected_plan_sha256=plan["planSha256"], actor="owner",
+            reference="immediate-write", confirmation=validation.LAB_ARM_CONFIRMATION,
+        )
+        assert result["status"] == "blocked"
+        assert result["writeAttempted"] is False
+        assert result["identityCheck"]["status"] == "blocked"
+        runner.assert_not_called()
+        credential.assert_not_called()
+
+
+def test_preflight_review_execute_revoke_and_archived_receipts(ready_candidate):
+    from sentinel_xdr_migration import workbook_preflight_workflow as preflight
+
+    root, _, _ = ready_candidate
+    integration.plan_candidate(root, target=TARGET, selected_flags={"DeployDefenderWorkbook": True})
+    displayed = preflight.create_plan(root)
+    digest = displayed["preflightPlanSha256"]
+    with pytest.raises(ValueError, match="exact current displayed"):
+        preflight.review(root, expected_sha256="0" * 64, actor="owner", reference="stale", approved=True)
+    consent = preflight.review(
+        root, expected_sha256=digest, actor="owner", reference="read-review", approved=True,
+    )
+    assert consent["writesAuthorized"] is False
+    reader = mock.Mock(return_value={"statusCode": 403, "body": {}})
+    result = preflight.execute(root, expected_sha256=digest, reader=reader)
+    assert result["status"] == "blocked"
+    assert result["writeAttempted"] is False
+    assert reader.call_count == 1
+    first = (report_directory(root) / preflight.RESULT_FILE).read_bytes()
+    withdrawn = preflight.revoke(root, actor="owner", reference="withdraw-reads")
+    assert withdrawn["status"] == "revoked"
+    reader.reset_mock()
+    result = preflight.execute(root, expected_sha256=digest, reader=reader)
+    assert result["status"] == "blocked"
+    reader.assert_not_called()
+    archives = list(report_directory(root).glob("arm-preflight-result.*.json"))
+    assert len(archives) == 1
+    assert archives[0].read_bytes() == first
+
+
+def test_preflight_known_failure_replaces_current_receipt_without_private_details(ready_candidate):
+    from sentinel_xdr_migration import workbook_preflight_workflow as preflight
+
+    root, _, _ = ready_candidate
+    integration.plan_candidate(root, target=TARGET, selected_flags={"DeployDefenderWorkbook": True})
+    displayed = preflight.create_plan(root)
+    with mock.patch.object(preflight, "default_reader", side_effect=ValueError("fixture-private-detail")):
+        with pytest.raises(ValueError, match="fixture-private-detail"):
+            preflight.execute(root, expected_sha256=displayed["preflightPlanSha256"])
+    receipt = json.loads((report_directory(root) / preflight.RESULT_FILE).read_bytes())
+    assert receipt["status"] == "failed"
+    assert receipt["writeAttempted"] is False
+    assert "fixture-private-detail" not in json.dumps(receipt)
+
+
+def test_preflight_cli_reports_blocked_as_nonzero(ready_candidate, capsys):
+    root, _, _ = ready_candidate
+    run_id = workflow._load(root)[1]["runId"]
+    with mock.patch(
+        "sentinel_xdr_migration.workbook_preflight_workflow.execute",
+        return_value={"status": "blocked", "writeAttempted": False},
+    ):
+        code = cli.main([
+            "workflow-arm-preflight-execute", "--solution", str(root),
+            "--run-id", run_id, "--preflight-plan-sha256", "a" * 64,
+        ])
+    assert code != 0
+    assert json.loads(capsys.readouterr().out)["status"] == "blocked"
 
 
 def test_selected_flags_only_dispatch_and_arm_success_stays_unaccepted(ready_candidate):

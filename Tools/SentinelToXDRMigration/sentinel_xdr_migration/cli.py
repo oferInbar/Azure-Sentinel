@@ -772,6 +772,8 @@ def main(argv: list[str] | None = None) -> int:
         "workflow-arm-candidate", "workflow-arm-plan", "workflow-arm-review-scope",
         "workflow-arm-withdraw-scope", "workflow-arm-execute", "workflow-arm-reconcile",
         "workflow-arm-import",
+        "workflow-arm-preflight-plan", "workflow-arm-preflight-review",
+        "workflow-arm-preflight-revoke", "workflow-arm-preflight-execute",
         "workflow-workbook-contract-plan", "workflow-workbook-contract-import",
     ):
         workbook_commands[command] = subparsers.add_parser(command)
@@ -788,6 +790,15 @@ def main(argv: list[str] | None = None) -> int:
     for command in ("workflow-arm-review-scope", "workflow-arm-execute"):
         workbook_commands[command].add_argument("--plan-sha256", required=True)
     workbook_commands["workflow-arm-execute"].add_argument("--confirmation", required=True)
+    for command in ("workflow-arm-preflight-review", "workflow-arm-preflight-revoke"):
+        workbook_commands[command].add_argument("--actor", required=True)
+        workbook_commands[command].add_argument("--reference", required=True)
+    for command in ("workflow-arm-preflight-review", "workflow-arm-preflight-execute"):
+        workbook_commands[command].add_argument("--preflight-plan-sha256", required=True)
+    workbook_commands["workflow-arm-preflight-review"].add_argument(
+        "--decision", required=True, choices=["approved", "declined"],
+    )
+    workbook_commands["workflow-arm-preflight-execute"].add_argument("--state-dir")
     for command in ("workflow-arm-reconcile", "workflow-arm-import"):
         workbook_commands[command].add_argument("--attempt", required=True)
         workbook_commands[command].add_argument("--observation", required=True)
@@ -1481,7 +1492,24 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command in workbook_commands:
             from . import workbook_workflow as workbooks
-            if args.command == "workflow-arm-candidate":
+            if args.command.startswith("workflow-arm-preflight-"):
+                from . import workbook_preflight_workflow as preflight
+
+                if args.command == "workflow-arm-preflight-plan":
+                    result = preflight.create_plan(args.solution)
+                elif args.command == "workflow-arm-preflight-review":
+                    result = preflight.review(
+                        args.solution, expected_sha256=args.preflight_plan_sha256,
+                        actor=args.actor, reference=args.reference, approved=args.decision == "approved",
+                    )
+                elif args.command == "workflow-arm-preflight-revoke":
+                    result = preflight.revoke(args.solution, actor=args.actor, reference=args.reference)
+                else:
+                    result = preflight.execute(
+                        args.solution, expected_sha256=args.preflight_plan_sha256,
+                        state_dir=args.state_dir,
+                    )
+            elif args.command == "workflow-arm-candidate":
                 result = workbooks.create_candidate(args.solution, validation_receipt=args.validation_receipt,
                                                     toolkit_root=args.toolkit_root)
             elif args.command in {"workflow-arm-plan", "workflow-workbook-contract-plan"}:
@@ -1705,6 +1733,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "package-v3-1" and result.get("status") == "blocked":
         return 1
     if args.command in {"workflow-arm-execute", "workflow-workbook-contract-import"} and result.get("accepted") is not True:
+        return 1
+    if args.command == "workflow-arm-preflight-execute" and result.get("status") != "ready":
         return 1
     if args.command == "dependency-plan" and args.results and any(
         item["validation"]["status"] != "passed" for item in result["results"]

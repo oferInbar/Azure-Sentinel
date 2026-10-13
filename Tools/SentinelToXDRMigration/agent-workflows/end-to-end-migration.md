@@ -109,10 +109,39 @@ also requires explicit immediate confirmation and verified access, disabled
 content and ownership; consent never grants permissions or authorizes ingestion,
 activation or cleanup. This is not a reinterpretation of legacy consent.
 
-**Production dispatch remains blocked:** the current provider adapter does not
-jointly verify non-production target, ARM/extension access, disabled content and
-workbook ownership. Do not replace this blocker with asserted readiness flags,
-infer support from a mock, or treat local tests as provider acceptance.
+**Defender workbook dispatch remains blocked:** the evidence-based preflight
+adapter checks target, authenticated ARM principal, effective control-plane
+access, applicable role/deny assignments, disabled content and exact identities,
+but the MicrosoftSecurity extension authentication/write contract is unverified.
+Unknown evidence blocks dispatch. Do not replace this blocker with asserted
+readiness flags, infer support from a mock, reuse an unrelated Graph/AH token
+as the extension identity, or treat local tests as provider acceptance.
+
+#### Candidate ARM metadata preflight
+
+After the current candidate deployment plan exists, display the exact read plan
+with `workflow-arm-preflight-plan`. Obtain separate affirmative metadata-read
+approval through `workflow-arm-preflight-review`, bound to the displayed
+`--preflight-plan-sha256` and recorded actor/reference. Execute the current plan
+through `workflow-arm-preflight-execute`; withdraw approval through
+`workflow-arm-preflight-revoke`. All commands require the explicit run ID.
+
+Read consent binds the run, target and exact operation scope independently of
+candidate/template hashes. Managed same-ID body/version changes require a fresh
+plan and evidence, not automatically renewed approval of unchanged reads.
+Changed IDs, URLs, operations or targets require renewed read approval.
+Deployment consent and immediate write confirmation remain separate gates.
+
+The production reader uses existing cached authentication in the pinned Azure
+CLI profile, makes only planned metadata GETs, and correlates successful ARM
+observations with that same authenticated bearer. Token claims or a local
+account alone do not prove effective access. It never signs in, grants
+permissions or attempts Graph extension reads with unverified credentials.
+Read consent explicitly permits scoped ARM token acquisition/refresh through
+the existing cached identity, not new credentials or Graph/AH token access.
+Receipts preserve blocked/unknown findings and prior attempts; execution
+rechecks current consent and candidate freshness. No preflight operation
+authorizes installation, activation, ingestion, cleanup or browser execution.
 
 New workbook-only Qualification runs record `validationMode=workbook-content`
 before packaging, with query/UI checks not run. They require current independent
