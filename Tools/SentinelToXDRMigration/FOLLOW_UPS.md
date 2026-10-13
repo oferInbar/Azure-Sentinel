@@ -42,10 +42,18 @@ themselves establish a toolkit fix is required.
   and no duplicate executors for the same operation.
 - **Set release-note dates predictably.** Default to today's date unless the
   user explicitly supplies an override.
-- **Evaluate an Author and Validate mode.** A separately approved,
-  deployment-only check in a non-production environment could verify
-  deployment mechanics. It would not constitute functional/runtime
-  qualification, alert-parity evidence, or broader Qualification.
+- **Change the validation tools to verify ARM templates through lab deployment.**
+  Make deployment of the generated `mainTemplate` to an explicitly approved
+  non-production lab the default ARM validation route for both Authoring and
+  Qualification, skipping ARM-TTK on that route and using deployment results
+  to verify ARM template deployment validity. Allow Authoring to select
+  ARM-TTK instead of lab deployment verification. Save deployment findings,
+  including failures and target/artifact bindings, as workflow evidence.
+  Ask in advance during preflight for preapproval to deploy the solution ARM
+  templates to the selected lab, stating the expected content items:
+  X Sentinel rules, Y workbooks, and Z custom detections.
+  Deployment verification alone does not establish functional/runtime
+  qualification or alert parity.
 
 Any future environment write remains separately gated by explicit approval
 immediately before the exact operation. No cloud action is authorized by this
