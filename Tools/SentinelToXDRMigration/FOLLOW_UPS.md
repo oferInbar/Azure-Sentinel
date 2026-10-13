@@ -23,6 +23,10 @@ themselves establish a toolkit fix is required.
 - **Preserve YAML version text.** Keep lexical values such as `1.0` intact
   through parsing, conversion, and serialization rather than silently
   normalizing them.
+- **Inherit the solution release version for updated content.** Assign modified
+  analytic rules, hunting queries, and other versioned content the version of
+  the solution release containing the update. Leave unchanged content versions
+  intact and keep source provenance consistent with the actual source version.
 - **Reconcile Qualification readiness.** Review existing authorization and
   access checks, then separately assess deployment and ingestion permission
   readiness before proposing new implementation.
