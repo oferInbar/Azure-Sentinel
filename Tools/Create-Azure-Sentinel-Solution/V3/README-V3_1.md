@@ -129,6 +129,27 @@ Live provider support for CustomDetection registration is **unverified**.
 Template emission and offline tests do not establish deployment/Marketplace
 acceptance. Any subsequent environment write requires separate approval.
 
+### Custom Detection content provenance
+
+Authored YAML must contain `contentProvenance.requiredWorkloads` records with
+`workload` and `dataTypes`, and `requiredDataConnectors` records with `connectorId`
+and `dataTypes`. Supported workload values are `mde`, `mdo`, `mdi`, `mda`, `mdc`,
+`entraid`, `purview`, `appgovernance`, `sentinel`, `mtp`. Malformed/missing arrays,
+unknown workloads and explicitly unresolved dependency review block packaging.
+The legacy `conversion.requiredWorkloads` strings are not used as dependency
+records.
+
+The packager resolves `packageId` and `packageVersion` from the current solution,
+and `contentId`/`contentVersion` from the canonical packaged detection ID and
+authored XDR version. It stamps the same four-key `contentProvenance` on the
+installation resource and the registration's stored installation resource.
+Resolved literals are used in inner-scope templates, not references to outer
+variables. Registration properties contain that quartet plus the YAML
+`requiredWorkloads` and `requiredDataConnectors` arrays. Dependencies are never
+placed on the deployed Graph object. Authored YAML and source rules are not
+mutated. These emitted contract fields remain subject to live provider
+verification; offline tests are not registration/deployment acceptance.
+
 ### First authored tactic in V3.1 ARM payloads
 
 Authored YAML may retain multiple tactics. V3.1 validates a supplied, nonempty

@@ -24,6 +24,7 @@ from .catalog import (
     query_table_references,
 )
 from .columns import projected_columns
+from .dependencies import dependency_plan, dependency_validation_errors
 from .content_paths import content_path, yaml_files
 from .parser_bindings import normalize_parser_bindings
 from .report import write_transformation_report
@@ -1665,6 +1666,12 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
     ]
     status = "needsReview" if errors or blocking_review_reasons else "converted"
     relative_source = source.relative_to(solution_root).as_posix()
+    dependencies = dependency_plan(
+        source_query,
+        target_query=converted_query,
+        connectors=doc.get("requiredDataConnectors"),
+        table_mappings=config.get("tableMappings"),
+    )
     return {
         "schemaVersion": SCHEMA_VERSION,
         "version": INITIAL_XDR_VERSION,
@@ -1677,6 +1684,9 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
             else {}
         ),
         "contentProvenance": {
+            "requiredWorkloads": dependencies["requiredWorkloads"],
+            "requiredDataConnectors": dependencies["requiredDataConnectors"],
+            "dependencyReviewRequired": dependencies["reviewRequired"],
             "source": {
                 "platform": "Microsoft Sentinel",
                 "kind": "AnalyticsRule",
@@ -1796,7 +1806,7 @@ def _existing_identity_error(
 def validate_document(document: dict[str, Any]) -> list[str]:
     with XDR_SCHEMA_PATH.open(encoding="utf-8") as handle:
         schema = json.load(handle)
-    errors = [
+    errors = dependency_validation_errors(document) + [
         f"schema: {error.message}"
         for error in Draft202012Validator(schema).iter_errors(document)
     ]
@@ -2056,6 +2066,17 @@ def convert_solution(
             continue
         document = build_xdr_document(source, root, config)
         if target.exists():
+            previous_provenance = existing_document.get("contentProvenance") or {}
+            dependencies_current = (
+                (previous_provenance.get("source") or {}).get("querySha256")
+                == document["contentProvenance"]["source"]["querySha256"]
+                and previous_target_query == document["properties"]["queryCondition"]["queryText"]
+                and existing_document.get("requiredDataConnectors") == source_document.get("requiredDataConnectors")
+            )
+            if dependencies_current:
+                for field in ("requiredWorkloads", "requiredDataConnectors", "dependencyReviewRequired"):
+                    if field in previous_provenance:
+                        document["contentProvenance"][field] = deepcopy(previous_provenance[field])
             if isinstance(existing_document, dict) and "version" in existing_document:
                 error = xdr_version_error(existing_document["version"])
                 if error:

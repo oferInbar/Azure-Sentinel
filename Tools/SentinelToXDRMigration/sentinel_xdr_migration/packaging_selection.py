@@ -808,6 +808,12 @@ def _runtime_family(
                     result[field] = value
             if expected_query_hash is None or actual_hash != expected_query_hash:
                 result.update(status="stale", reason="runtime-query-hash-stale")
+            elif provider != "graph" and status == "passed":
+                from .dependencies import dependency_identity
+
+                current_document = yaml.safe_load(detection_path.read_text(encoding="utf-8-sig"))
+                if entry.get("dependencyProvenanceSha256") != dependency_identity(current_document):
+                    result.update(status="stale", reason="runtime-dependency-provenance-stale")
             elif status != "passed":
                 result["reason"] = f"runtime-result-{status}"
             elif provider == "graph":

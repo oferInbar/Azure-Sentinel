@@ -384,6 +384,9 @@ DeviceEvents
     def test_passthrough_table_preserves_timegenerated(self) -> None:
         path = self.solution / "Analytic Rules" / "SampleRule.yaml"
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document["requiredDataConnectors"] = [
+            {"connectorId": "AzureActivity", "dataTypes": ["AzureActivity"]},
+        ]
         document["query"] = """\
 AzureActivity
 | where TimeGenerated > ago(1h)

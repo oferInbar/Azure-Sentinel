@@ -90,7 +90,11 @@ class RuntimeFallbackEvidenceTests(unittest.TestCase):
         self.query_hash = hashlib.sha256(source_query.encode()).hexdigest()
         (output / "Rule.yaml").write_text(yaml.safe_dump({
             "kind": "CustomDetection",
-            "contentProvenance": {"source": {"path": "Analytic Rules/Rule.yaml"}},
+            "contentProvenance": {
+                "requiredWorkloads": [{"workload": "mde", "dataTypes": ["DeviceEvents"]}],
+                "requiredDataConnectors": [],
+                "source": {"path": "Analytic Rules/Rule.yaml"},
+            },
             "properties": {
                 "queryCondition": {"queryText": "DeviceEvents | where Timestamp > ago(4h)"},
                 "detectionAction": {"alertTemplate": {}},

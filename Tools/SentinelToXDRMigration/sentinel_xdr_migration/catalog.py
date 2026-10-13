@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any
 
 # Native Defender tables expose Timestamp in Advanced Hunting even when their
@@ -82,7 +83,9 @@ def referenced_custom_tables(query: str) -> set[str]:
     )
 
 
-def query_table_references(query: str) -> list[dict[str, str | None]]:
+def query_table_references(
+    query: str, *, known_tables: Iterable[str] = (),
+) -> list[dict[str, str | None]]:
     """Return conservative table/alias bindings found at KQL table positions.
 
     This deliberately recognizes only common table sources. It is evidence
@@ -98,7 +101,10 @@ def query_table_references(query: str) -> list[dict[str, str | None]]:
         for match in token_pattern.finditer(query)
         if not match.group(0).startswith(("//", "/*", "'", '"', "@'", '@"'))
     ]
-    known = {table.casefold(): table for table in NATIVE_XDR_TABLES | PASSTHROUGH_TABLES.keys()}
+    known = {
+        table.casefold(): table
+        for table in NATIVE_XDR_TABLES | PASSTHROUGH_TABLES.keys() | set(known_tables)
+    }
     results: list[dict[str, str | None]] = []
     seen: set[tuple[str, str | None]] = set()
     for index, token in enumerate(tokens):

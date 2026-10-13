@@ -122,9 +122,45 @@
       "type": "object",
       "required": [
         "source",
-        "conversion"
+        "conversion",
+        "requiredWorkloads",
+        "requiredDataConnectors"
       ],
       "properties": {
+        "requiredWorkloads": {
+          "description": "Authored runtime telemetry prerequisites, not legacy conversion workload labels.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["workload", "dataTypes"],
+            "properties": {
+              "workload": {
+                "enum": ["mde", "mdo", "mdi", "mda", "mdc", "entraid", "purview", "appgovernance", "sentinel", "mtp"]
+              },
+              "dataTypes": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1}
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "requiredDataConnectors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["connectorId", "dataTypes"],
+            "properties": {
+              "connectorId": {"type": "string", "minLength": 1},
+              "dataTypes": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1}
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "dependencyReviewRequired": {"type": "boolean"},
         "source": {
           "type": "object",
           "required": [

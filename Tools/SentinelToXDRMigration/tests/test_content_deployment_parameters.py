@@ -499,6 +499,12 @@ class ContentDeploymentTests(unittest.TestCase):
                     )
                     expected["id"] = f"[if(true(), '{expected['id']}', '{expected['id']}')]"
                     expected["detectionAction"]["alertTemplate"]["tactics"] = [authored[0]]
+                    expected["contentProvenance"] = {
+                        "packageId": "testpublisher.test-sentinel",
+                        "packageVersion": "3.1.0",
+                        "contentId": "xdr-" + document["contentProvenance"]["source"]["id"],
+                        "contentVersion": document["version"],
+                    }
                     for body in bodies:
                         self.assertEqual(expected, body["resources"]["detectionRule"]["properties"])
                     self.assertEqual(original, {p: p.read_bytes() for p in original})

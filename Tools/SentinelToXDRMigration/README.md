@@ -60,6 +60,43 @@ Unresolved review and technical gates still block packaging. Existing commands
 do not yet provide the general batch-review decisions described above; see
 the capability matrix below for implemented behavior and pending work.
 
+## Dependency provenance
+
+Conversion remains offline. Generated YAML declares telemetry prerequisites in
+`contentProvenance.requiredWorkloads` (`workload`, `dataTypes`) and
+`contentProvenance.requiredDataConnectors` (`connectorId`, `dataTypes`), preserving
+the separate source/conversion records and source connector metadata.
+Offline validation requires these fields and rejects unresolved
+`dependencyReviewRequired` records. Workloads use the toolkit vocabulary
+`mde`, `mdo`, `mdi`, `mda`, `mdc`, `entraid`, `purview`, `appgovernance`,
+`sentinel`, `mtp`; this is not a claimed public Microsoft enum.
+
+Use the `sentinel-xdr-dependency-helper` skill for explicitly approved
+lab-assisted review in either profile. `dependency-plan --solution <path>`
+proposes records without network access or YAML writes. Import a complete,
+successful, workspace/query-bound metadata family using
+`--results <file> --workspace-id <approved-workspace-id>`. The source-validation
+SDK requests `Prefer: include-dataSources=true` and compares returned underlying
+tables with YAML. It retains its existing Qualification execution/consent gates.
+1-10 distinct tables use API metadata; successful missing metadata or more than
+10 tables uses the conservative scanner. Query/partial/provider failures are
+never empty-success fallbacks. Unknown dependencies require user review.
+Tables added by the converted query are also included through a separate
+offline reference scan. Source API lineage is not Graph input-lineage evidence.
+Shared `SecurityAlert` never establishes a specific connector or Defender
+product by itself. Returned output `tables` are not input lineage.
+
+Packaging and actual Graph deployment stamp the four resolved identity/version
+keys, without adding them to authored YAML. V3.1 installation and stored
+installation templates carry the same lightweight record; the Content Hub
+registration additionally contains the authored dependency arrays. Direct
+Graph deployment obtains real package identity from solution Data/Metadata and
+requires matching provenance on readback. Unbound Graph payload helpers are
+planning-only. Offline emission does not prove live Graph/Content Hub support
+for this candidate contract. Reviewed YAML dependency edits invalidate package
+evidence; reconversion preserves declarations only while source/target queries
+and source connector metadata remain unchanged.
+
 ## Requirements
 
 - Python 3.11 or 3.12

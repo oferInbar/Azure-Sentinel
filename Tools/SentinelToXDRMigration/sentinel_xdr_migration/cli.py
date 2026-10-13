@@ -16,6 +16,7 @@ from .converter import (
 )
 from .artifacts import migrate_reports, select_run, reset_run_selection, list_runs
 from .evidence import export_evidence
+from .dependencies import plan_solution_dependencies
 from .budget import (
     DEFAULT_POLICY,
     budget_summary,
@@ -152,6 +153,13 @@ def main(argv: list[str] | None = None) -> int:
         description="Convert Microsoft Sentinel analytic rules into XDR Custom Detection YAML."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    dependency_parser = subparsers.add_parser(
+        "dependency-plan",
+        help="Propose YAML dependencies offline, or verify them from approved lab metadata.",
+    )
+    dependency_parser.add_argument("--solution", required=True)
+    dependency_parser.add_argument("--results", help="Exact-query-bound successful LA metadata results.")
+    dependency_parser.add_argument("--workspace-id", help="Explicitly approved lab workspace customer ID.")
     migration = subparsers.add_parser("migrate-reports", help="Plan a non-destructive copy of legacy reports into solution Logs.")
     migration.add_argument("--solution", required=True)
     migration.add_argument("--apply", action="store_true", help="Copy after reviewing the dry-run; originals are preserved.")
@@ -1343,6 +1351,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.solution,
                 legacy_baseline_evidence=args.legacy_baseline_evidence,
             )
+        elif args.command == "dependency-plan":
+            result = plan_solution_dependencies(
+                args.solution, results_path=args.results, workspace_id=args.workspace_id,
+            )
         elif args.command == "inspect":
             result = inspect_solution(args.solution)
         elif args.command == "convert":
@@ -1615,6 +1627,10 @@ def main(argv: list[str] | None = None) -> int:
     ):
         return 1
     if args.command == "convert" and (result["needsReview"] or result["conflicts"]):
+        return 1
+    if args.command == "dependency-plan" and args.results and any(
+        item["validation"]["status"] != "passed" for item in result["results"]
+    ):
         return 1
     if (
         args.command == "workflow-complete-stage"

@@ -56,6 +56,8 @@ def detection_document() -> dict:
         "resourceType": "Microsoft.Security/detectionRules",
         "apiVersion": "2026-06-01-preview",
         "contentProvenance": {
+            "requiredWorkloads": [{"workload": "mde", "dataTypes": ["DeviceInfo"]}],
+            "requiredDataConnectors": [],
             "source": {
                 "platform": "Microsoft Sentinel",
                 "kind": "AnalyticsRule",

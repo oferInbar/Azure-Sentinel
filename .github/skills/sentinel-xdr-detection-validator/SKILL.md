@@ -5,6 +5,23 @@ description: Validate generated XDR Detection YAML structurally and validate sou
 
 # Validate XDR Detection YAML
 
+Offline validation requires `contentProvenance.requiredWorkloads` records
+(`workload`, `dataTypes`) and `contentProvenance.requiredDataConnectors` records
+(`connectorId`, `dataTypes`). Missing fields, malformed/unknown workloads and
+`dependencyReviewRequired: true` block validation. Use
+`sentinel-xdr-dependency-helper` to review unresolved prerequisites against an
+explicitly approved lab. Conversion never calls or requires Log Analytics.
+Reviewed empty connector arrays are valid for native XDR-only content.
+
+Live source validation requests `Prefer: include-dataSources=true`, retains
+input metadata, and compares it with authored workload/connector declarations.
+It uses API metadata for 1-10 distinct tables; successful missing metadata or
+more than 10 tables falls back to the conservative scanner. Failed or partial
+queries never become empty successful dependencies. Source connector
+declarations are compared without inventing connectors from shared tables.
+Authoring can use the helper's explicitly approved lab reads and offline
+metadata import without enabling the Qualification-only SDK execution route.
+
 Use the `sentinel-xdr-migration` CLI for deterministic planning, structural
 validation, fallback execution, and reporting. Runtime query execution prefers:
 

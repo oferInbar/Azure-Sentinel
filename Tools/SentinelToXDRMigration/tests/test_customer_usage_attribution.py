@@ -150,7 +150,7 @@ class AttributionTests(unittest.TestCase):
             "schemaVersion": "1.0.0", "version": "3.1.0",
             "kind": "CustomDetection", "resourceType": "Microsoft.Security/detectionRules",
             "apiVersion": "2025-06-01",
-            "contentProvenance": {"source": {
+            "contentProvenance": {"requiredWorkloads": [], "requiredDataConnectors": [], "source": {
                 "id": source_id, "version": "1.0.0",
                 "platform": "Microsoft Sentinel", "kind": "AnalyticsRule",
             }},

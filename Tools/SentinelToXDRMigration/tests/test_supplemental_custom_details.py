@@ -229,6 +229,13 @@ class SupplementalCustomDetailsTests(unittest.TestCase):
         self.rule["entityMappings"] = [entity("IP", Address="SourceIP")]
 
         document = self.build()
+        document["contentProvenance"]["requiredWorkloads"] = [
+            {"workload": "sentinel", "dataTypes": ["SftpFileEvents", "SftpProcessEvents"]},
+        ]
+        document["contentProvenance"]["requiredDataConnectors"] = [
+            {"connectorId": "TestSftpConnector", "dataTypes": ["SftpFileEvents", "SftpProcessEvents"]},
+        ]
+        document["contentProvenance"]["dependencyReviewRequired"] = False
         conversion = self.conversion(document)
         alert = self.alert(document)
         warning = "static analysis cannot establish its output"
@@ -257,6 +264,7 @@ class SupplementalCustomDetailsTests(unittest.TestCase):
 
         conversion_result = convert_solution(self.solution)
         self.assertEqual(conversion_result["converted"], 1)
+        (self.solution / "XDR Detections" / self.source.name).write_text(yaml.safe_dump(document))
         validation = validate_solution(self.solution)
         self.assertEqual(validation["valid"], 1)
         self.assertTrue(any(warning in item for item in validation["results"][0]["warnings"]))

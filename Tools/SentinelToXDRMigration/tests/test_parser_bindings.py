@@ -121,7 +121,7 @@ class ParserBindingTests(unittest.TestCase):
         expected = []
         template = {
             "parameters": {},
-            "variables": {},
+            "variables": {"solutionId": "testpublisher.test-sentinel", "_solutionVersion": "3.1.0"},
             "resources": [{
                 "type": "Microsoft.OperationalInsights/workspaces/providers/contentPackages",
                 "properties": {
@@ -149,12 +149,23 @@ class ParserBindingTests(unittest.TestCase):
             document["contentProvenance"]["conversion"].update(
                 status="converted", reviewRequired=False, errors=[], reviewReasons=[]
             )
+            document["contentProvenance"]["requiredWorkloads"] = [
+                {"workload": "sentinel", "dataTypes": ["CommonSecurityLog"]},
+            ]
+            document["contentProvenance"]["requiredDataConnectors"] = [
+                {"connectorId": "CEF", "dataTypes": ["CommonSecurityLog"]},
+            ]
+            document["contentProvenance"]["dependencyReviewRequired"] = False
             path = output / f"Detection{index}.yaml"
             path.write_text(yaml.safe_dump(document), encoding="utf-8")
             paths.append(path)
             properties = copy.deepcopy(document["properties"])
             packaged_id = f"xdr-{source_id}"
             properties["id"] = f"[if(true(), '{packaged_id}', '{packaged_id}')]"
+            properties["contentProvenance"] = {
+                "packageId": "testpublisher.test-sentinel", "packageVersion": "3.1.0",
+                "contentId": packaged_id, "contentVersion": document["version"],
+            }
             for mappings in properties["detectionAction"]["alertTemplate"]["entityMappings"].values():
                 for mapping in mappings:
                     if mapping.get("id"):

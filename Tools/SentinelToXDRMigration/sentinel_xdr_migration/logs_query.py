@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -213,6 +214,23 @@ def execute_workspace_query(
             )
         effective_timeout = min(request_timeout_seconds, max(1, int(remaining)))
         attempts += 1
+        metadata: dict[str, Any] = {}
+
+        def capture_response(pipeline_response: Any) -> None:
+            if pipeline_response.http_response.status_code != 200:
+                return
+            body = json.loads(pipeline_response.http_response.text())
+            if not isinstance(body, dict):
+                raise ValueError("Log Analytics response must be a JSON object")
+            metadata["dataSources"] = body.get("dataSources")
+
+        def request_metadata(pipeline_request: Any) -> None:
+            headers = pipeline_request.http_request.headers
+            preference = headers.get("Prefer", "")
+            headers["Prefer"] = ",".join(
+                value for value in (preference, "include-dataSources=true") if value
+            )
+
         try:
             response = client.query_workspace(
                 workspace_id,
@@ -221,6 +239,8 @@ def execute_workspace_query(
                 server_timeout=effective_timeout,
                 connection_timeout=min(10, effective_timeout),
                 read_timeout=effective_timeout,
+                raw_request_hook=request_metadata,
+                raw_response_hook=capture_response,
             )
         except Exception as exc:
             kind, retryable = _failure_kind(exc)
@@ -279,6 +299,7 @@ def execute_workspace_query(
             "error": _error_details(getattr(response, "partial_error", None)) if partial else None,
             "errorDetails": _error_details(getattr(response, "partial_error", None)) if partial else None,
             "partialError": _error_payload(getattr(response, "partial_error", None)) if partial else None,
+            "dataSources": metadata.get("dataSources"),
         }
 
 

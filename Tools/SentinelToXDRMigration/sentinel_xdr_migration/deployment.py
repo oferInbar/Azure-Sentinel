@@ -290,8 +290,12 @@ def _graph_request(
         return exc.code, parsed
 
 
-def graph_detection_payload(document: dict[str, Any]) -> dict[str, Any]:
-    payload, _projection = graph_detection_payload_with_projection(document)
+def graph_detection_payload(
+    document: dict[str, Any], *, package_context: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    payload, _projection = graph_detection_payload_with_projection(
+        document, package_context=package_context,
+    )
     return payload
 
 
@@ -323,13 +327,16 @@ def deploy_solution(
         files = [files_by_path[path] for path in sorted(selected_paths)]
     if not files:
         raise ValueError(f"no generated XDR Detection YAML files found under {output}")
+    from .dependencies import solution_package_context
+
+    package_context = solution_package_context(root)
     token = _deployment_token(state_dir, tenant_id=target["tenantId"])
     results: list[dict[str, Any]] = []
     for path in files:
         try:
             document = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
             payload, tactic_projection = graph_detection_payload_with_projection(
-                document
+                document, package_context=package_context,
             )
             rule_id = urllib.parse.quote(payload["id"], safe="")
             item_url = f"{DEPLOYMENT_ENDPOINT}/{rule_id}"
@@ -354,6 +361,7 @@ def deploy_solution(
             error = response.get("error") if isinstance(response, dict) else None
             deployed_status = None
             tactic_projection_verified = None
+            provenance_verified = None
             if success:
                 verify_status, verified = _graph_request("GET", item_url, token)
                 deployed_status = (
@@ -376,10 +384,15 @@ def deploy_solution(
                     else []
                 )
                 tactic_projection_verified = verified_tactics == projected_tactics
+                provenance_verified = (
+                    isinstance(verified, dict)
+                    and verified.get("contentProvenance") == payload["contentProvenance"]
+                )
                 if (
                     verify_status != 200
                     or deployed_status != "disabled"
                     or not tactic_projection_verified
+                    or not provenance_verified
                 ):
                     success = False
                     operation = "failed"
@@ -387,10 +400,11 @@ def deploy_solution(
                         "code": "DeploymentVerificationFailed",
                         "message": (
                             "deployed Custom Detection did not match its disabled "
-                            "status and projected tactic payload"
+                            "status, projected tactic payload and content provenance"
                         ),
                         "statusCode": verify_status,
                         "tacticProjectionVerified": tactic_projection_verified,
+                        "contentProvenanceVerified": provenance_verified,
                     }
             results.append(
                 {
@@ -402,6 +416,7 @@ def deploy_solution(
                     "deployedStatus": deployed_status,
                     "tacticProjection": tactic_projection,
                     "tacticProjectionVerified": tactic_projection_verified,
+                    "contentProvenanceVerified": provenance_verified,
                     "error": error,
                 }
             )

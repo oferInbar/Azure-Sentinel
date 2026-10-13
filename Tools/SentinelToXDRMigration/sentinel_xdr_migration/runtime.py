@@ -20,7 +20,8 @@ from .artifacts import (
     portable_artifact,
     write_json_artifact,
 )
-from .converter import custom_detail_schema_errors, xdr_detection_files
+from .converter import custom_detail_schema_errors, load_config, xdr_detection_files
+from .dependencies import dependency_identity, live_dependency_check
 from .content_paths import content_path
 from .graph_auth import validate_delegated_graph_claims
 from .onboarding import (
@@ -576,6 +577,10 @@ def current_runtime_evidence(solution: str | Path) -> dict[str, Any]:
         for name, expected_hash in expected_hashes.items():
             entry = by_name[name]
             hash_matches = entry.get("querySha256") == expected_hash
+            if provider in SOURCE_PROVIDERS and entry.get("status") == "passed":
+                current_document = yaml.safe_load(paths[name].read_text(encoding="utf-8-sig"))
+                if entry.get("dependencyProvenanceSha256") != dependency_identity(current_document):
+                    failures.append(f"{provider} dependency provenance for {name} is stale or unbound")
             source_match = (
                 missing_schema_whitelist_match(
                     entry,
@@ -1513,6 +1518,7 @@ def record_runtime_validation(
     }
     normalized: list[dict[str, Any]] = []
     names: set[str] = set()
+    dependency_config = load_config(output)
     for entry in entries:
         if not isinstance(entry, dict):
             raise ValueError("each runtime result must be a JSON object")
@@ -1530,7 +1536,13 @@ def record_runtime_validation(
             raise ValueError(f"invalid runtime status {status!r} for {detection}")
         error = entry.get("error")
         schema = entry.get("schema")
+        dependency_validation = None
         query_hash = entry.get("querySha256")
+        if status == "passed" and (
+            entry.get("partial") is True or error or entry.get("failureKind")
+        ):
+            status = "failed"
+            error = error or "source query returned a partial or failed result"
         if status == "passed" and detection in expected_query_hashes:
             if not isinstance(query_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", query_hash):
                 status = "blocked"
@@ -1544,6 +1556,21 @@ def record_runtime_validation(
                     "Sentinel validation query hash is stale; rerun the complete Sentinel "
                     "query family against the current source queries"
                 )
+        if status == "passed" and detection in detection_paths:
+            document = yaml.safe_load(detection_paths[detection].read_text(encoding="utf-8-sig"))
+            source_path = content_path(root, document["contentProvenance"]["source"]["path"])
+            source_document = yaml.safe_load(source_path.read_text(encoding="utf-8-sig"))
+            try:
+                dependency_validation = live_dependency_check(
+                    document, source_document["query"], entry.get("dataSources"),
+                    table_mappings=dependency_config.get("tableMappings"),
+                    source_connectors=source_document.get("requiredDataConnectors"),
+                )
+            except ValueError as exc:
+                dependency_validation = {"status": "failed", "errors": [str(exc)]}
+            if dependency_validation["status"] != "passed":
+                status = "failed"
+                error = "; ".join(dependency_validation["errors"])
         if status == "passed" and provider == "graph" and detection in detection_paths:
             document = yaml.safe_load(detection_paths[detection].read_text(encoding="utf-8-sig")) or {}
             details = (
@@ -1576,9 +1603,13 @@ def record_runtime_validation(
             "attempts",
             "durationMs",
             "schema",
+            "dataSources",
         ):
             if field in entry:
                 normalized_entry[field] = entry[field]
+        if dependency_validation is not None:
+            normalized_entry["dependencyValidation"] = dependency_validation
+            normalized_entry["dependencyProvenanceSha256"] = dependency_identity(document)
         sample_rows = entry.get("sampleRows")
         if isinstance(sample_rows, list):
             normalized_entry["sampleRows"] = sample_rows[:MAX_ADVANCED_HUNTING_SAMPLE_ROWS]
