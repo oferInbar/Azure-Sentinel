@@ -1523,6 +1523,17 @@ attempt; no workflow state or historical receipt is rewritten.
 If no exact baseline can be reconstructed, use the ordinary explicit
 new-release workflow rather than weakening the same-version gate.
 
+When a consumed V3.1 version action failed before a successful receipt was
+written, the planner also supports an explicitly identified failed candidate.
+Pass `--failed-candidate-evidence` with the selected run's persisted failure
+handoff and `--legacy-baseline-evidence` with a comparison that reconstructs
+the complete pre-repair input manifest against the failed attempt's recorded
+input hash and file count. The planner verifies the failed attempt against
+workflow state, validates and archives its generated candidate artifact
+hashes, and stores the exact baseline manifest. It does not create or treat a
+failed attempt as a successful receipt. If the baseline cannot be reconstructed
+exactly, stop rather than infer missing file hashes or changed paths.
+
 ```powershell
 sentinel-xdr-migration workflow-plan-same-version-content-rebuild `
   --solution "Solutions\<solution>" `
@@ -1530,6 +1541,29 @@ sentinel-xdr-migration workflow-plan-same-version-content-rebuild `
   --target-version 3.1.2 `
   --expected-package-input-sha256 "<current-package-input-sha256>" `
   --changed-input "XDR Detections\<rule>.yaml"
+
+sentinel-xdr-migration package-v3-1 `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --version-bump none
+```
+
+For a failed V3.1 candidate with no successful receipt, add both evidence
+arguments to the same planner command. The failure handoff must be under the
+selected run's `Logs\sentinel-xdr-migration\<run-id>` directory. The comparison
+must bind the failed attempt's exact input identity and file count and list
+every changed, added, or removed package input; ReleaseNotes changes are not
+permitted:
+
+```powershell
+sentinel-xdr-migration workflow-plan-same-version-content-rebuild `
+  --solution "Solutions\<solution>" `
+  --run-id "<run-id>" `
+  --target-version 3.1.2 `
+  --expected-package-input-sha256 "<current-package-input-sha256>" `
+  --changed-input "XDR Detections\<rule>.yaml" `
+  --failed-candidate-evidence "Logs\sentinel-xdr-migration\<run-id>\packaging-arm-ttk-failure-handoff.json" `
+  --legacy-baseline-evidence "Logs\sentinel-xdr-migration\<run-id>\failed-candidate-current-input-comparison.json"
 
 sentinel-xdr-migration package-v3-1 `
   --solution "Solutions\<solution>" `

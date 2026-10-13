@@ -452,6 +452,54 @@
                 "required": [
                   "actionType",
                   "versionBump",
+                  "runId",
+                  "targetVersion",
+                  "basePackageInputSha256",
+                  "packageInputSha256",
+                  "packageInputFilesBefore",
+                  "basePackageInputFiles",
+                  "approvedChangedInputs",
+                  "priorPackageAttemptId",
+                  "failedCandidate",
+                  "legacyBaselineEvidence",
+                  "inputBackupRoot",
+                  "backupId",
+                  "selectedAt",
+                  "historicalEvidence",
+                  "status"
+                ],
+                "properties": {
+                  "actionType": {"const": "same-version-failed-candidate-rebuild"},
+                  "versionBump": {"const": "none"},
+                  "runId": {"type": "string", "minLength": 1},
+                  "targetVersion": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                  },
+                  "basePackageInputSha256": {"$ref": "#/$defs/sha256"},
+                  "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                  "packageInputFilesBefore": {"$ref": "#/$defs/packageInputFiles"},
+                  "basePackageInputFiles": {"$ref": "#/$defs/packageInputFiles"},
+                  "approvedChangedInputs": {"$ref": "#/$defs/packageInputChanges"},
+                  "priorPackageAttemptId": {"type": "string", "format": "uuid"},
+                  "failedCandidate": {"$ref": "#/$defs/failedCandidate"},
+                  "legacyBaselineEvidence": {"$ref": "#/$defs/legacyBaselineEvidence"},
+                  "inputBackupRoot": {"type": "string", "minLength": 1},
+                  "backupId": {"type": "string", "format": "uuid"},
+                  "selectedAt": {"type": "string", "format": "date-time"},
+                  "historicalEvidence": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"}
+                  },
+                  "status": {"enum": ["selected", "consumed"]}
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "actionType",
+                  "versionBump",
                   "targetVersion",
                   "packageInputSha256",
                   "selectedAt",
@@ -473,6 +521,55 @@
                       "type": "string"
                     }
                   }
+                }
+              }
+              ,
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "actionType",
+                  "versionBump",
+                  "runId",
+                  "targetVersion",
+                  "basePackageInputSha256",
+                  "packageInputSha256",
+                  "packageInputFilesBefore",
+                  "basePackageInputFiles",
+                  "approvedChangedInputs",
+                  "priorPackageAttemptId",
+                  "failedCandidate",
+                  "legacyBaselineEvidence",
+                  "inputBackupRoot",
+                  "backupId",
+                  "selectedAt",
+                  "historicalEvidence",
+                  "status"
+                ],
+                "properties": {
+                  "actionType": {"const": "same-version-failed-candidate-rebuild"},
+                  "versionBump": {"const": "none"},
+                  "runId": {"type": "string", "minLength": 1},
+                  "targetVersion": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                  },
+                  "basePackageInputSha256": {"$ref": "#/$defs/sha256"},
+                  "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                  "packageInputFilesBefore": {"$ref": "#/$defs/packageInputFiles"},
+                  "basePackageInputFiles": {"$ref": "#/$defs/packageInputFiles"},
+                  "approvedChangedInputs": {"$ref": "#/$defs/packageInputChanges"},
+                  "priorPackageAttemptId": {"type": "string", "format": "uuid"},
+                  "failedCandidate": {"$ref": "#/$defs/failedCandidate"},
+                  "legacyBaselineEvidence": {"$ref": "#/$defs/legacyBaselineEvidence"},
+                  "inputBackupRoot": {"type": "string", "minLength": 1},
+                  "backupId": {"type": "string", "format": "uuid"},
+                  "selectedAt": {"type": "string", "format": "date-time"},
+                  "historicalEvidence": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"}
+                  },
+                  "status": {"enum": ["selected", "consumed"]}
                 }
               }
             ]
@@ -593,6 +690,52 @@
                       "$ref": "#/$defs/legacyBaselineEvidence"
                     }
                   }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "actionType",
+                    "versionBump",
+                    "runId",
+                    "targetVersion",
+                    "basePackageInputSha256",
+                    "packageInputSha256",
+                    "packageInputFilesBefore",
+                    "basePackageInputFiles",
+                    "approvedChangedInputs",
+                    "priorPackageAttemptId",
+                    "failedCandidate",
+                    "legacyBaselineEvidence",
+                    "inputBackupRoot",
+                    "backupId",
+                    "selectedAt",
+                    "historicalEvidence"
+                  ],
+                  "properties": {
+                    "actionType": {"const": "same-version-failed-candidate-rebuild"},
+                    "versionBump": {"const": "none"},
+                    "runId": {"type": "string", "minLength": 1},
+                    "targetVersion": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                    },
+                    "basePackageInputSha256": {"$ref": "#/$defs/sha256"},
+                    "packageInputSha256": {"$ref": "#/$defs/sha256"},
+                    "packageInputFilesBefore": {"$ref": "#/$defs/packageInputFiles"},
+                    "basePackageInputFiles": {"$ref": "#/$defs/packageInputFiles"},
+                    "approvedChangedInputs": {"$ref": "#/$defs/packageInputChanges"},
+                    "priorPackageAttemptId": {"type": "string", "format": "uuid"},
+                    "failedCandidate": {"$ref": "#/$defs/failedCandidate"},
+                    "legacyBaselineEvidence": {"$ref": "#/$defs/legacyBaselineEvidence"},
+                    "inputBackupRoot": {"type": "string", "minLength": 1},
+                    "backupId": {"type": "string", "format": "uuid"},
+                    "selectedAt": {"type": "string", "format": "date-time"},
+                    "historicalEvidence": {
+                      "type": "object",
+                      "additionalProperties": {"type": "string"}
+                    }
+                  }
                 }
               ]
             }
@@ -628,6 +771,24 @@
       "properties": {
         "path": {"type": "string", "minLength": 1},
         "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "failedCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptId",
+        "packageInputSha256",
+        "packageInputFileCount",
+        "evidencePath",
+        "evidenceSha256"
+      ],
+      "properties": {
+        "attemptId": {"type": "string", "format": "uuid"},
+        "packageInputSha256": {"$ref": "#/$defs/sha256"},
+        "packageInputFileCount": {"type": "integer", "minimum": 1},
+        "evidencePath": {"type": "string", "minLength": 1},
+        "evidenceSha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "packageAction": {

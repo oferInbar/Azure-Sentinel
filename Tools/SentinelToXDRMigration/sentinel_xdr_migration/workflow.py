@@ -3465,6 +3465,164 @@ def _same_version_rebuild_scope(
     return actual_changes
 
 
+def _read_failed_candidate_evidence(
+    solution: Path,
+    state: dict[str, Any],
+    target_version: str,
+    evidence_reference: str | Path,
+) -> tuple[Path, dict[str, Any]]:
+    reference = str(evidence_reference).replace("\\", "/")
+    evidence_path = content_path(solution, reference)
+    if evidence_path.is_symlink() or not evidence_path.is_file():
+        raise ValueError("failed-candidate evidence is missing or unsafe")
+    parts = Path(reference).parts
+    if (
+        Path(reference).is_absolute()
+        or ".." in parts
+        or len(parts) < 4
+        or parts[0] != "Logs"
+        or parts[1] != "sentinel-xdr-migration"
+        or parts[2] != state.get("runId")
+    ):
+        raise ValueError("failed-candidate evidence must belong to the selected workflow run")
+    try:
+        evidence = json.loads(evidence_path.read_bytes())
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError("failed-candidate evidence is invalid JSON") from exc
+    if not isinstance(evidence, dict):
+        raise ValueError("failed-candidate evidence must be a JSON object")
+    attempt = (state.get("packaging") or {}).get("currentAttempt") or {}
+    consumed = (state.get("packaging") or {}).get("lastConsumedAction") or {}
+    candidate_inputs = evidence.get("currentPackageInput") or {}
+    evidence_consumed = evidence.get("lastConsumedAction")
+    if not isinstance(candidate_inputs, dict) or not isinstance(evidence_consumed, dict):
+        raise ValueError("failed-candidate evidence is missing its consumed attempt binding")
+    attempt_id = attempt.get("attemptId")
+    expected_artifacts = {
+        "Package/mainTemplate.json": "mainTemplate",
+        "Package/createUiDefinition.json": "createUiDefinition",
+        "Package/testParameters.json": "testParameters",
+        f"Package/{target_version}.zip": "zip",
+    }
+    generated = evidence.get("generatedArtifacts")
+    if (
+        evidence.get("artifactKind") != "v3-1-arm-ttk-failure-final-handoff"
+        or evidence.get("runId") != state.get("runId")
+        or evidence.get("solution") != solution.name
+        or evidence.get("shellStatus") != "completed"
+        or not isinstance(evidence.get("cliExitCode"), int)
+        or isinstance(evidence.get("cliExitCode"), bool)
+        or evidence.get("cliExitCode") == 0
+        or not isinstance(evidence.get("v31ChildExitCode"), int)
+        or isinstance(evidence.get("v31ChildExitCode"), bool)
+        or evidence.get("v31ChildExitCode") == 0
+        or evidence.get("currentVersion") != target_version
+        or solution_data_version(solution) != target_version
+        or evidence.get("bumpConsumed") is not True
+        or evidence.get("packageReportExists") is not False
+        or not isinstance(candidate_inputs, dict)
+        or not isinstance(candidate_inputs.get("sha256"), str)
+        or not re.fullmatch(r"[a-f0-9]{64}", candidate_inputs["sha256"])
+        or not isinstance(candidate_inputs.get("fileCount"), int)
+        or isinstance(candidate_inputs.get("fileCount"), bool)
+        or candidate_inputs.get("fileCount") < 1
+        or (state.get("packaging") or {}).get("lastSuccessful") is not None
+        or attempt.get("status") != "failed"
+        or attempt.get("bumpConsumed") is not True
+        or attempt_id != consumed.get("attemptId")
+        or evidence_consumed.get("attemptId") != attempt_id
+        or evidence_consumed.get("packageSucceeded") is not False
+        or evidence_consumed.get("packageInputSha256") != candidate_inputs.get("sha256")
+        or consumed.get("packageSucceeded") is not False
+        or consumed.get("bumpConsumed") is not True
+        or attempt.get("effectiveVersionBump") not in {"patch", "minor", "major"}
+        or attempt.get("packageReportSha256") is not None
+        or attempt.get("packageInputSha256") != candidate_inputs.get("sha256")
+        or consumed.get("packageInputSha256") != candidate_inputs.get("sha256")
+        or not isinstance(generated, dict)
+        or set(generated) != set(expected_artifacts)
+    ):
+        raise ValueError(
+            "failed-candidate evidence is not a matching consumed, failed V3.1 attempt "
+            "for the selected run and current version"
+        )
+    package_report = content_path(
+        solution,
+        f"Logs/sentinel-xdr-migration/{state['runId']}/packaging.v3_1.json",
+    )
+    if package_report.exists() or package_report.is_symlink():
+        raise ValueError(
+            "failed-candidate evidence conflicts with an existing V3.1 package report"
+        )
+    snapshot = evidence.get("failedArtifactSnapshot")
+    if (
+        not isinstance(snapshot, str)
+        or not snapshot
+        or Path(snapshot).is_absolute()
+        or ".." in Path(snapshot).parts
+        or Path(snapshot).as_posix() != snapshot
+    ):
+        raise ValueError("failed-candidate evidence has no safe artifact snapshot reference")
+    for relative, artifact_name in expected_artifacts.items():
+        record = generated.get(relative)
+        digest = record.get("sha256") if isinstance(record, dict) else None
+        size = record.get("bytes") if isinstance(record, dict) else None
+        if (
+            not isinstance(digest, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", digest)
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 1
+        ):
+            raise ValueError(f"failed-candidate evidence has invalid {artifact_name} metadata")
+        candidate = content_path(solution, relative)
+        if (
+            candidate.is_symlink()
+            or not candidate.is_file()
+            or candidate.stat().st_size != size
+            or hashlib.sha256(candidate.read_bytes()).hexdigest() != digest
+        ):
+            raise ValueError(
+                f"failed V3.1 candidate artifact is missing or changed: {artifact_name}"
+            )
+        snapshot_candidate = content_path(
+            solution,
+            f"{evidence_path.parent.relative_to(solution).as_posix()}/{snapshot}/{relative}",
+        )
+        if (
+            snapshot_candidate.is_symlink()
+            or not snapshot_candidate.is_file()
+            or snapshot_candidate.stat().st_size != size
+            or hashlib.sha256(snapshot_candidate.read_bytes()).hexdigest() != digest
+        ):
+            raise ValueError(
+                f"archived failed V3.1 candidate artifact is missing or changed: {artifact_name}"
+            )
+    return evidence_path, evidence
+
+
+def _archive_failed_candidate_evidence(
+    solution: Path,
+    evidence_path: Path,
+    evidence: dict[str, Any],
+    archive_root: Path,
+) -> dict[str, str]:
+    archive_root.mkdir(parents=True, exist_ok=False)
+    archived = {
+        "failedCandidateEvidence": archive_root / evidence_path.name,
+    }
+    shutil.copy2(evidence_path, archived["failedCandidateEvidence"])
+    for relative in (evidence.get("generatedArtifacts") or {}):
+        source = content_path(solution, relative)
+        destination = archive_root / Path(relative).name
+        shutil.copy2(source, destination)
+        archived[Path(relative).name] = destination
+    return {
+        name: path.relative_to(solution).as_posix()
+        for name, path in archived.items()
+    }
+
+
 def _validate_release_notes_refresh_inputs(
     solution: Path,
     action: dict[str, Any],
@@ -3515,7 +3673,10 @@ def _validate_same_version_content_rebuild_inputs(
     successful: dict[str, Any],
     legacy_baseline_evidence: str | Path | None = None,
 ) -> None:
-    if action.get("actionType") != "same-version-content-rebuild":
+    if action.get("actionType") not in {
+        "same-version-content-rebuild",
+        "same-version-failed-candidate-rebuild",
+    }:
         return
     target_version = action.get("targetVersion")
     files = action.get("packageInputFilesBefore")
@@ -3525,7 +3686,6 @@ def _validate_same_version_content_rebuild_inputs(
     if (
         not isinstance(target_version, str)
         or target_version != current_version
-        or target_version != successful.get("version")
         or not isinstance(files, dict)
         or not isinstance(approved_changes, dict)
         or not approved_changes
@@ -3535,6 +3695,134 @@ def _validate_same_version_content_rebuild_inputs(
         or ".." in Path(backup_root).parts
         or not isinstance(historical_evidence, dict)
     ):
+        raise ValueError(
+            "same-version rebuild is missing its exact current version or input backup binding"
+        )
+    if action.get("actionType") == "same-version-failed-candidate-rebuild":
+        failed = action.get("failedCandidate") or {}
+        baseline_files = action.get("basePackageInputFiles")
+        if (
+            not isinstance(failed, dict)
+            or failed.get("attemptId") != action.get("priorPackageAttemptId")
+            or failed.get("packageInputSha256") != action.get("basePackageInputSha256")
+            or not isinstance(failed.get("evidencePath"), str)
+            or not isinstance(failed.get("evidenceSha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", failed.get("evidenceSha256", ""))
+            or not isinstance(baseline_files, dict)
+            or action.get("runId") is None
+        ):
+            raise ValueError("failed-candidate rebuild is missing its attempt evidence binding")
+        if (
+            not all(
+                isinstance(name, str)
+                and isinstance(digest, str)
+                and re.fullmatch(r"[a-f0-9]{64}", digest)
+                for name, digest in files.items()
+            )
+            or package_input_file_hashes(solution) != files
+            or _identity_from_file_hashes(files) != action.get("packageInputSha256")
+            or current_identity != action.get("packageInputSha256")
+        ):
+            raise ValueError(
+                "failed-candidate rebuild inputs changed or no longer match the explicit approval"
+            )
+        _validate_package_input_file_manifest(
+            baseline_files,
+            expected_sha256=action["basePackageInputSha256"],
+            expected_file_count=failed.get("packageInputFileCount"),
+            label="failed V3.1 candidate input baseline",
+        )
+        evidence_path = content_path(solution, failed["evidencePath"])
+        if (
+            evidence_path.is_symlink()
+            or not evidence_path.is_file()
+            or hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            != failed["evidenceSha256"]
+        ):
+            raise ValueError("failed-candidate evidence is missing or changed after planning")
+        history = action.get("historicalEvidence") or {}
+        archived_handoff_ref = history.get("failedCandidateEvidence")
+        if not isinstance(archived_handoff_ref, str):
+            raise ValueError("failed-candidate rebuild is missing its archived failure evidence")
+        archived_handoff = content_path(solution, archived_handoff_ref)
+        if (
+            archived_handoff.is_symlink()
+            or not archived_handoff.is_file()
+            or hashlib.sha256(archived_handoff.read_bytes()).hexdigest()
+            != failed["evidenceSha256"]
+        ):
+            raise ValueError("archived failed-candidate evidence is missing or modified")
+        try:
+            handoff = json.loads(archived_handoff.read_bytes())
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError("archived failed-candidate evidence is invalid") from exc
+        if (
+            handoff.get("artifactKind") != "v3-1-arm-ttk-failure-final-handoff"
+            or handoff.get("runId") != action.get("runId")
+            or handoff.get("currentVersion") != target_version
+            or handoff.get("currentPackageInput", {}).get("sha256")
+            != action.get("basePackageInputSha256")
+            or handoff.get("lastConsumedAction", {}).get("attemptId")
+            != action.get("priorPackageAttemptId")
+            or handoff.get("packageReportExists") is not False
+        ):
+            raise ValueError("archived failure evidence does not match the selected candidate")
+        artifact_names = {
+            "Package/mainTemplate.json": "mainTemplate.json",
+            "Package/createUiDefinition.json": "createUiDefinition.json",
+            "Package/testParameters.json": "testParameters.json",
+            f"Package/{target_version}.zip": f"{target_version}.zip",
+        }
+        generated = handoff.get("generatedArtifacts") or {}
+        for relative, archive_name in artifact_names.items():
+            record = generated.get(relative) or {}
+            reference = history.get(archive_name)
+            archived_artifact = content_path(solution, reference) if isinstance(reference, str) else None
+            if (
+                archived_artifact is None
+                or archived_artifact.is_symlink()
+                or not archived_artifact.is_file()
+                or hashlib.sha256(archived_artifact.read_bytes()).hexdigest()
+                != record.get("sha256")
+            ):
+                raise ValueError(
+                    f"archived failed V3.1 candidate artifact is missing or modified: {archive_name}"
+                )
+        _same_version_rebuild_scope(baseline_files, files, approved_changes)
+        legacy_binding = action.get("legacyBaselineEvidence")
+        if not isinstance(legacy_binding, dict):
+            raise ValueError("failed-candidate rebuild is missing exact baseline comparison evidence")
+        if (
+            legacy_baseline_evidence is not None
+            and str(legacy_baseline_evidence).replace("\\", "/") != legacy_binding.get("path")
+        ):
+            raise ValueError("baseline evidence differs from the evidence selected by the rebuild plan")
+        reconstructed, evidence_binding = _legacy_baseline_evidence(
+            solution,
+            legacy_binding["path"],
+            expected_current_sha256=action["packageInputSha256"],
+            current_files=files,
+            expected_prior_sha256=action["basePackageInputSha256"],
+            expected_prior_file_count=failed.get("packageInputFileCount"),
+            expected_evidence_sha256=legacy_binding.get("sha256"),
+        )
+        if reconstructed != baseline_files or evidence_binding != legacy_binding:
+            raise ValueError("failed-candidate input baseline no longer matches its comparison evidence")
+        for relative, digest in files.items():
+            if Path(relative).is_absolute() or ".." in Path(relative).parts:
+                raise ValueError("same-version rebuild input manifest contains an unsafe path")
+            backup = content_path(solution, f"{backup_root}/{relative}")
+            if (
+                backup.is_symlink()
+                or not backup.is_file()
+                or hashlib.sha256(backup.read_bytes()).hexdigest() != digest
+            ):
+                raise ValueError(
+                    f"same-version rebuild input backup is missing or modified: {relative}"
+                )
+        return
+
+    if target_version != successful.get("version"):
         raise ValueError(
             "same-version rebuild is missing its exact current version or input backup binding"
         )
@@ -3697,7 +3985,10 @@ def verify_same_version_content_rebuild(
     pending = package_state.get("pendingReleaseAction") or {}
     completed_action = None
     successful = package_state.get("lastSuccessful") or {}
-    if pending.get("actionType") == "same-version-content-rebuild":
+    if pending.get("actionType") in {
+        "same-version-content-rebuild",
+        "same-version-failed-candidate-rebuild",
+    }:
         action = pending
         prior_successful = successful
         receipt_verified = False
@@ -3705,7 +3996,10 @@ def verify_same_version_content_rebuild(
         actions = package_state.get("releaseActions") or []
         action = next((
             item for item in reversed(actions)
-            if item.get("actionType") == "same-version-content-rebuild"
+            if item.get("actionType") in {
+                "same-version-content-rebuild",
+                "same-version-failed-candidate-rebuild",
+            }
             and item.get("status") == "consumed"
             and item.get("packageInputSha256") == successful.get("packageInputSha256")
             and item.get("targetVersion") == successful.get("version")
@@ -3777,17 +4071,26 @@ def verify_same_version_content_rebuild(
             ):
                 raise ValueError(f"completed same-version package artifact is missing or modified: {name}")
         archived_report = action.get("historicalEvidence", {}).get("packageReport")
-        prior_successful = {
-            "packageSucceeded": True,
-            "version": action.get("targetVersion"),
-            "packageInputSha256": action.get("basePackageInputSha256"),
-            "attemptId": action.get("priorPackageAttemptId"),
-            "packageReportSha256": action.get("priorPackageReportSha256"),
-            "packageReport": archived_report,
-        }
+        if action.get("actionType") == "same-version-failed-candidate-rebuild":
+            prior_successful = {}
+        else:
+            prior_successful = {
+                "packageSucceeded": True,
+                "version": action.get("targetVersion"),
+                "packageInputSha256": action.get("basePackageInputSha256"),
+                "attemptId": action.get("priorPackageAttemptId"),
+                "packageReportSha256": action.get("priorPackageReportSha256"),
+                "packageReport": archived_report,
+            }
         receipt_verified = True
 
-    if successful.get("packageSucceeded") is not True:
+    if (
+        successful.get("packageSucceeded") is not True
+        and not (
+            pending.get("actionType") == "same-version-failed-candidate-rebuild"
+            and not receipt_verified
+        )
+    ):
         raise ValueError("same-version rebuild verification requires its successful prior V3.1 receipt")
     current_identity = package_input_identity(root)["sha256"]
     _validate_same_version_content_rebuild_inputs(
@@ -3923,6 +4226,7 @@ def plan_same_version_content_rebuild(
     changed_inputs: list[str],
     expected_package_input_sha256: str,
     legacy_baseline_evidence: str | Path | None = None,
+    failed_candidate_evidence: str | Path | None = None,
 ) -> dict[str, Any]:
     """Authorize one exact-input V3.1 rebuild without changing the solution version."""
     validate_v31_target_version(target_version)
@@ -3971,52 +4275,98 @@ def plan_same_version_content_rebuild(
         if (package_state.get("currentAttempt") or {}).get("status") == "running":
             raise ValueError("cannot plan a same-version rebuild while V3.1 packaging is running")
         successful = package_state.get("lastSuccessful") or {}
-        if successful.get("packageSucceeded") is not True:
-            raise ValueError(
-                "same-version rebuild requires a prior successful V3.1 package receipt"
-            )
-        if successful.get("effectiveVersionBump") not in {"patch", "minor", "major", "none"}:
-            raise ValueError("prior V3.1 package receipt has no valid version action")
-        historical_report = _validate_historical_package_receipt(
-            root, state, successful, target_version,
-        )
-        last_consumed = package_state.get("lastConsumedAction") or {}
-        if (
-            last_consumed.get("packageSucceeded") is not True
-            or last_consumed.get("attemptId") != successful.get("attemptId")
-            or last_consumed.get("packageInputSha256") != successful.get("packageInputSha256")
-            or last_consumed.get("version") not in (None, target_version)
-        ):
-            raise ValueError(
-                "prior package receipt is not linked to the current run's successful "
-                "consumed-action chain"
-            )
-        prior_identity = successful.get("packageInputSha256")
-        if not isinstance(prior_identity, str) or prior_identity == expected_package_input_sha256:
-            raise ValueError(
-                "same-version content rebuild requires changed package inputs since the "
-                "prior successful V3.1 build"
-            )
         files = package_input_file_hashes(root)
         current_identity = _identity_from_file_hashes(files)
-        if (
-            current_identity != expected_package_input_sha256
-            or current_identity == prior_identity
-        ):
+        if current_identity != expected_package_input_sha256:
             raise ValueError(
                 "package inputs changed after same-version rebuild approval; refresh status "
                 "and approve the exact current input identity"
             )
-        package_inputs = historical_report.get("packageInputs") or {}
-        prior_inputs = package_inputs.get("after") or {}
-        if prior_inputs.get("sha256") != prior_identity:
-            raise ValueError("prior successful receipt has a mismatched package-input identity")
-        legacy_evidence_binding = None
-        if prior_inputs.get("files") is None:
+        failed_candidate = successful.get("packageSucceeded") is not True
+        failure_handoff: dict[str, Any] | None = None
+        failure_evidence_path: Path | None = None
+        failed_candidate_binding: dict[str, Any] | None = None
+        if not failed_candidate:
+            if failed_candidate_evidence is not None:
+                raise ValueError(
+                    "--failed-candidate-evidence is only valid when no successful V3.1 receipt exists"
+                )
+            if successful.get("effectiveVersionBump") not in {
+                "patch", "minor", "major", "none",
+            }:
+                raise ValueError("prior V3.1 package receipt has no valid version action")
+            historical_report = _validate_historical_package_receipt(
+                root, state, successful, target_version,
+            )
+            last_consumed = package_state.get("lastConsumedAction") or {}
+            if (
+                last_consumed.get("packageSucceeded") is not True
+                or last_consumed.get("attemptId") != successful.get("attemptId")
+                or last_consumed.get("packageInputSha256") != successful.get("packageInputSha256")
+                or last_consumed.get("version") not in (None, target_version)
+            ):
+                raise ValueError(
+                    "prior package receipt is not linked to the current run's successful "
+                    "consumed-action chain"
+                )
+            prior_identity = successful.get("packageInputSha256")
+            if not isinstance(prior_identity, str) or prior_identity == current_identity:
+                raise ValueError(
+                    "same-version content rebuild requires changed package inputs since the "
+                    "prior successful V3.1 build"
+                )
+            package_inputs = historical_report.get("packageInputs") or {}
+            prior_inputs = package_inputs.get("after") or {}
+            if prior_inputs.get("sha256") != prior_identity:
+                raise ValueError("prior successful receipt has a mismatched package-input identity")
+            legacy_evidence_binding = None
+            if prior_inputs.get("files") is None:
+                if legacy_baseline_evidence is None:
+                    raise ValueError(
+                        "legacy successful V3.1 receipt has no per-file package-input baseline; "
+                        "provide exact receipt-bound --legacy-baseline-evidence"
+                    )
+                baseline_files, legacy_evidence_binding = _legacy_baseline_evidence(
+                    root,
+                    legacy_baseline_evidence,
+                    expected_current_sha256=current_identity,
+                    current_files=files,
+                    expected_prior_sha256=prior_identity,
+                    expected_prior_file_count=prior_inputs.get("fileCount"),
+                )
+            else:
+                if legacy_baseline_evidence is not None:
+                    raise ValueError(
+                        "legacy baseline evidence is only accepted for receipts without "
+                        "a per-file manifest"
+                    )
+                baseline_files = _validate_package_input_file_manifest(
+                    prior_inputs.get("files"),
+                    expected_sha256=prior_identity,
+                    expected_file_count=prior_inputs.get("fileCount"),
+                    label="prior successful V3.1 receipt",
+                )
+            prior_attempt_id = successful["attemptId"]
+            prior_report_sha256 = successful["packageReportSha256"]
+        else:
+            if failed_candidate_evidence is None:
+                raise ValueError(
+                    "same-version rebuild requires a prior successful V3.1 receipt or "
+                    "explicit failed-candidate evidence"
+                )
             if legacy_baseline_evidence is None:
                 raise ValueError(
-                    "legacy successful V3.1 receipt has no per-file package-input baseline; "
-                    "provide exact receipt-bound --legacy-baseline-evidence"
+                    "failed V3.1 candidate has no per-file input manifest; provide exact "
+                    "--legacy-baseline-evidence that reconstructs its complete input tree"
+                )
+            failure_evidence_path, failure_handoff = _read_failed_candidate_evidence(
+                root, state, target_version, failed_candidate_evidence,
+            )
+            candidate_inputs = failure_handoff["currentPackageInput"]
+            prior_identity = candidate_inputs["sha256"]
+            if prior_identity == current_identity:
+                raise ValueError(
+                    "failed-candidate rebuild requires changed package inputs since the failed attempt"
                 )
             baseline_files, legacy_evidence_binding = _legacy_baseline_evidence(
                 root,
@@ -4024,20 +4374,17 @@ def plan_same_version_content_rebuild(
                 expected_current_sha256=current_identity,
                 current_files=files,
                 expected_prior_sha256=prior_identity,
-                expected_prior_file_count=prior_inputs.get("fileCount"),
+                expected_prior_file_count=candidate_inputs["fileCount"],
             )
-        else:
-            if legacy_baseline_evidence is not None:
-                raise ValueError(
-                    "legacy baseline evidence is only accepted for receipts without "
-                    "a per-file manifest"
-                )
-            baseline_files = _validate_package_input_file_manifest(
-                prior_inputs.get("files"),
-                expected_sha256=prior_identity,
-                expected_file_count=prior_inputs.get("fileCount"),
-                label="prior successful V3.1 receipt",
-            )
+            failed_candidate_binding = {
+                "attemptId": failure_handoff["lastConsumedAction"]["attemptId"],
+                "packageInputSha256": prior_identity,
+                "packageInputFileCount": candidate_inputs["fileCount"],
+                "evidencePath": str(failure_evidence_path.relative_to(root)).replace("\\", "/"),
+                "evidenceSha256": hashlib.sha256(failure_evidence_path.read_bytes()).hexdigest(),
+            }
+            prior_attempt_id = failed_candidate_binding["attemptId"]
+            prior_report_sha256 = None
         normalized_changed_inputs = [
             name.replace("\\", "/") if isinstance(name, str) else name
             for name in changed_inputs
@@ -4062,20 +4409,32 @@ def plan_same_version_content_rebuild(
             name: files.get(name) for name in normalized_changed_inputs
         }
         _same_version_rebuild_scope(baseline_files, files, approved_changes)
+        action_type = (
+            "same-version-failed-candidate-rebuild"
+            if failed_candidate else "same-version-content-rebuild"
+        )
         if any(
-            action.get("actionType") == "same-version-content-rebuild"
+            action.get("actionType") == action_type
             and action.get("packageInputSha256") == current_identity
             for action in package_state.get("releaseActions", [])
         ):
             raise ValueError(
                 "a same-version rebuild action was already selected for these package inputs"
             )
-
-        historical_evidence = _archive_package_evidence(root, successful)
         backup_id = str(uuid.uuid4())
         backup_root = (
             path.parent / "Reports" / "package-history" / backup_id / "input-backup"
         )
+        if failed_candidate:
+            archive_root = path.parent / "Reports" / "package-history" / backup_id / "failed-candidate"
+            historical_evidence = _archive_failed_candidate_evidence(
+                root,
+                failure_evidence_path,
+                failure_handoff,
+                archive_root,
+            )
+        else:
+            historical_evidence = _archive_package_evidence(root, successful)
         current_files = package_input_file_hashes(root)
         if current_files != files:
             raise ValueError("package inputs changed while the rebuild backup was prepared")
@@ -4097,7 +4456,7 @@ def plan_same_version_content_rebuild(
 
         selected_at = _utc_now()
         action = {
-            "actionType": "same-version-content-rebuild",
+            "actionType": action_type,
             "versionBump": "none",
             "runId": state["runId"],
             "targetVersion": target_version,
@@ -4105,13 +4464,19 @@ def plan_same_version_content_rebuild(
             "packageInputSha256": current_identity,
             "packageInputFilesBefore": files,
             "approvedChangedInputs": approved_changes,
-            "priorPackageAttemptId": successful["attemptId"],
-            "priorPackageReportSha256": successful["packageReportSha256"],
+            "priorPackageAttemptId": prior_attempt_id,
             "inputBackupRoot": relative_backup_root,
             "backupId": backup_id,
             "selectedAt": selected_at,
             "historicalEvidence": historical_evidence,
         }
+        if failed_candidate:
+            action["basePackageInputFiles"] = baseline_files
+            action["failedCandidate"] = failed_candidate_binding
+        else:
+            action["priorPackageReportSha256"] = prior_report_sha256
+        if legacy_evidence_binding is not None:
+            action["legacyBaselineEvidence"] = legacy_evidence_binding
         if legacy_evidence_binding is not None:
             action["legacyBaselineEvidence"] = legacy_evidence_binding
         release_action = {
@@ -4143,6 +4508,7 @@ def plan_same_version_content_rebuild(
             "approvedChangedInputs": action["approvedChangedInputs"],
             "inputBackupRoot": relative_backup_root,
             "historicalEvidence": historical_evidence,
+            "failedCandidate": failed_candidate_binding,
             "legacyBaselineEvidence": legacy_evidence_binding,
             "next": "package-v3-1 --version-bump none",
             "workflowStatus": state["workflowStatus"],
@@ -4463,9 +4829,10 @@ def package_workflow_v3_1(
         package_state = state.get("packaging") or {}
         pending_release = package_state.get("pendingReleaseAction") or {}
         notes_refresh = pending_release.get("actionType") == "release-notes-refresh"
-        same_version_rebuild = (
-            pending_release.get("actionType") == "same-version-content-rebuild"
-        )
+        same_version_rebuild = pending_release.get("actionType") in {
+            "same-version-content-rebuild",
+            "same-version-failed-candidate-rebuild",
+        }
         if legacy_baseline_evidence is not None and not same_version_rebuild:
             raise ValueError(
                 "--legacy-baseline-evidence is only valid for a pending same-version rebuild"
@@ -4505,7 +4872,9 @@ def package_workflow_v3_1(
             and (package_state.get("lastConsumedAction") or {}).get("effectiveVersionBump") == "none"
             and any(
                 action.get("actionType") in {
-                    "release-notes-refresh", "same-version-content-rebuild",
+                    "release-notes-refresh",
+                    "same-version-content-rebuild",
+                    "same-version-failed-candidate-rebuild",
                 }
                 and action.get("status") == "consumed"
                 and action.get("packageInputSha256") == inputs["sha256"]
@@ -4568,7 +4937,10 @@ def package_workflow_v3_1(
         )
         same_version_rebuild = bool(
             pending_release
-            and pending_release.get("actionType") == "same-version-content-rebuild"
+            and pending_release.get("actionType") in {
+                "same-version-content-rebuild",
+                "same-version-failed-candidate-rebuild",
+            }
         )
         previous = package_state.get("lastSuccessful")
         previous_successful = previous

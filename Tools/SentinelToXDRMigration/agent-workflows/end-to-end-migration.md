@@ -230,16 +230,31 @@ For an explicitly approved non-ReleaseNotes content correction that must retain
 the already packaged solution version, Authoring may use
 `workflow-plan-same-version-content-rebuild` instead of selecting another
 release. It requires the exact current package-input hash, the actual solution
-version matching the successful V3.1 receipt from the selected run, and fresh
-passed full-inventory offline conversion, structural, and review evidence.
-List the exact changed non-ReleaseNotes package inputs with repeated
-`--changed-input` arguments. The planner archives the prior V3.1 receipt and
-artifacts plus a hash-verified snapshot of the current inputs; the build then
-uses only `package-v3-1 --version-bump none` with no target version. The route
-is Authoring-only, preserves the same solution version, and does not relax
-Qualification runtime, target, consent, or deployment gates. A failed build may
-be retried only against the still-pending plan and identical input manifest;
-the actual V3.1 build and fresh receipt remain mandatory.
+matching the successful V3.1 receipt from the selected run, and fresh passed
+full-inventory offline conversion, structural, and review evidence. List the
+exact changed non-ReleaseNotes package inputs with repeated `--changed-input`
+arguments. The planner archives the prior V3.1 receipt and artifacts plus a
+hash-verified snapshot of the current inputs; the build then uses only
+`package-v3-1 --version-bump none` with no target version.
+
+If V3.1 consumed the selected version action but failed before writing a
+successful receipt, the same planner can authorize a distinct
+`same-version-failed-candidate-rebuild` action. This requires
+`--failed-candidate-evidence` pointing to the selected run's persisted V3.1
+failure handoff and `--legacy-baseline-evidence` reconstructing the complete
+pre-repair input manifest from the failed attempt's exact aggregate hash and
+file count. The candidate handoff, consumed failed attempt, generated artifact
+hashes, and archived candidate outputs must all match the selected workflow
+state. A failed attempt is not a successful package receipt; no success status
+or package report is synthesized. If the full prior manifest cannot be
+reconstructed exactly, stop rather than infer paths from the approved list.
+
+Both routes are Authoring-only, preserve the same solution version, and do not
+relax Qualification runtime, target, consent, or deployment gates. The planner
+archives the verified baseline and current input snapshot. Only
+`package-v3-1 --version-bump none` with no target version may run. A failed
+build may be retried only against the still-pending plan and identical input
+manifest; the actual V3.1 build and fresh receipt remain mandatory.
 
 Successful V3.1 receipts include the complete post-build package-input
 file/hash manifest. The rebuild planner compares it to the current manifest and
@@ -257,8 +272,10 @@ reconstructed, stop rather than infer scope from the approved path list.
 `workflow-verify-same-version-content-rebuild --solution <solution> --run-id
 <run-id>` performs a read-only scope and receipt check for a pending or completed
 rebuild; legacy plans without a saved evidence binding must also supply
-`--legacy-baseline-evidence`. This check does not alter workflow state or claim
-full workflow completion.
+`--legacy-baseline-evidence`. For a failed-candidate plan, the saved comparison
+evidence and archived failed-attempt artifacts are rechecked; only a later
+fresh successful V3.1 receipt can make the completed rebuild verifiable. This
+check does not alter workflow state or claim full workflow completion.
 
 #### Evidence-based package selection
 

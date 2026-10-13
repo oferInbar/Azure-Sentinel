@@ -683,8 +683,15 @@ def main(argv: list[str] | None = None) -> int:
     same_version_rebuild.add_argument(
         "--legacy-baseline-evidence",
         help=(
-            "Receipt-bound package-input comparison JSON used only when the prior "
-            "successful V3.1 receipt has no per-file manifest."
+            "Receipt- or failed-attempt-bound package-input comparison JSON used "
+            "only when the prior V3.1 baseline has no per-file manifest."
+        ),
+    )
+    same_version_rebuild.add_argument(
+        "--failed-candidate-evidence",
+        help=(
+            "Exact persisted failure handoff for a consumed V3.1 attempt with no "
+            "successful receipt; requires --legacy-baseline-evidence."
         ),
     )
     same_version_verify = subparsers.add_parser(
@@ -1329,6 +1336,7 @@ def main(argv: list[str] | None = None) -> int:
                 changed_inputs=args.changed_input,
                 expected_package_input_sha256=args.expected_package_input_sha256,
                 legacy_baseline_evidence=args.legacy_baseline_evidence,
+                failed_candidate_evidence=args.failed_candidate_evidence,
             )
         elif args.command == "workflow-verify-same-version-content-rebuild":
             result = verify_same_version_content_rebuild(
