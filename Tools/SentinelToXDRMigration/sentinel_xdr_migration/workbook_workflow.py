@@ -61,6 +61,8 @@ def _data(solution: Path) -> tuple[Path, dict[str, Any]]:
 def selected_workbook_references(
     solution: str | Path,
     document: dict[str, Any] | None = None,
+    *,
+    require_existing: bool = True,
 ) -> list[Path]:
     root = Path(solution).expanduser().resolve()
     from .packaging import _solution_relative_reference
@@ -80,10 +82,17 @@ def selected_workbook_references(
         for reference in references
     ):
         raise ValueError("solution Data XDR Workbooks must be a content-reference array")
-    paths = [
-        _solution_relative_reference(root, reference, "XDR Workbooks")
-        for reference in references
-    ]
+    paths = []
+    for reference in references:
+        if require_existing:
+            path = _solution_relative_reference(root, reference, "XDR Workbooks")
+        else:
+            normalized = reference.replace("\\", "/")
+            parts = normalized.split("/")
+            if parts[:2] == ["Solutions", root.name]:
+                normalized = "/".join(parts[2:])
+            path = content_path(root, normalized)
+        paths.append(path)
     if len(set(paths)) != len(paths):
         raise ValueError("solution Data selects the same Defender workbook more than once")
     for path in paths:
@@ -97,9 +106,11 @@ def freeze_inventory(solution: str | Path) -> dict[str, Any]:
     inventory = _inventory(root)
     included = [row["path"] for row in inventory]
     excluded: list[dict[str, str]] = []
+    explicit_selection = False
     if (root / "Data").is_dir():
         _, document = _data(root)
         if any(key.casefold() == "xdr workbooks" for key in document):
+            explicit_selection = True
             included = []
             known_sources = {row["path"] for row in inventory}
             for path in selected_workbook_references(root, document):
@@ -107,17 +118,23 @@ def freeze_inventory(solution: str | Path) -> dict[str, Any]:
                 source = target.get("contentProvenance", {}).get("source", {}).get("path")
                 if source not in known_sources or source in included:
                     raise ValueError("explicit workbook selection does not match the source inventory")
+                expected_output = root / "XDR Workbooks" / source.removeprefix("Workbooks/")
+                if path != expected_output:
+                    raise ValueError("explicit workbook selection must preserve the original relative workbook path")
                 included.append(source)
             excluded = [
                 {"path": row["path"], "reason": "Excluded by the explicit solution Data selection."}
                 for row in inventory
                 if row["path"] not in included
             ]
+    selection = {"included": sorted(included), "excluded": excluded}
     return {
         "schemaVersion": "1.0.0",
         "inventory": inventory,
         "inventorySha256": _digest(inventory),
-        "selection": {"included": sorted(included), "excluded": excluded},
+        "selection": selection,
+        "selectionSha256": _digest(selection),
+        "selectionExplicit": explicit_selection,
     }
 
 
@@ -131,6 +148,8 @@ def verify_inventory(solution: str | Path, state: dict[str, Any]) -> None:
             "frozen workbook inventory changed; preserve this run and initialize a new run"
         )
     selection = frozen["selection"]
+    if _digest(selection) != frozen["selectionSha256"]:
+        raise ValueError("frozen workbook selection changed; initialize a new run")
     included = selection["included"]
     excluded = [row["path"] for row in selection["excluded"]]
     if (
@@ -139,6 +158,22 @@ def verify_inventory(solution: str | Path, state: dict[str, Any]) -> None:
         or any(not row["reason"].strip() for row in selection["excluded"])
     ):
         raise ValueError("workbook selection must account for the entire frozen inventory")
+    root = Path(solution).expanduser().resolve()
+    if (root / "Data").is_dir():
+        _, document = _data(root)
+        present = any(key.casefold() == "xdr workbooks" for key in document)
+        if present:
+            expected = {root / "XDR Workbooks" / reference.removeprefix("Workbooks/")
+                        for reference in included}
+            if set(selected_workbook_references(
+                root, document,
+                require_existing=state["stages"]["conversion"]["status"] == "passed",
+            )) != expected:
+                raise ValueError("solution Data workbook selection differs from the frozen run selection")
+        elif frozen["selectionExplicit"] or (
+            current and state["stages"]["conversion"]["status"] == "passed"
+        ):
+            raise ValueError("the frozen explicit workbook selection cannot be removed")
 
 
 def bind_conversion(
@@ -165,7 +200,7 @@ def bind_conversion(
     for row in results:
         if row.get("sourceSha256") != inventory[row["sourceRelativePath"]]:
             raise ValueError("workbook conversion manifest has stale source evidence")
-        if row.get("status") == "converted":
+        if row.get("outputRelativePath"):
             output = content_path(root, row["outputRelativePath"])
             if (
                 not output.is_relative_to(root / "XDR Workbooks")
@@ -173,8 +208,19 @@ def bind_conversion(
                 or hashlib.sha256(output.read_bytes()).hexdigest() != row.get("outputSha256")
             ):
                 raise ValueError("workbook conversion manifest has stale target evidence")
+            if row.get("status") == "converted":
+                authored = json.loads(output.read_bytes())
+                provenance = authored.get("contentProvenance") or {}
+                conversion = provenance.get("conversion") or {}
+                if (
+                    provenance.get("source", {}).get("path") != row["sourceRelativePath"]
+                    or conversion.get("queries") != row.get("queries")
+                    or conversion.get("reviewRequired") != row.get("reviewRequired")
+                    or row.get("managedOutputSha256") != row.get("outputSha256")
+                ):
+                    raise ValueError("workbook manifest per-query review evidence differs from the current authored bytes")
     return {
-        "workbookManifest": str(path),
+        "workbookManifest": path.relative_to(root).as_posix(),
         "workbookManifestSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "workbookSelectionSha256": _digest(state["workbooks"]["selection"]),
     }
@@ -218,6 +264,465 @@ def validate_evidence(solution: str | Path, state: dict[str, Any]) -> dict[str, 
     return result
 
 
+def inspect_content(solution: str | Path) -> dict[str, Any]:
+    from .converter import inspect_solution
+    from .workbooks import inventory_workbooks
+
+    root = Path(solution).expanduser().resolve()
+    state = current_state(root)
+    if not state or not enabled(state):
+        return inspect_solution(root)
+    verify_inventory(root, state)
+    result = inspect_solution(root) if has_analytic_rules(root) else {
+        "solution": str(root), "analyticRuleCount": 0, "analyticRules": [],
+        "existingXdrDetectionCount": 0,
+    }
+    inventory = inventory_workbooks(root)
+    return {**result, "workbookCount": len(inventory),
+            "workbookQueryCount": sum(len(row["queries"]) for row in inventory),
+            "workbooks": inventory, "workbookSelection": state["workbooks"]["selection"]}
+
+
+def convert_content(solution: str | Path, *, overwrite: bool = False,
+                    config_path: str | Path | None = None,
+                    rule_id: str | None = None) -> dict[str, Any]:
+    from .converter import convert_solution, load_config
+    from .workbooks import convert_workbooks
+
+    root = Path(solution).expanduser().resolve()
+    state = current_state(root)
+    if not state or not enabled(state):
+        return convert_solution(root, overwrite=overwrite, config_path=config_path, rule_id=rule_id)
+    verify_inventory(root, state)
+    if rule_id:
+        # Rule-scoped repairs must never rewrite workbook evidence or selection.
+        return convert_solution(root, overwrite=overwrite, config_path=config_path, rule_id=rule_id)
+    result = convert_solution(root, overwrite=overwrite, config_path=config_path) if has_analytic_rules(root) else {
+        "solution": str(root), "total": 0, "converted": 0, "blocked": 0, "results": [],
+        "needsReview": 0, "conflicts": 0,
+    }
+    if not state["workbooks"]["inventory"]:
+        return {**result, "workbooks": {"total": 0, "converted": 0, "blocked": 0,
+                                       "selectedBlocked": 0, "results": []},
+                "workbookArtifacts": {}, "workbookExcluded": []}
+    config = load_config(root / "XDR Detections", config_path)
+    selected_version = state["context"].get("targetVersion")
+    if selected_version is None:
+        from .packaging import solution_data_version, validate_v31_target_version
+        current_version = solution_data_version(root)
+        try:
+            validate_v31_target_version(current_version)
+        except ValueError:
+            # Pre-3.1 content is not silently promoted by workbook conversion.
+            current_version = None
+        if current_version is not None:
+            version = list(map(int, current_version.split(".")))
+            bump = state["context"].get("versionBump")
+            if bump in {"patch", "minor", "major"}:
+                index = {"major": 0, "minor": 1, "patch": 2}[bump]
+                version[index] += 1
+                version[index + 1:] = [0] * (2 - index)
+            selected_version = ".".join(map(str, version))
+            validate_v31_target_version(selected_version)
+    if selected_version:
+        if config.get("targetVersion") not in (None, selected_version):
+            raise ValueError("workbook targetVersion conflicts with the selected solution release")
+        config["targetVersion"] = selected_version
+    workbook_result = convert_workbooks(root, config=config,
+                                       report_directory=report_directory(root), overwrite=overwrite)
+    binding = bind_conversion(root, state)
+    manifest = json.loads(Path(workbook_result["manifestPath"]).read_bytes())
+    selected_sources = set(state["workbooks"]["selection"]["included"])
+    selected_rows = [row for row in manifest["results"] if row["sourceRelativePath"] in selected_sources]
+    workbook_result["selectedBlocked"] = sum(
+        row.get("status") != "converted" or row.get("reviewRequired") is not False
+        for row in selected_rows
+    )
+    data_path, data = _data(root)
+    if not any(key.casefold() == "xdr workbooks" for key in data):
+        # Preserve blocked sources in the selection; validation must reject them.
+        data["XDR Workbooks"] = [row["outputRelativePath"] for row in selected_rows]
+        from .workflow import _atomic_json
+        _atomic_json(data_path, data)
+    expected = {content_path(root, row["outputRelativePath"]) for row in selected_rows}
+    if set(selected_workbook_references(root)) != expected:
+        raise ValueError("edited workbook selection conflicts with the frozen run selection")
+    return {**result, "workbooks": workbook_result, "workbookArtifacts": binding,
+            "workbookExcluded": state["workbooks"]["selection"]["excluded"]}
+
+
+def validate_content(solution: str | Path) -> dict[str, Any]:
+    from .converter import validate_solution
+
+    root = Path(solution).expanduser().resolve()
+    state = current_state(root)
+    if not state or not enabled(state):
+        return validate_solution(root)
+    verify_inventory(root, state)
+    result = validate_solution(root) if has_analytic_rules(root) else {
+        "solution": str(root), "total": 0, "valid": 0, "invalid": 0, "results": [],
+    }
+    workbook_result = validate_evidence(root, state)
+    return {**result, "workbooks": workbook_result,
+            "workbookExcluded": state["workbooks"]["selection"]["excluded"]}
+
+
+def _context(state: dict[str, Any]) -> dict[str, Any]:
+    if not enabled(state) or not state.get("runId"):
+        raise ValueError("candidate lifecycle requires an explicitly selected workbook-capable run")
+    context = {**state["context"], "runId": state["runId"]}
+    if context.get("workspaceResourceId"):
+        from .target_context import workspace_identity
+        context["resourceGroup"] = workspace_identity(context["workspaceResourceId"])["resourceGroup"]
+    return context
+
+
+def _plan_target(plan: dict[str, Any]) -> dict[str, Any]:
+    target = dict(plan["target"])
+    if plan.get("parameters", {}).get("workspace-location"):
+        target["workspaceLocation"] = plan["parameters"]["workspace-location"]
+    return target
+
+
+def _read_run_json(solution: str | Path, name: str) -> dict[str, Any]:
+    path = existing_artifact_path(solution, name)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"selected run is missing {name}")
+    value = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(value, dict):
+        raise ValueError(f"invalid selected-run artifact: {name}")
+    return value
+
+
+def _write_run_json(solution: str | Path, name: str, value: dict[str, Any]) -> Path:
+    from .artifacts import artifact_path
+    from .workflow import _atomic_json
+    path = artifact_path(solution, name, create_parent=True)
+    _atomic_json(path, value)
+    return path
+
+
+def create_candidate(solution: str | Path, *, validation_receipt: str | Path | None = None,
+                     toolkit_root: str | Path | None = None) -> dict[str, Any]:
+    """Produce gates only after deterministic checks, and verify the official receipt."""
+    import shutil
+    import subprocess
+    import uuid
+    from . import workflow
+    from .artifacts import repository_root
+    from .packaging import package_input_identity, _read_json, _verify_workbook_package
+    from .workbook_validation import create_arm_candidate
+
+    root = Path(solution).expanduser().resolve()
+    with workflow._state_writer_lock(root) as state_path:
+        state = workflow._load(root)[1]
+        context = _context(state)
+        verify_inventory(root, state)
+        validate_evidence(root, state)
+        if state["stages"]["conversion"]["status"] != "passed" or state["stages"]["validation"]["status"] != "passed":
+            raise ValueError("candidate creation requires passed conversion and content validation")
+        if context["workflowProfile"] == "authoring":
+            workflow._validate_offline_authoring_gates(root, state_path, state)
+        else:
+            from .workbook_qualification import require_current_qualification
+            require_current_qualification(root, state)
+            if has_analytic_rules(root):
+                from .runtime import current_runtime_evidence
+                if current_runtime_evidence(root).get("passed") is not True:
+                    raise ValueError("combined Qualification still requires all current detection runtime gates")
+        artifacts = state["stages"]["packaging"].get("artifacts") or {}
+        workflow._validate_packaging_evidence(state, artifacts, root, allow_candidate=True)
+        report_path = resolve_artifact_reference(root, artifacts["packageReport"])
+        report = _read_json(report_path)
+        template = _read_json(resolve_artifact_reference(root, report["mainTemplate"]))
+        _verify_workbook_package(root, selected_workbook_references(root), template,
+                                 resolve_artifact_reference(root, report["zip"]))
+        current = package_input_identity(root)
+        if report["packageInputs"]["after"]["sha256"] != current["sha256"]:
+            raise ValueError("candidate package input identity is stale")
+        official_report = None
+        if validation_receipt is None:
+            toolkit = Path(toolkit_root).expanduser().resolve() if toolkit_root else repository_root(root)
+            script = toolkit / ".script" / "local-validation" / "build-and-validate.ps1"
+            pwsh = shutil.which("pwsh")
+            if not pwsh or not script.is_file():
+                raise ValueError("candidate validation requires the official build-and-validate producer and PowerShell 7")
+            evidence = toolkit / ".script" / "local-validation" / "Logs" / f"candidate-{state['runId']}-{uuid.uuid4().hex}"
+            command = [pwsh, "-NoProfile", "-File", str(script), "-SolutionName", root.name,
+                       "-ContentRoot", str(repository_root(root)), "-EvidenceDirectory", str(evidence),
+                       "-SkipPackaging", "-PackageReportPath", str(report_path),
+                       "-ValidationSkip", "kql,detection-schema,non-ascii",
+                       "-ArmValidationMethod", context["armValidationMethod"]]
+            completed = subprocess.run(command, cwd=toolkit, capture_output=True, text=True, check=False)
+            official_report = completed.stdout
+            if completed.returncode:
+                raise RuntimeError(f"official candidate static validation failed ({completed.returncode}): {completed.stdout[-4000:]}\n{completed.stderr[-1000:]}")
+            validation_receipt = evidence / "build-and-validate-report.md"
+        gate_names = ["conversion", "review", "structure", "package"]
+        if context["workflowProfile"] == "qualification":
+            gate_names.append("qualification")
+        gates = {}
+        for name in gate_names:
+            gate = {
+                "status": "passed", "gate": name, "workflowRunId": state["runId"],
+                "packageInputSha256": current["sha256"],
+                "checks": {
+                    "conversion": "current full source inventory and hash-bound conversion",
+                    "review": "selected outputs have no unresolved technical/dependency/query review findings",
+                    "structure": "current deterministic content structure and full package workbook projection",
+                    "package": "V3.1 current attempt artifacts, selections and ZIP",
+                    "qualification": "independent current workbook qualification and combined detection runtime",
+                }[name],
+            }
+            if name in {"structure", "package"}:
+                gate["packageArtifactsSha256"] = report["packageArtifactsSha256"]
+            if name == "qualification":
+                from .target_context import workspace_identity
+                gate["qualificationRuntimeVerified"] = True
+                gate["target"] = {key: context[key] for key in
+                                  ("tenantId", "subscriptionId", "workspaceResourceId", "workspaceCustomerId")}
+                gate["target"]["resourceGroup"] = workspace_identity(context["workspaceResourceId"])["resourceGroup"]
+            gate_path = _write_run_json(root, f"arm-candidate-gate-{name}.json", gate)
+            gates[name] = {"path": gate_path.relative_to(root).as_posix(),
+                           "sha256": hashlib.sha256(gate_path.read_bytes()).hexdigest()}
+        candidate = create_arm_candidate(context, solution=root, package_report=report_path.relative_to(root).as_posix(),
+                                         validation_receipt=validation_receipt, prerequisite_evidence=gates)
+        candidate_path = _write_run_json(root, "arm-candidate.json", candidate)
+        state["stages"]["packaging"]["artifacts"].update({
+            "armCandidate": str(candidate_path),
+            "armCandidateSha256": hashlib.sha256(candidate_path.read_bytes()).hexdigest(),
+        })
+        workflow._write_unlocked(state_path, state)
+        return {**candidate, "candidatePath": str(candidate_path), "officialReport": official_report}
+
+
+def plan_candidate(solution: str | Path, *, target: dict[str, Any],
+                   selected_flags: dict[str, bool], contract_only: bool = False) -> dict[str, Any]:
+    from .workbook_validation import (refresh_arm_candidate, plan_lab_arm_validation,
+                                     plan_workbook_contract_verification)
+    state = current_state(solution)
+    context = _context(state or {})
+    candidate = refresh_arm_candidate(context, _read_run_json(solution, "arm-candidate.json"))
+    plan = (plan_workbook_contract_verification if contract_only else plan_lab_arm_validation)(
+        context, candidate, target=target, selected_flags=selected_flags)
+    _write_run_json(solution, "workbook-contract-plan.json" if contract_only else "arm-validation-plan.json", plan)
+    return plan
+
+
+def review_scope(solution: str | Path, *, actor: str, reference: str, approved: bool,
+                 expected_plan_sha256: str) -> dict[str, Any]:
+    from .workbook_validation import review_lab_arm_scope
+    plan = _read_run_json(solution, "arm-validation-plan.json")
+    if plan["planSha256"] != expected_plan_sha256:
+        raise ValueError("scope review requires the exact current displayed plan hash")
+    current = plan_candidate(solution, target=_plan_target(plan), selected_flags=plan["selectedFlags"])
+    if current["planSha256"] != plan["planSha256"]:
+        raise ValueError("candidate scope changed before review")
+    consent = review_lab_arm_scope(current, actor=actor, approval_reference=reference, approved=approved)
+    _write_run_json(solution, "arm-validation-consent.json", consent)
+    return consent
+
+
+def withdraw_scope(solution: str | Path, *, actor: str, reference: str) -> dict[str, Any]:
+    from .workbook_validation import withdraw_lab_arm_scope
+    consent = withdraw_lab_arm_scope(_read_run_json(solution, "arm-validation-consent.json"),
+                                    actor=actor, withdrawal_reference=reference)
+    _write_run_json(solution, "arm-validation-consent.json", consent)
+    return consent
+
+
+def _production_identity_check(target: dict[str, Any]) -> dict[str, Any]:
+    # Existing ARM batch checks do not prove tenant-extension ownership or disabled state.
+    raise ValueError(
+        "production candidate dispatch is blocked: no accountable provider adapter currently "
+        "verifies non-production target, ARM/extension access, disabled content and workbook "
+        "ownership together; a maintainer implementation is required, not asserted readiness flags"
+    )
+
+
+def execute_candidate(solution: str | Path, *, expected_plan_sha256: str, actor: str,
+                      reference: str, confirmation: str, identity_check=None,
+                      command_runner=None) -> dict[str, Any]:
+    from .workbook_validation import execute_lab_arm_validation
+    from .arm_acceptance_support import _run_cli
+
+    state = current_state(solution)
+    context = _context(state or {})
+    candidate = _read_run_json(solution, "arm-candidate.json")
+    plan = _read_run_json(solution, "arm-validation-plan.json")
+    result = execute_lab_arm_validation(
+        context, candidate, target=_plan_target(plan), selected_flags=plan["selectedFlags"],
+        expected_plan_sha256=expected_plan_sha256, actor=actor, approval_reference=reference,
+        confirmation=confirmation, evidence_directory=report_directory(solution),
+        refresh_candidate=lambda: _read_run_json(solution, "arm-candidate.json"),
+        read_consent=lambda: _read_run_json(solution, "arm-validation-consent.json"),
+        identity_check=identity_check or _production_identity_check,
+        command_runner=command_runner or _run_cli,
+    )
+    _write_run_json(solution, "arm-validation-result.json", result)
+    return result
+
+
+def reconcile_attempt(solution: str | Path, *, attempt: str | Path,
+                      observation: str | Path, actor: str, reference: str) -> dict[str, Any]:
+    from .workbook_validation import reconcile_lab_arm_attempt
+    root = Path(solution).expanduser().resolve()
+    attempt_path = content_path(root, attempt)
+    if attempt_path.parent != report_directory(root):
+        raise ValueError("attempt reconciliation must use the selected run")
+    observation_path = content_path(root, observation)
+    result = reconcile_lab_arm_attempt(attempt_path, observation=json.loads(observation_path.read_bytes()),
+                                      actor=actor, reference=reference)
+    _write_run_json(root, "arm-validation-result.json", result)
+    return result
+
+
+def import_contract(solution: str | Path, *, evidence: str | Path,
+                    contract_only: bool = False) -> dict[str, Any]:
+    from .workbook_validation import verify_workbook_readback, refresh_arm_candidate
+    from . import workflow
+
+    root = Path(solution).expanduser().resolve()
+    with workflow._state_writer_lock(root) as path:
+        state = workflow._load(root)[1]
+        context = _context(state)
+        candidate = refresh_arm_candidate(context, _read_run_json(root, "arm-candidate.json"))
+        plan_name = "workbook-contract-plan.json" if contract_only else "arm-validation-plan.json"
+        plan = _read_run_json(root, plan_name)
+        current = plan_candidate(root, target=_plan_target(plan), selected_flags=plan["selectedFlags"], contract_only=contract_only)
+        if current["planSha256"] != plan["planSha256"]:
+            raise ValueError("contract evidence refers to a stale plan")
+        if len(plan["expectedWorkbooks"]) != len(state["workbooks"]["selection"]["included"]):
+            raise ValueError("contract plan must select every included Defender workbook")
+        source = content_path(root, evidence)
+        proof = json.loads(source.read_bytes())
+        result = verify_workbook_readback(plan, proof)
+        proof_path = _write_run_json(root, "workbook-contract-evidence.json", proof)
+        result_path = _write_run_json(root, "workbook-contract-result.json", result)
+        if result["accepted"] is not True:
+            return result
+        artifacts = state["stages"]["packaging"]["artifacts"]
+        artifacts.update({"workbookContractPlan": str(existing_artifact_path(root, plan_name)),
+                          "workbookContractEvidence": str(proof_path),
+                          "workbookContractResult": str(result_path),
+                          "packageLifecycleStatus": "accepted"})
+        state["packaging"]["currentAttempt"]["status"] = "passed"
+        state["packaging"]["lastConsumedAction"]["packageSucceeded"] = True
+        state["stages"]["packaging"].update(status="passed", message="Selected ARM route and independently verified workbook contract accepted.")
+        report_path = resolve_artifact_reference(root, artifacts["packageReport"])
+        report = json.loads(report_path.read_bytes())
+        state["packaging"]["lastSuccessful"] = {
+            **state["packaging"]["lastConsumedAction"], "packageReport": str(report_path),
+            "packageReportSha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+            "packageArtifactsSha256": report["packageArtifactsSha256"], "version": report["version"],
+        }
+        state["workflowStatus"] = "inProgress"
+        workflow._validate_packaging_evidence(state, artifacts, root)
+        workflow._write_unlocked(path, state)
+        return {**result, "runId": candidate["runId"], "next": workflow._next_stage_name(state)}
+
+
+def require_accepted(solution: str | Path, state: dict[str, Any]) -> None:
+    from .workbook_validation import (refresh_arm_candidate, verify_workbook_readback,
+                                     plan_lab_arm_validation, plan_workbook_contract_verification)
+    artifacts = state["stages"]["packaging"].get("artifacts") or {}
+    candidate = refresh_arm_candidate(_context(state), _read_run_json(solution, "arm-candidate.json"))
+    if not state["workbooks"]["selection"]["included"]:
+        attempt = _read_run_json(solution, "arm-validation-result.json")
+        _verify_arm_only(solution, candidate, _read_run_json(solution, "arm-validation-plan.json"), attempt)
+        return
+    for key in ("workbookContractPlan", "workbookContractEvidence", "workbookContractResult"):
+        if not artifacts.get(key):
+            raise ValueError("candidate packaging is not accepted; independent workbook contract evidence is required")
+    plan = json.loads(resolve_artifact_reference(solution, artifacts["workbookContractPlan"]).read_bytes())
+    fresh = (plan_workbook_contract_verification if plan.get("purpose") == "workbook-contract-readback"
+             else plan_lab_arm_validation)(_context(state), candidate,
+                                          target=_plan_target(plan), selected_flags=plan["selectedFlags"])
+    if (
+        fresh["planSha256"] != plan.get("planSha256")
+        or len(plan.get("expectedWorkbooks") or []) != len(state["workbooks"]["selection"]["included"])
+    ):
+        raise ValueError("accepted workbook contract plan is not current for this run and selection")
+    proof = json.loads(resolve_artifact_reference(solution, artifacts["workbookContractEvidence"]).read_bytes())
+    recorded = json.loads(resolve_artifact_reference(solution, artifacts["workbookContractResult"]).read_bytes())
+    result = verify_workbook_readback(plan, proof)
+    if result.get("accepted") is not True or result != recorded:
+        raise ValueError("workbook contract acceptance is missing, blocked or stale")
+
+
+def _verify_arm_only(solution: str | Path, candidate: dict[str, Any],
+                     plan: dict[str, Any], attempt: dict[str, Any]) -> None:
+    from .arm_acceptance_support import _deployment_provisioning_state
+    from .workbook_validation import plan_lab_arm_validation
+
+    state = current_state(solution)
+    fresh = plan_lab_arm_validation(_context(state or {}), candidate,
+                                   target=_plan_target(plan), selected_flags=plan["selectedFlags"])
+    if (
+        fresh["planSha256"] != plan["planSha256"] or plan["expectedWorkbooks"]
+        or attempt.get("planSha256") != plan["planSha256"]
+        or attempt.get("candidateSha256") != candidate["candidateSha256"]
+        or attempt.get("status") != "arm-accepted-contract-pending"
+        or attempt.get("target") != plan["target"]
+        or attempt.get("parameters") != plan["parameters"]
+        or attempt.get("packageIdentity") != plan["packageIdentity"]
+    ):
+        raise ValueError("ARM-only acceptance requires the exact current terminal attempt")
+    observation = attempt.get("reconciliation") or {}
+    if not observation.get("responsePath"):
+        raise ValueError("independent current ARM deployment GET reconciliation is required")
+    response_path = content_path(Path(solution).expanduser().resolve(), observation.get("responsePath"))
+    if (
+        observation.get("httpMethod") != "GET" or observation.get("status") != "passed"
+        or observation.get("target") != plan["target"]
+        or hashlib.sha256(response_path.read_bytes()).hexdigest() != observation.get("responseSha256")
+    ):
+        raise ValueError("independent current ARM deployment GET reconciliation is required")
+    response = json.loads(response_path.read_bytes())
+    expected_id = (
+        f"/subscriptions/{plan['target']['subscriptionId']}/resourceGroups/{plan['target']['resourceGroup']}"
+        f"/providers/Microsoft.Resources/deployments/{attempt.get('deploymentName')}"
+    )
+    if (
+        str(response.get("id", "")).casefold() != expected_id.casefold()
+        or str(observation.get("deploymentId", "")).casefold() != expected_id.casefold()
+        or _deployment_provisioning_state(response) != "succeeded"
+    ):
+        raise ValueError("ARM deployment identity/outcome is not independently accepted")
+
+
+def import_arm_only(solution: str | Path, *, attempt: str | Path, observation: str | Path,
+                    actor: str, reference: str) -> dict[str, Any]:
+    from . import workflow
+    from .workbook_validation import refresh_arm_candidate
+    root = Path(solution).expanduser().resolve()
+    with workflow._state_writer_lock(root) as path:
+        state = workflow._load(root)[1]
+        _context(state)
+        if state["workbooks"]["selection"]["included"]:
+            raise ValueError("selected Defender workbooks require independent full contract evidence, not ARM-only acceptance")
+        candidate = refresh_arm_candidate(_context(state), _read_run_json(root, "arm-candidate.json"))
+        result = reconcile_attempt(root, attempt=attempt, observation=observation, actor=actor, reference=reference)
+        _verify_arm_only(root, candidate, _read_run_json(root, "arm-validation-plan.json"), result)
+        state["packaging"]["currentAttempt"]["status"] = "passed"
+        state["packaging"]["lastConsumedAction"]["packageSucceeded"] = True
+        stage = state["stages"]["packaging"]
+        stage.update(status="passed", message="Selected ARM method accepted by exact independent terminal deployment evidence.")
+        stage["artifacts"]["packageLifecycleStatus"] = "accepted"
+        report_path = resolve_artifact_reference(root, stage["artifacts"]["packageReport"])
+        report = json.loads(report_path.read_bytes())
+        state["packaging"]["lastSuccessful"] = {
+            **state["packaging"]["lastConsumedAction"], "packageReport": str(report_path),
+            "packageReportSha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+            "packageArtifactsSha256": report["packageArtifactsSha256"], "version": report["version"],
+        }
+        state["workflowStatus"] = "inProgress"
+        workflow._validate_packaging_evidence(state, stage["artifacts"], root)
+        workflow._write_unlocked(path, state)
+        return {"status": "accepted", "accepted": True, "workbookContractApplicable": False,
+                "uiVerified": False, "parityVerified": False, "next": workflow._next_stage_name(state)}
+
+
 def current_state(solution: str | Path) -> dict[str, Any] | None:
     path = existing_artifact_path(solution, "workflow-state.json")
     if not path.is_file():
@@ -231,11 +736,36 @@ def summary(solution: str | Path, state: dict[str, Any]) -> dict[str, Any] | Non
     if not enabled(state):
         return None
     workbook_state = state["workbooks"]
+    rows = {}
+    manifest_path = report_directory(solution) / "workbooks-manifest.json"
+    issues = []
+    try:
+        verify_inventory(solution, state)
+        if manifest_path.is_file():
+            bind_conversion(solution, state)
+            rows = {row["sourceRelativePath"]: row for row in json.loads(manifest_path.read_bytes())["results"]}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        issues.append(str(exc))
+    contract_support = "unverified" if workbook_state["selection"]["included"] else "notApplicable"
+    if workbook_state["selection"]["included"] and state["stages"]["packaging"]["status"] == "passed":
+        try:
+            require_accepted(solution, state)
+            contract_support = "verified"
+        except (OSError, ValueError, KeyError, TypeError):
+            issues.append("previous workbook acceptance evidence is no longer current")
     return {
         "inventoryCount": len(workbook_state["inventory"]),
         "selectedCount": len(workbook_state["selection"]["included"]),
         "excluded": workbook_state["selection"]["excluded"],
         "inventorySha256": workbook_state["inventorySha256"],
         "armValidationMethod": state["context"]["armValidationMethod"],
-        "contractSupport": "unverified",
+        "contractSupport": contract_support,
+        "issues": issues,
+        "sources": [{
+            **source, "selected": source["path"] in workbook_state["selection"]["included"],
+            "status": rows.get(source["path"], {}).get("status", "not-converted"),
+            "issues": rows.get(source["path"], {}).get("issues", []),
+        } for source in workbook_state["inventory"]],
+        "manifest": str(manifest_path) if manifest_path.is_file() else None,
+        "qualificationSeparateFromArmAndDetectionParity": True,
     }

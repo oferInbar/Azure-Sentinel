@@ -53,6 +53,7 @@ V31_TOOLKIT_PATHS = (
     "Tools/Create-Azure-Sentinel-Solution/common/templating/baseMainTemplate.json",
     "Tools/Create-Azure-Sentinel-Solution/common/templating/baseCreateUiDefinition.json",
     "Tools/Create-Azure-Sentinel-Solution/common/customDetections.ps1",
+    "Tools/Create-Azure-Sentinel-Solution/common/defenderWorkbooks.ps1",
     "Tools/Create-Azure-Sentinel-Solution/common/customerUsageAttribution.ps1",
     "Tools/Create-Azure-Sentinel-Solution/common/AttributionMetadata.cs",
     "Tools/Create-Azure-Sentinel-Solution/common/versionPolicy.ps1",
@@ -76,6 +77,7 @@ _ENCODED_CONTENT_ARRAYS = {
     "dataconnectors",
     "playbooks",
     "workbooks",
+    "xdr workbooks",
     "analytic rules",
     "analytics rules",
     "hunting queries",
@@ -184,7 +186,7 @@ def _canonical_digest(value: dict[str, Any]) -> str:
 
 def _deployment_parameters(
     template: dict[str, Any], ui: dict[str, Any], test_parameters: dict[str, Any],
-    *, has_xdr: bool, contract_path: Path | None = None,
+    *, has_xdr: bool, has_workbooks: bool | None = None, contract_path: Path | None = None,
 ) -> dict[str, bool]:
     contract_path = contract_path or (
         Path(__file__).resolve().parents[2] / "Create-Azure-Sentinel-Solution"
@@ -220,6 +222,8 @@ def _deployment_parameters(
             raise RuntimeError(f"Invalid V3.1 content selection contract for {name}.")
     if has_xdr != ("DeployCustomDetection" in selected):
         raise RuntimeError("V3.1 Custom Detection declaration does not match the packaged XDR inputs.")
+    if has_workbooks is not None and has_workbooks != ("DeployDefenderWorkbook" in selected):
+        raise RuntimeError("V3.1 Defender workbook declaration does not match the selected workbook inputs.")
     return {name: value["defaultValue"] for name, value in selected.items()}
 
 
@@ -748,6 +752,116 @@ def _verify_package_selection(
     }
 
 
+def _verify_workbook_package(
+    solution: Path, files: list[Path], template: dict[str, Any], zip_path: Path,
+) -> dict[str, Any]:
+    """Verify the full candidate install/registration projection, not provider acceptance."""
+    from copy import deepcopy
+
+    def arm_copy(value: Any) -> Any:
+        if isinstance(value, str):
+            return "[" + value if value.startswith("[") else value
+        if isinstance(value, dict):
+            return {key: arm_copy(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [arm_copy(item) for item in value]
+        return value
+
+    resources = template.get("resources") or []
+    if not isinstance(resources, list):
+        raise RuntimeError("V3.1 workbook package resources must be an array")
+    installs = [row for row in resources if
+                row.get("type") == "Microsoft.Resources/deployments" and
+                row.get("name", "").startswith("DefenderWorkbook-")]
+    registrations = [row for row in resources if
+                     row.get("properties", {}).get("contentKind") == "DefenderWorkbook"]
+    packages = [row for row in resources if row.get("type") ==
+                "Microsoft.OperationalInsights/workspaces/providers/contentPackages"]
+    if len(installs) != len(files) or len(registrations) != len(files):
+        raise RuntimeError("Defender workbook install/registration count differs from selection")
+    if not files:
+        return {"count": 0, "contractSupport": "notApplicable"}
+    if len(packages) != 1:
+        raise RuntimeError("Defender workbook packaging requires exactly one contentPackages resource")
+    variables = template.get("variables") or {}
+    package_id = variables.get("solutionId")
+    version = variables.get("_solutionVersion")
+    validate_v31_target_version(version)
+    if not isinstance(package_id, str) or not package_id or package_id.startswith("["):
+        raise RuntimeError("Defender workbook package identity must be resolved")
+    expected_criteria = []
+    identities = []
+    for path in files:
+        authored = _read_json(path)
+        metadata = authored["xdrMetadata"]
+        content_id = metadata["contentId"]
+        instance_id = metadata["instanceId"]
+        validate_v31_target_version(metadata["version"])
+        deployment_name = "DefenderWorkbook-" + hashlib.sha256(
+            f"{solution.name}/{content_id}".encode("utf-8")
+        ).hexdigest()[:32]
+        install_rows = [row for row in installs if row.get("name") == deployment_name]
+        registration_rows = [row for row in registrations if row.get("properties", {}).get("contentId") == content_id]
+        if len(install_rows) != 1 or len(registration_rows) != 1:
+            raise RuntimeError("Defender workbook identities are missing or duplicated")
+        install, registration = install_rows[0], registration_rows[0]
+        inner = install.get("properties", {}).get("template") or {}
+        quartet = {"packageId": package_id, "packageVersion": version,
+                   "contentId": content_id, "contentVersion": version}
+        notebook = deepcopy(authored)
+        notebook.pop("xdrMetadata")
+        notebook["contentProvenance"] = quartet
+        expected_resource = arm_copy({
+            "import": "MicrosoftSecurity", "type": "Microsoft.Security/workbooks@2026-06-01-preview",
+            "properties": {"id": instance_id, "name": metadata["displayName"], "content": notebook},
+        })
+        if (
+            install.get("apiVersion") != "2025-04-01"
+            or install.get("condition") != "[parameters('DeployDefenderWorkbook')]"
+            or install.get("properties", {}).get("expressionEvaluationOptions", {}).get("scope") != "inner"
+            or inner.get("languageVersion") != "2.0"
+            or inner.get("imports") != {"MicrosoftSecurity": {"provider": "MicrosoftSecurity", "version": "1.0.0"}}
+            or inner.get("resources") != {"workbook": expected_resource}
+        ):
+            raise RuntimeError("Defender workbook installation template/provenance projection is incorrect")
+        properties = registration.get("properties") or {}
+        full_provenance = {**quartet, **{
+            key: authored["contentProvenance"][key]
+            for key in ("requiredWorkloads", "requiredDataConnectors")
+        }}
+        expected_name = (
+            "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',"
+            f"concat(parameters('workspace'),'-dwb-',uniqueString('{content_id}')))]"
+        )
+        if (
+            registration.get("type") != "Microsoft.OperationalInsights/workspaces/providers/contentTemplates"
+            or registration.get("apiVersion") != "2023-04-01-preview"
+            or registration.get("condition") != "[parameters('DeployDefenderWorkbook')]"
+            or registration.get("name") != expected_name
+            or properties.get("mainTemplate") != inner
+            or properties.get("contentProvenance") != arm_copy(full_provenance)
+            or any(properties.get(key) != value for key, value in
+                   {"contentId": content_id, "version": version, "packageId": package_id,
+                    "packageVersion": version, "contentKind": "DefenderWorkbook"}.items())
+            or registration.get("dependsOn") != [
+                f"[resourceId('Microsoft.Resources/deployments', '{deployment_name}')]",
+                "[extensionResourceId(resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspace')), 'Microsoft.SecurityInsights/contentPackages', variables('_solutionId'))]",
+            ]
+        ):
+            raise RuntimeError("Defender workbook registration/stored template/provenance is incorrect")
+        expected_criteria.append({"kind": "DefenderWorkbook", "contentId": content_id, "version": version})
+        identities.append({"contentId": content_id, "instanceId": instance_id,
+                           "path": path.relative_to(solution).as_posix()})
+    criteria = packages[0].get("properties", {}).get("dependencies", {}).get("criteria") or []
+    if [row for row in criteria if row.get("kind") == "DefenderWorkbook"] != expected_criteria:
+        raise RuntimeError("Defender workbook package dependency criteria differs from selection")
+    with zipfile.ZipFile(zip_path) as archive:
+        entries = [name for name in archive.namelist() if Path(name).name == "mainTemplate.json"]
+        if len(entries) != 1 or archive.read(entries[0]) != (solution / "Package" / "mainTemplate.json").read_bytes():
+            raise RuntimeError("Defender workbook ZIP template does not match the exact current package bytes")
+    return {"count": len(files), "identities": identities, "contractSupport": "unverified"}
+
+
 def package_solution_v3_1(
     solution: str | Path,
     *,
@@ -758,7 +872,10 @@ def package_solution_v3_1(
     package_attempt_id: str | None = None,
     workflow_run_id: str | None = None,
     selection_plan: dict[str, Any] | None = None,
+    arm_validation_method: str = "arm-ttk",
 ) -> dict[str, Any]:
+    if arm_validation_method not in {"arm-ttk", "lab-deployment"}:
+        raise ValueError("ARM validation method must be arm-ttk or lab-deployment")
     if version_bump not in {"none", "patch", "minor", "major"}:
         raise ValueError("version bump must be none, patch, minor, or major")
     if target_version is not None:
@@ -800,6 +917,17 @@ def package_solution_v3_1(
     before = _read_json(data_file)
     _validate_solution_package_inputs(root, before)
     xdr_files = _xdr_references(root, before)
+    from .workbooks import selected_workbook_files, validate_workbooks
+    if _value(before, "XDR Workbooks") is None:
+        if any((root / "XDR Workbooks").rglob("*.json")):
+            raise ValueError("solution Data is missing an explicit XDR Workbooks array")
+        workbook_files = []
+    else:
+        workbook_files = selected_workbook_files(root)
+    if workbook_files:
+        workbook_validation = validate_workbooks(root, selected_only=True)
+        if workbook_validation["invalid"] or workbook_validation["valid"] != len(workbook_files):
+            raise ValueError("selected Defender workbooks have unresolved structural or review blockers")
     script = (
         selected_toolkit_root
         / "Tools"
@@ -822,6 +950,8 @@ def package_solution_v3_1(
         str(data_directory),
         "-VersionMode",
         "local",
+        "-ArmValidationMethod",
+        arm_validation_method,
         "-VersionBump",
         version_bump,
     ]
@@ -941,6 +1071,7 @@ def package_solution_v3_1(
     deployment_parameters = _deployment_parameters(
         template_document, _read_json(create_ui), _read_json(test_parameters),
         has_xdr=bool(xdr_files),
+        has_workbooks=bool(workbook_files),
         contract_path=(
             selected_toolkit_root
             / "Tools" / "Create-Azure-Sentinel-Solution" / "common"
@@ -975,6 +1106,7 @@ def package_solution_v3_1(
         _verify_package_selection(root, selection_plan, template_document, zip_path)
         if selection_plan is not None else None
     )
+    workbook_verification = _verify_workbook_package(root, workbook_files, template_document, zip_path)
 
     artifact_paths = {
         "mainTemplate": main_template,
@@ -1014,6 +1146,11 @@ def package_solution_v3_1(
     )
     result = {
         "status": "passed",
+        "armValidationMethod": arm_validation_method,
+        "packageLifecycleStatus": (
+            "candidate-generated" if arm_validation_method == "lab-deployment" or workbook_files else "accepted"
+        ),
+        "packageAccepted": arm_validation_method == "arm-ttk" and not workbook_files,
         "packager": PACKAGER_NAME,
         "warnings": warnings,
         "informational": informational,
@@ -1043,6 +1180,9 @@ def package_solution_v3_1(
         "packageArtifactsSha256": _canonical_digest(artifact_hashes),
         "solutionData": str(data_file),
         "xdrDetectionCount": len(xdr_files),
+        "xdrWorkbookCount": len(workbook_files),
+        "workbookVerification": workbook_verification,
+        "defenderWorkbookContractSupport": "unverified" if workbook_files else "notApplicable",
         "deploymentParameters": deployment_parameters,
         "customDetectionRegistrationSupport": "unverified" if xdr_files else "notApplicable",
         "selectionOutcome": selection_outcome,

@@ -14,7 +14,7 @@ from .converter import (
     runtime_validation_plan,
     validate_solution,
 )
-from .artifacts import migrate_reports, select_run, reset_run_selection, list_runs
+from .artifacts import migrate_reports, select_run, reset_run_selection, list_runs, existing_artifact_path
 from .evidence import export_evidence
 from .dependencies import plan_solution_dependencies
 from .budget import (
@@ -721,6 +721,10 @@ def main(argv: list[str] | None = None) -> int:
     workflow_init.add_argument("--workspace-resource-id")
     workflow_init.add_argument("--workspace-customer-id")
     workflow_init.add_argument(
+        "--arm-validation-method", choices=["lab-deployment", "arm-ttk"],
+        help="New runs default to lab-deployment; resumption never changes the selected method.",
+    )
+    workflow_init.add_argument(
         "--confirm-configured-target",
         action="store_true",
         help="Confirm the tenant/workspace shown by doctor for a new Qualification run.",
@@ -763,6 +767,32 @@ def main(argv: list[str] | None = None) -> int:
         help="Show the persisted end-to-end migration workflow state.",
     )
     workflow_status_parser.add_argument("--solution", required=True)
+    workbook_commands = {}
+    for command in (
+        "workflow-arm-candidate", "workflow-arm-plan", "workflow-arm-review-scope",
+        "workflow-arm-withdraw-scope", "workflow-arm-execute", "workflow-arm-reconcile",
+        "workflow-arm-import",
+        "workflow-workbook-contract-plan", "workflow-workbook-contract-import",
+    ):
+        workbook_commands[command] = subparsers.add_parser(command)
+        workbook_commands[command].add_argument("--solution", required=True)
+    workbook_commands["workflow-arm-candidate"].add_argument("--validation-receipt")
+    workbook_commands["workflow-arm-candidate"].add_argument("--toolkit-root")
+    for command in ("workflow-arm-plan", "workflow-workbook-contract-plan"):
+        workbook_commands[command].add_argument("--target", required=True, help="Local JSON with exact lab identity and optional workspaceLocation.")
+        workbook_commands[command].add_argument("--selected-flags", required=True, help="JSON object selecting every declared Deploy flag independently.")
+    for command in ("workflow-arm-review-scope", "workflow-arm-withdraw-scope", "workflow-arm-execute", "workflow-arm-reconcile", "workflow-arm-import"):
+        workbook_commands[command].add_argument("--actor", required=True)
+        workbook_commands[command].add_argument("--reference", required=True)
+    workbook_commands["workflow-arm-review-scope"].add_argument("--decision", required=True, choices=["approved", "declined"])
+    for command in ("workflow-arm-review-scope", "workflow-arm-execute"):
+        workbook_commands[command].add_argument("--plan-sha256", required=True)
+    workbook_commands["workflow-arm-execute"].add_argument("--confirmation", required=True)
+    for command in ("workflow-arm-reconcile", "workflow-arm-import"):
+        workbook_commands[command].add_argument("--attempt", required=True)
+        workbook_commands[command].add_argument("--observation", required=True)
+    workbook_commands["workflow-workbook-contract-import"].add_argument("--evidence", required=True)
+    workbook_commands["workflow-workbook-contract-import"].add_argument("--contract-only", action="store_true")
     workflow_status_parser.add_argument(
         "--source-provider",
         choices=sorted(SOURCE_PROVIDERS),
@@ -940,6 +970,16 @@ def main(argv: list[str] | None = None) -> int:
 
     runs_parser = subparsers.add_parser("workflow-runs", help="List run IDs without selecting or modifying state.")
     runs_parser.add_argument("--solution", required=True)
+    try:
+        from .workbook_qualification_cli import (
+            register_workbook_qualification_commands, dispatch_workbook_qualification,
+        )
+    except ModuleNotFoundError as exc:
+        if exc.name != "sentinel_xdr_migration.workbook_qualification_cli":
+            raise
+        qualification_commands = ()
+    else:
+        qualification_commands = register_workbook_qualification_commands(subparsers)
     for subparser in subparsers.choices.values():
         if any(action.dest == "solution" for action in subparser._actions):
             subparser.add_argument("--run-id", help="Select an existing run; required when multiple runs exist.")
@@ -984,6 +1024,10 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.choices["workflow-init"].add_argument(
         "--new-run", action="store_true", help="Create an isolated new workflow instead of resuming."
     )
+    for command in (*workbook_commands, *qualification_commands):
+        for action in subparsers.choices[command]._actions:
+            if action.dest == "run_id":
+                action.required = True
     args = parser.parse_args(argv)
     if args.command == "convert" and args.rule_id and len(args.rule_id) != 1:
         parser.error("--rule-id accepts exactly one GUID; repeated selectors are not supported")
@@ -1000,7 +1044,9 @@ def main(argv: list[str] | None = None) -> int:
             args.command == "convert" and args.rule_id
         ):
             configure_logging(getattr(args, "solution", None))
-        if args.command == "coordinator-enroll":
+        if args.command in qualification_commands:
+            result = dispatch_workbook_qualification(args)
+        elif args.command == "coordinator-enroll":
             result = coordinator_enroll(
                 args.solution,
                 owner=args.owner,
@@ -1356,16 +1402,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.solution, results_path=args.results, workspace_id=args.workspace_id,
             )
         elif args.command == "inspect":
-            result = inspect_solution(args.solution)
+            from .workbook_workflow import inspect_content
+            result = inspect_content(args.solution)
         elif args.command == "convert":
-            result = convert_solution(
+            from .workbook_workflow import convert_content
+            result = convert_content(
                 args.solution, overwrite=args.overwrite, config_path=args.config,
                 rule_id=args.rule_id[0] if args.rule_id else None,
             )
             if args.rule_id:
                 configure_logging(args.solution)
         elif args.command == "validate":
-            result = validate_solution(args.solution)
+            from .workbook_workflow import validate_content
+            result = validate_content(args.solution)
         elif args.command == "validate-advanced-hunting":
             try:
                 state = workflow_status(args.solution)
@@ -1436,6 +1485,30 @@ def main(argv: list[str] | None = None) -> int:
                 provider_gap_evidence=args.provider_gap_evidence,
                 source_provider=args.source_provider,
             )
+        elif args.command in workbook_commands:
+            from . import workbook_workflow as workbooks
+            if args.command == "workflow-arm-candidate":
+                result = workbooks.create_candidate(args.solution, validation_receipt=args.validation_receipt,
+                                                    toolkit_root=args.toolkit_root)
+            elif args.command in {"workflow-arm-plan", "workflow-workbook-contract-plan"}:
+                result = workbooks.plan_candidate(args.solution,
+                    target=json.loads(Path(args.target).read_text(encoding="utf-8-sig")),
+                    selected_flags=json.loads(Path(args.selected_flags).read_text(encoding="utf-8-sig")),
+                    contract_only=args.command == "workflow-workbook-contract-plan")
+            elif args.command == "workflow-arm-review-scope":
+                result = workbooks.review_scope(args.solution, actor=args.actor, reference=args.reference,
+                    approved=args.decision == "approved", expected_plan_sha256=args.plan_sha256)
+            elif args.command == "workflow-arm-withdraw-scope":
+                result = workbooks.withdraw_scope(args.solution, actor=args.actor, reference=args.reference)
+            elif args.command == "workflow-arm-execute":
+                result = workbooks.execute_candidate(args.solution, expected_plan_sha256=args.plan_sha256,
+                    actor=args.actor, reference=args.reference, confirmation=args.confirmation)
+            elif args.command in {"workflow-arm-reconcile", "workflow-arm-import"}:
+                action = workbooks.reconcile_attempt if args.command == "workflow-arm-reconcile" else workbooks.import_arm_only
+                result = action(args.solution, attempt=args.attempt,
+                    observation=args.observation, actor=args.actor, reference=args.reference)
+            else:
+                result = workbooks.import_contract(args.solution, evidence=args.evidence, contract_only=args.contract_only)
         elif args.command == "workflow-init":
             if args.new_run and args.run_id:
                 raise ValueError("--new-run and --run-id cannot be combined")
@@ -1489,6 +1562,11 @@ def main(argv: list[str] | None = None) -> int:
                 yolo=True if args.yolo else None,
                 campaign_id=args.campaign_id,
                 new_run=args.new_run,
+                workbook_capability_version=(
+                    1 if args.new_run or not existing_artifact_path(args.solution, "workflow-state.json").exists()
+                    or args.arm_validation_method is not None else None
+                ),
+                arm_validation_method=args.arm_validation_method,
             )
         elif args.command == "workflow-budget":
             result = budget_summary(args.solution, args.campaign_id)
@@ -1626,7 +1704,13 @@ def main(argv: list[str] | None = None) -> int:
         and result.get("status") != "applied"
     ):
         return 1
-    if args.command == "convert" and (result["needsReview"] or result["conflicts"]):
+    if args.command == "convert" and (
+        result["needsReview"] or result["conflicts"] or result.get("workbooks", {}).get("selectedBlocked", 0)
+    ):
+        return 1
+    if args.command == "package-v3-1" and result.get("status") == "blocked":
+        return 1
+    if args.command in {"workflow-arm-execute", "workflow-workbook-contract-import"} and result.get("accepted") is not True:
         return 1
     if args.command == "dependency-plan" and args.results and any(
         item["validation"]["status"] != "passed" for item in result["results"]
