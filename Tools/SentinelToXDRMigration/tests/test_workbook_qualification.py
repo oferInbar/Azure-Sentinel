@@ -30,7 +30,7 @@ def qualified_source():
     source = root / "Workbooks/LinuxMachines.json"
     source.write_bytes(original.read_bytes())
     (root / "Data/Solution_Fixture.json").write_text(json.dumps({
-        "Name": "Fixture", "Version": "3.1.3",
+        "Name": "Fixture", "Version": "3.2.3",
         "Workbooks": ["Workbooks/LinuxMachines.json"],
     }))
     state = workflow.initialize_workflow(
@@ -50,7 +50,7 @@ def qualified_source():
             }
             config = artifact_path(root, "migration-config.yaml", create_parent=True)
             config.write_text(yaml.safe_dump({
-                "targetVersion": "3.1.3",
+                "targetVersion": "3.2.3",
                 "workbookResolutions": {"Workbooks/LinuxMachines.json": resolutions},
                 "workbookDependencies": {"Workbooks/LinuxMachines.json": {
                     "requiredWorkloads": [{"workload": "sentinel", "dataTypes": ["Syslog"]}],

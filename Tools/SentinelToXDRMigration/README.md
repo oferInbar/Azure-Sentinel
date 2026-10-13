@@ -1639,7 +1639,7 @@ evidence.
 An explicit target version may be selected instead of a bump when the release
 must move directly to a particular supported V3.1 version. Targets must be
 canonical numeric `major.minor.patch` versions in the inclusive range
-`>=3.1.0` and `<4.0.0` (for example, `3.999.999`); the target does not have to
+`>=3.2.0` and `<4.0.0` (for example, `3.999.999`); the target does not have to
 be the next consecutive version. Select the exact target at initialization, or
 bind it to the current package-input hash when planning a later release. Use
 `--version-bump none` with `--target-version`; a non-`none` bump and target
@@ -1650,12 +1650,12 @@ sentinel-xdr-migration workflow-init `
   --solution "Solutions\<solution>" `
   --workflow-profile authoring `
   --version-bump none `
-  --target-version 3.1.2
+  --target-version 3.2.1
 
 sentinel-xdr-migration package-v3-1 `
   --solution "Solutions\<solution>" `
   --version-bump none `
-  --target-version 3.1.2
+  --target-version 3.2.1
 ```
 
 For a later release after inputs change, use
@@ -1726,7 +1726,7 @@ exactly, stop rather than infer missing file hashes or changed paths.
 sentinel-xdr-migration workflow-plan-same-version-content-rebuild `
   --solution "Solutions\<solution>" `
   --run-id "<run-id>" `
-  --target-version 3.1.2 `
+  --target-version 3.2.1 `
   --expected-package-input-sha256 "<current-package-input-sha256>" `
   --changed-input "XDR Detections\<rule>.yaml"
 
@@ -1747,7 +1747,7 @@ permitted:
 sentinel-xdr-migration workflow-plan-same-version-content-rebuild `
   --solution "Solutions\<solution>" `
   --run-id "<run-id>" `
-  --target-version 3.1.2 `
+  --target-version 3.2.1 `
   --expected-package-input-sha256 "<current-package-input-sha256>" `
   --changed-input "XDR Detections\<rule>.yaml" `
   --failed-candidate-evidence "Logs\sentinel-xdr-migration\<run-id>\packaging-arm-ttk-failure-handoff.json" `
@@ -1766,7 +1766,7 @@ to the plan command and, for a pre-existing plan, to every package attempt:
 sentinel-xdr-migration workflow-plan-same-version-content-rebuild `
   --solution "Solutions\<solution>" `
   --run-id "<run-id>" `
-  --target-version 3.1.2 `
+  --target-version 3.2.1 `
   --expected-package-input-sha256 "<current-package-input-sha256>" `
   --changed-input "XDR Detections\<rule>.yaml" `
   --legacy-baseline-evidence "Logs\sentinel-xdr-migration\<run-id>\same-version-content-rebuild\receipt-current-input-comparison.json"
@@ -1871,11 +1871,14 @@ run/provider/target execution bindings; sidecar authorization cannot make an
 unbound report eligible. Current source structure accepts both Scheduled and
 NRT kinds with their corresponding required/forbidden scheduling fields.
 
-Package-version selection is unchanged, but V3.1
-rejects effective solution and XDR release versions outside `[3.1.0, 4.0.0)`,
+Package-version selection is unchanged, but V3.1 rejects effective solution
+release versions outside `[3.2.0, 4.0.0)`, independent XDR Custom Detection
+release versions outside `[3.1.0, 4.0.0)`,
 and other content-item release versions `>= 4.0.0`. Explicit bumps that select
 an out-of-range version fail without overwriting package files or persisting
 the bumped source version. These are release bounds, not ARM API/schema bounds.
+Older source solutions require an explicitly selected supported target or bump;
+no-bump rebuilds below the solution floor are rejected rather than promoted.
 XDR uses only its top-level YAML `version`, including when registration is
 disabled. Registration metadata and content product IDs use that same version.
 Data `XDR Detection Version`, solution version, and source provenance are not

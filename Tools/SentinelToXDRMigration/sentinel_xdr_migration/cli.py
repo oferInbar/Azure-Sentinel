@@ -614,7 +614,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     package_v3_1.add_argument(
         "--target-version",
-        help="Explicit canonical V3.1 solution version (>=3.1.0 and <4.0.0); use with --version-bump none.",
+        help="Explicit canonical V3.1 solution version (>=3.2.0 and <4.0.0); use with --version-bump none.",
     )
     package_v3_1.add_argument(
         "--legacy-baseline-evidence",
@@ -642,7 +642,7 @@ def main(argv: list[str] | None = None) -> int:
     package_release.add_argument("--version-bump", choices=["patch", "minor", "major"])
     package_release.add_argument(
         "--target-version",
-        help="Explicit canonical V3.1 solution version (>=3.1.0 and <4.0.0), instead of a version bump.",
+        help="Explicit canonical V3.1 solution version (>=3.2.0 and <4.0.0), instead of a version bump.",
     )
     package_release.add_argument(
         "--expected-package-input-sha256",
@@ -735,7 +735,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     workflow_init.add_argument(
         "--target-version",
-        help="Persist an explicit canonical V3.1 solution version (>=3.1.0 and <4.0.0); use with --version-bump none.",
+        help="Persist an explicit canonical V3.1 solution version (>=3.2.0 and <4.0.0); use with --version-bump none.",
     )
     workflow_init.add_argument(
         "--workflow-profile",

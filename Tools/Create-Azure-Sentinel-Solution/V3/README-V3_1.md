@@ -217,13 +217,17 @@ V3.1 applies these hard guards in local, catalog, and positional pipeline modes:
 
 | Release version | Accepted range |
 |---|---|
-| Effective solution/package version, even without XDR content | `>= 3.1.0` and `< 4.0.0` |
+| Effective solution/package version, even without XDR content | `>= 3.2.0` and `< 4.0.0` |
 | Effective XDR Custom Detection content version | `>= 3.1.0` and `< 4.0.0` |
 | Every other packaged content-item release version | `< 4.0.0`; existing `1.x`/`2.x` versions remain valid |
 
 The guard reports the content type/path, effective version, and required range.
 It never promotes versions automatically. Explicit local bumps are evaluated
-before output: for example, `major` from `3.1.0` selects `4.0.0` and is rejected.
+before output: for example, `major` from `3.2.0` selects `4.0.0` and is rejected.
+An older source solution may reach the supported range through an explicitly
+approved target or bump: `minor` from `3.1.x` selects `3.2.0`, whereas a `patch`
+that remains in `3.1.x` is rejected. This solution floor does not change
+independent content, Notebook, schema, API or provider version checks.
 All version checks run before generated JSON/ZIP files are overwritten. Local
 bump persistence is deferred until version validation and package generation
 succeed; rejected versions leave the source versions and existing outputs intact.

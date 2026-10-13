@@ -144,6 +144,9 @@ class XdrDescriptionCountTests(unittest.TestCase):
                 result = self.package(entry, pipeline)
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                 self.assertEqual(baseline, self.assert_summary(expected)[:2])
+        data = json.loads(self.data.read_text())
+        data["Version"] = "3.1.0"
+        self.data.write_text(json.dumps(data))
         for relative, pipeline in (
             ("V3/createSolutionV3.ps1", False),
             ("pipeline/createSolutionV4.ps1", True),

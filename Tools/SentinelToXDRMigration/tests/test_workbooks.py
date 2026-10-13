@@ -22,7 +22,7 @@ def solution():
     root = Path.cwd() / f".workbooks-api-test-{uuid4()}" / "FixtureSolution"
     (root / "Workbooks/nested").mkdir(parents=True)
     (root / "Data").mkdir()
-    (root / "Data/Solution_Fixture.json").write_text(json.dumps({"Version": "3.1.2"}))
+    (root / "Data/Solution_Fixture.json").write_text(json.dumps({"Version": "3.2.2"}))
     notebook = {
         "version": "Notebook/1.0", "fromTemplateId": str(uuid4()),
         "items": [{"type": 3, "customWidth": "50", "content": {
@@ -136,7 +136,7 @@ def test_inventory_provenance_and_stable_identity(solution):
     metadata = content["xdrMetadata"]
     assert metadata["contentId"] == row["identity"]
     assert metadata["contentId"] != metadata["instanceId"]
-    assert metadata["version"] == "3.1.2"
+    assert metadata["version"] == "3.2.2"
     assert content["version"] == "Notebook/1.0"
     assert content["items"][0]["customWidth"] == "50"
     assert content["contentProvenance"]["requiredWorkloads"] == [
@@ -156,17 +156,30 @@ def test_pre31_release_is_explicit_blocker_or_selected_target(solution):
     assert blocked["blocked"] == 1
     assert any(i["code"] == "release-version-required" for i in blocked["results"][0]["issues"])
     settings = config(solution)
-    settings["targetVersion"] = "3.1.5"
+    settings["targetVersion"] = "3.2.5"
     assert convert(solution, settings, overwrite=True)["converted"] == 1
-    assert json.loads(authored(solution).read_text())["xdrMetadata"]["version"] == "3.1.5"
+    assert json.loads(authored(solution).read_text())["xdrMetadata"]["version"] == "3.2.5"
     assert json.loads(data.read_text())["Version"] == "3.0.9"
 
 
-@pytest.mark.parametrize("version", ["3.0.9", "4.0.0", "3.1", "03.1.0", "3.1.0-preview"])
-def test_unsupported_target_versions_stay_blocked(solution, version):
+def test_independent_authored_workbook_keeps_31_content_floor(solution):
+    assert convert(solution)["converted"] == 1
+    document = json.loads(authored(solution).read_text())
+    document["xdrMetadata"]["version"] = "3.1.0"
+    authored(solution).write_text(json.dumps(document))
+    assert workbooks.validate_workbooks(solution)["invalid"] == 0
+
+
+@pytest.mark.parametrize("version", ["3.0.9", "3.1.999", "4.0.0", "3.2", "03.2.0", "3.2.0-preview"])
+def test_unsupported_target_versions_reject_without_mutation(solution, version):
     settings = config(solution)
     settings["targetVersion"] = version
-    assert convert(solution, settings)["blocked"] == 1
+    before = {p.relative_to(solution): p.read_bytes() for p in solution.rglob("*") if p.is_file()}
+    with pytest.raises(ValueError, match="target version"):
+        convert(solution, settings)
+    assert before == {p.relative_to(solution): p.read_bytes() for p in solution.rglob("*") if p.is_file()}
+    assert not (solution / "XDR Workbooks").exists()
+    assert not (solution / "Logs").exists()
 
 
 def test_missing_reviewed_resolution_retains_candidate_and_report(solution):
@@ -238,16 +251,16 @@ def test_selected_empty_missing_duplicate_and_unsafe_references(solution):
     convert(solution)
     data = solution / "Data/Solution_Fixture.json"
     for references in ([], ["XDR Workbooks/nested/fixture.json"]):
-        data.write_text(json.dumps({"Version": "3.1.2", "XDR Workbooks": references}))
+        data.write_text(json.dumps({"Version": "3.2.2", "XDR Workbooks": references}))
         assert workbooks.validate_workbooks(solution, selected_only=True)["total"] == len(references)
     for references in (
         ["XDR Workbooks/missing.json"], ["XDR Workbooks/../Workbooks/nested/fixture.json"],
         ["XDR Workbooks/nested/fixture.json"] * 2, ["/absolute.json"],
     ):
-        data.write_text(json.dumps({"Version": "3.1.2", "XDR Workbooks": references}))
+        data.write_text(json.dumps({"Version": "3.2.2", "XDR Workbooks": references}))
         with pytest.raises(ValueError):
             workbooks.selected_workbook_files(solution)
-    data.write_text('{"Version":"3.1.2"}')
+    data.write_text('{"Version":"3.2.2"}')
     with pytest.raises(ValueError, match="explicit"):
         workbooks.validate_workbooks(solution, selected_only=True)
 

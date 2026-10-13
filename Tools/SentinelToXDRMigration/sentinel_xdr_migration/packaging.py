@@ -95,14 +95,34 @@ def validate_v31_target_version(version: str | None) -> str:
     if not isinstance(version, str) or not V31_TARGET_VERSION_PATTERN.fullmatch(version):
         raise ValueError(
             "target version must be canonical major.minor.patch in the V3.1 "
-            "range >= 3.1.0 and < 4.0.0"
+            "range >= 3.2.0 and < 4.0.0"
         )
     major, minor, _patch = version.split(".")
-    if major != "3" or minor == "0":
+    if major != "3" or minor in {"0", "1"}:
         raise ValueError(
-            "target version must be in the V3.1 range >= 3.1.0 and < 4.0.0"
+            "target version must be in the V3.1 range >= 3.2.0 and < 4.0.0"
         )
     return version
+
+
+def validate_v31_effective_version(
+    source_version: str | None, version_bump: str, target_version: str | None = None,
+) -> str:
+    """Validate the selected solution release without consuming its version action."""
+    if target_version is not None:
+        return validate_v31_target_version(target_version)
+    if not isinstance(source_version, str) or not V31_TARGET_VERSION_PATTERN.fullmatch(source_version):
+        return validate_v31_target_version(source_version)
+    major, minor, patch = (int(part) for part in source_version.split("."))
+    if version_bump == "patch":
+        patch += 1
+    elif version_bump == "minor":
+        minor, patch = minor + 1, 0
+    elif version_bump == "major":
+        major, minor, patch = major + 1, 0, 0
+    elif version_bump != "none":
+        raise ValueError("version bump must be none, patch, minor, or major")
+    return validate_v31_target_version(f"{major}.{minor}.{patch}")
 
 
 def package_input_file_hashes(solution: str | Path) -> dict[str, str]:
@@ -757,6 +777,7 @@ def _verify_workbook_package(
 ) -> dict[str, Any]:
     """Verify the full candidate install/registration projection, not provider acceptance."""
     from copy import deepcopy
+    from .workbooks import _content_release
 
     def arm_copy(value: Any) -> Any:
         if isinstance(value, str):
@@ -796,7 +817,8 @@ def _verify_workbook_package(
         metadata = authored["xdrMetadata"]
         content_id = metadata["contentId"]
         instance_id = metadata["instanceId"]
-        validate_v31_target_version(metadata["version"])
+        if _content_release(metadata["version"]) is None:
+            raise ValueError("Defender workbook content version must be >=3.1.0 and <4.0.0")
         deployment_name = "DefenderWorkbook-" + hashlib.sha256(
             f"{solution.name}/{content_id}".encode("utf-8")
         ).hexdigest()[:32]
@@ -908,7 +930,6 @@ def package_solution_v3_1(
     selected_toolkit_root = _validate_v31_toolkit_root(
         toolkit_root if toolkit_root is not None else repository
     )
-    reports = report_directory(root, create=True)
     data_directory = root / "Data"
     if not data_directory.is_dir():
         raise ValueError(f"solution data folder does not exist: {data_directory}")
@@ -916,6 +937,8 @@ def package_solution_v3_1(
     data_file = _solution_data_file(data_directory)
     before = _read_json(data_file)
     _validate_solution_package_inputs(root, before)
+    validate_v31_effective_version(_value(before, "Version"), version_bump, target_version)
+    reports = report_directory(root, create=True)
     xdr_files = _xdr_references(root, before)
     from .workbooks import selected_workbook_files, validate_workbooks
     if _value(before, "XDR Workbooks") is None:

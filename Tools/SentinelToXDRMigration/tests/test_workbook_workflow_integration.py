@@ -32,7 +32,7 @@ def solution():
     (root / "Workbooks/nested").mkdir(parents=True)
     (root / "Data").mkdir()
     (root / "Data/Solution_Fixture.json").write_text(json.dumps({
-        "Name": "Fixture", "Version": "3.1.2", "Workbooks": ["Workbooks/nested/source.json"],
+        "Name": "Fixture", "Version": "3.2.2", "Workbooks": ["Workbooks/nested/source.json"],
     }))
     (root / "Workbooks/nested/source.json").write_text(json.dumps({
         "version": "Notebook/1.0", "fromTemplateId": str(uuid4()),
@@ -257,12 +257,16 @@ def test_selected_release_not_notebook_format_and_no_silent_pre31_promotion(solu
     document = json.loads(data.read_bytes())
     document["Version"] = "3.0.8"
     data.write_text(json.dumps(document))
-    initialize(solution)
+    with pytest.raises(ValueError, match=">= 3.2.0"):
+        initialize(solution)
+    workflow.initialize_workflow(
+        solution, workflow_profile="authoring", workbook_capability_version=1,
+    )
     config(solution)
     result = integration.convert_content(solution)
     assert result["workbooks"]["selectedBlocked"] == 1
     assert json.loads(data.read_bytes())["Version"] == "3.0.8"
-    next_state = initialize(solution, new_run=True, target_version="3.1.9")
+    next_state = initialize(solution, new_run=True, target_version="3.2.9")
     with using_run(solution, next_state["runId"]):
         config(solution)
         # A previously generated unbound draft cannot be overwritten by a new run.
@@ -271,7 +275,7 @@ def test_selected_release_not_notebook_format_and_no_silent_pre31_promotion(solu
         authored = json.loads((solution / "XDR Workbooks/nested/source.json").read_bytes())
         assert result["workbooks"]["selectedBlocked"] == 0
         assert authored["version"] == "Notebook/1.0"
-        assert authored["xdrMetadata"]["version"] == "3.1.9"
+        assert authored["xdrMetadata"]["version"] == "3.2.9"
         assert json.loads(data.read_bytes())["Version"] == "3.0.8"
 
 
@@ -655,7 +659,7 @@ def test_consumed_candidate_version_action_retries_without_second_bump(solution)
     workflow.initialize_workflow(solution, workflow_profile="authoring", workbook_capability_version=1, version_bump="patch")
     content_pass(solution)
     first = package_candidate(solution, "patch")
-    assert first["version"] == "3.1.3"
+    assert first["version"] == "3.2.3"
     assert first["packageAccepted"] is False
     with pytest.raises(ValueError, match="consumed"):
         package_candidate(solution, "patch")

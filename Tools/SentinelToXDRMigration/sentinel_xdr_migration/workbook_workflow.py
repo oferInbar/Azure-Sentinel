@@ -297,6 +297,18 @@ def convert_content(solution: str | Path, *, overwrite: bool = False,
     if rule_id:
         # Rule-scoped repairs must never rewrite workbook evidence or selection.
         return convert_solution(root, overwrite=overwrite, config_path=config_path, rule_id=rule_id)
+    from .packaging import solution_data_version, validate_v31_effective_version, validate_v31_target_version
+    selected_version = state["context"].get("targetVersion")
+    bump = state["context"].get("versionBump")
+    if state["workbooks"]["inventory"] and (selected_version is not None or bump is not None):
+        selected_version = validate_v31_effective_version(
+            solution_data_version(root), bump or "none", selected_version,
+        )
+    config = load_config(root / "XDR Detections", config_path) if state["workbooks"]["inventory"] else {}
+    if "targetVersion" in config:
+        validate_v31_target_version(config["targetVersion"])
+    if selected_version and config.get("targetVersion") not in (None, selected_version):
+        raise ValueError("workbook targetVersion conflicts with the selected solution release")
     result = convert_solution(root, overwrite=overwrite, config_path=config_path) if has_analytic_rules(root) else {
         "solution": str(root), "total": 0, "converted": 0, "blocked": 0, "results": [],
         "needsReview": 0, "conflicts": 0,
@@ -305,25 +317,13 @@ def convert_content(solution: str | Path, *, overwrite: bool = False,
         return {**result, "workbooks": {"total": 0, "converted": 0, "blocked": 0,
                                        "selectedBlocked": 0, "results": []},
                 "workbookArtifacts": {}, "workbookExcluded": []}
-    config = load_config(root / "XDR Detections", config_path)
-    selected_version = state["context"].get("targetVersion")
     if selected_version is None:
-        from .packaging import solution_data_version, validate_v31_target_version
         current_version = solution_data_version(root)
         try:
-            validate_v31_target_version(current_version)
+            selected_version = validate_v31_effective_version(current_version, "none")
         except ValueError:
-            # Pre-3.1 content is not silently promoted by workbook conversion.
-            current_version = None
-        if current_version is not None:
-            version = list(map(int, current_version.split(".")))
-            bump = state["context"].get("versionBump")
-            if bump in {"patch", "minor", "major"}:
-                index = {"major": 0, "minor": 1, "patch": 2}[bump]
-                version[index] += 1
-                version[index + 1:] = [0] * (2 - index)
-            selected_version = ".".join(map(str, version))
-            validate_v31_target_version(selected_version)
+            # Older solution releases are not silently promoted by workbook conversion.
+            pass
     if selected_version:
         if config.get("targetVersion") not in (None, selected_version):
             raise ValueError("workbook targetVersion conflicts with the selected solution release")

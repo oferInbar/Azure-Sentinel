@@ -56,6 +56,7 @@ from .packaging import (
     package_input_identity,
     package_solution_v3_1,
     solution_data_version,
+    validate_v31_effective_version,
     validate_v31_target_version,
     version_bump_was_consumed,
 )
@@ -2610,6 +2611,12 @@ def initialize_workflow(
         validate_v31_target_version(target_version)
         if version_bump not in (None, "none"):
             raise ValueError("target version cannot be combined with a version bump")
+    if target_version is not None or (
+        version_bump is not None and solution_data_version(root) is not None
+    ):
+        validate_v31_effective_version(
+            solution_data_version(root), version_bump or "none", target_version,
+        )
     if workflow_profile is None:
         raise ValueError(
             "workflow profile selection is required: choose authoring or qualification"
@@ -4650,6 +4657,7 @@ def plan_new_package_release(
         raise ValueError("expected package input identity must be a lowercase SHA-256")
 
     root = Path(solution).expanduser().resolve()
+    validate_v31_effective_version(solution_data_version(root), version_bump, target_version)
     with _state_writer_lock(root) as path:
         loaded_path, state = _load(root)
         if loaded_path != path:
@@ -4857,6 +4865,9 @@ def package_workflow_v3_1(
         if requested_version_bump != "none":
             raise ValueError("target version cannot be combined with a version bump")
     root = Path(solution).expanduser().resolve()
+    validate_v31_effective_version(
+        solution_data_version(root), requested_version_bump, requested_target_version,
+    )
     with _state_writer_lock(root) as path:
         loaded_path, state = _load(root)
         if loaded_path != path:

@@ -342,21 +342,21 @@ does not waive technical or entity-review gates: unresolved `reviewRequired`
 flags continue to block packaging.
 
 An author may select a canonical target version instead of a patch/minor/major
-bump. The target must satisfy `>=3.1.0` and `<4.0.0` and need not be consecutive
+bump. The target must satisfy `>=3.2.0` and `<4.0.0` and need not be consecutive
 with the current version. For example, an initial release may go directly from
-`3.0.7` to `3.1.2`:
+`3.0.7` to `3.2.1`:
 
 ```powershell
 sentinel-xdr-migration workflow-init `
   --solution "Solutions\<solution>" `
   --workflow-profile authoring `
   --version-bump none `
-  --target-version 3.1.2
+  --target-version 3.2.1
 
 sentinel-xdr-migration package-v3-1 `
   --solution "Solutions\<solution>" `
   --version-bump none `
-  --target-version 3.1.2
+  --target-version 3.2.1
 ```
 
 For changed package inputs, plan the exact target against the current input
@@ -368,6 +368,11 @@ it is permitted only for the matching post-write input identity. A target
 cannot be combined with a non-`none` bump. The persisted target/action and
 release plan retain the same review, freshness, campaign, and one-time
 consumption protections as bump actions.
+
+The resulting solution release must be `>=3.2.0` and `<4.0.0` for V3.1
+packaging, including no-bump rebuilds and pipeline-calculated versions.
+An older source version is not silently promoted; select a supported target or
+bump explicitly. Independent content-version checks remain unchanged.
 
 For offline Authoring only, if the successful package is already at the
 approved version but its release-note row is missing, use

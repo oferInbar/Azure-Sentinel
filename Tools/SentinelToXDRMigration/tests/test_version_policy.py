@@ -2,9 +2,78 @@ from __future__ import annotations
 
 import json
 import shutil
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import test_customer_usage_attribution as attribution
+from sentinel_xdr_migration.packaging import validate_v31_effective_version, validate_v31_target_version
+from sentinel_xdr_migration.workflow import initialize_workflow, plan_new_package_release, package_workflow_v3_1
+
+
+class PythonSolutionVersionPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(dir=Path.cwd())
+        self.addCleanup(self.directory.cleanup)
+        self.solution = Path(self.directory.name) / "Sample"
+        (self.solution / "Data").mkdir(parents=True)
+        self.data = self.solution / "Data/Solution_Sample.json"
+        self.data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.999"}))
+
+    def snapshot(self):
+        return {str(path): path.read_bytes() for path in self.solution.rglob("*") if path.is_file()}
+
+    def test_exact_solution_target_boundaries(self):
+        for version in ("3.2.0", "3.2.1", "3.999.999"):
+            self.assertEqual(version, validate_v31_target_version(version))
+        for version in ("3.1.999", "4.0.0", "4.1.0", "3.2", "3.2.0.0",
+                        "03.2.0", "3.02.0", "3.2.00", "3.2.0-preview"):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                validate_v31_target_version(version)
+
+    def test_effective_solution_selection_does_not_promote(self):
+        for bump in ("none", "patch", "major"):
+            with self.subTest(bump=bump), self.assertRaises(ValueError):
+                validate_v31_effective_version("3.1.999", bump)
+        self.assertEqual("3.2.0", validate_v31_effective_version("3.1.999", "minor"))
+        self.assertEqual("3.2.1", validate_v31_effective_version("1.0.0", "none", "3.2.1"))
+
+    def test_authoring_rejects_selected_old_release_without_mutation(self):
+        before = self.snapshot()
+        for bump in ("none", "patch"):
+            with self.subTest(bump=bump), self.assertRaisesRegex(ValueError, ">= 3.2.0"):
+                initialize_workflow(self.solution, workflow_profile="authoring", version_bump=bump)
+            self.assertEqual(before, self.snapshot())
+        with self.assertRaises(ValueError):
+            initialize_workflow(self.solution, workflow_profile="authoring", target_version="3.1.999")
+        self.assertEqual(before, self.snapshot())
+
+    def test_old_source_discovery_and_explicit_upgrade_are_legal(self):
+        state = initialize_workflow(self.solution, workflow_profile="authoring")
+        self.assertEqual("pending", state["stages"]["discovery"]["status"])
+        for options in ({"target_version": "3.2.1"}, {"version_bump": "minor"}):
+            with self.subTest(options=options):
+                state = initialize_workflow(
+                    self.solution, workflow_profile="authoring", new_run=True, **options,
+                )
+                self.assertEqual("pending", state["stages"]["discovery"]["status"])
+        self.assertEqual("3.1.999", json.loads(self.data.read_text())["Version"])
+
+    def test_release_planning_and_wrapper_preflight_reject_below_floor_before_state_write(self):
+        initialize_workflow(self.solution, workflow_profile="authoring")
+        before = self.snapshot()
+        for bump in ("patch", "major"):
+            with self.subTest(bump=bump), self.assertRaisesRegex(ValueError, ">= 3.2.0"):
+                plan_new_package_release(
+                    self.solution, version_bump=bump, expected_package_input_sha256="a" * 64,
+                )
+            self.assertEqual(before, self.snapshot())
+        with mock.patch("sentinel_xdr_migration.workflow.package_solution_v3_1") as package:
+            with self.assertRaisesRegex(ValueError, ">= 3.2.0"):
+                package_workflow_v3_1(self.solution, requested_version_bump="patch")
+            package.assert_not_called()
+        self.assertEqual(before, self.snapshot())
 
 
 @unittest.skipUnless(shutil.which("pwsh"), "PowerShell 7 is required")
@@ -15,7 +84,7 @@ class VersionPolicyTests(unittest.TestCase):
     package = attribution.AttributionTests.package
     write_metadata = attribution.AttributionTests.write_metadata
 
-    def fixture(self, version="3.1.0", *, xdr=True):
+    def fixture(self, version="3.2.0", *, xdr=True):
         entry = self.prepare_integration()
         self.write_metadata(attribution.TRACKING_ID)
         self.update_data(Version=version)
@@ -54,8 +123,9 @@ class VersionPolicyTests(unittest.TestCase):
 
     def test_solution_boundaries_without_xdr_local_and_pipeline(self):
         entry = self.fixture(xdr=False)
-        for version, accepted in (("3.0.99", False), ("3.1.0", True),
-                                  ("3.9.99", True), ("4.0.0", False)):
+        for version, accepted in (("3.0.99", False), ("3.1.999", False),
+                                  ("3.2.0", True), ("3.2.1", True),
+                                  ("3.999.999", True), ("4.0.0", False), ("4.1.0", False)):
             for pipeline in (False, True):
                 with self.subTest(version=version, pipeline=pipeline):
                     self.update_data(Version=version)
@@ -117,9 +187,11 @@ class VersionPolicyTests(unittest.TestCase):
 
     def test_bumps_persist_only_accepted_effective_versions(self):
         entry = self.fixture("3.1.0")
-        for bump, expected in (("none", "3.1.0"), ("patch", "3.1.1"), ("minor", "3.2.0")):
+        for bump, current, expected in (("none", "3.2.0", "3.2.0"),
+                                       ("patch", "3.2.0", "3.2.1"),
+                                       ("minor", "3.1.0", "3.2.0")):
             with self.subTest(bump=bump):
-                self.update_data(Version="3.1.0")
+                self.update_data(Version=current)
                 result = self.package(entry, False, version_bump=bump)
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                 self.assertEqual(expected, json.loads(self.data.read_text())["Version"])
@@ -131,7 +203,10 @@ class VersionPolicyTests(unittest.TestCase):
             else:
                 result = self.package(entry, False, version_bump=bump)
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.update_data(Version="3.1.0")
+        for bump in ("none", "patch"):
+            self.update_data(Version="3.1.999")
+            self.assert_rejected_unchanged(entry, version_bump=bump)
+        self.update_data(Version="3.2.0")
         self.update_detection("1.0.0")
         self.assert_rejected_unchanged(entry, version_bump="patch")
 
@@ -146,11 +221,11 @@ class VersionPolicyTests(unittest.TestCase):
                 f"-TargetVersion {attribution.ps_literal(target)}"
             )
 
-        result = package_target("3.1.2")
+        result = package_target("3.2.1")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertEqual("3.1.2", json.loads(self.data.read_text())["Version"])
-        self.assertEqual("3.1.2", json.loads(self.metadata.read_text())["version"])
-        self.assertTrue((self.solution / "Package" / "3.1.2.zip").is_file())
+        self.assertEqual("3.2.1", json.loads(self.data.read_text())["Version"])
+        self.assertEqual("3.2.1", json.loads(self.metadata.read_text())["version"])
+        self.assertTrue((self.solution / "Package" / "3.2.1.zip").is_file())
 
         result = package_target("3.999.999")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
@@ -158,7 +233,7 @@ class VersionPolicyTests(unittest.TestCase):
         self.assertEqual("3.999.999", json.loads(self.metadata.read_text())["version"])
         self.assertTrue((self.solution / "Package" / "3.999.999.zip").is_file())
 
-        for version in ("3.0.999", "4.0.0", "3.1", "3.1.0-preview", "03.1.0"):
+        for version in ("3.0.999", "3.1.999", "4.0.0", "3.2", "3.2.0-preview", "03.2.0", "3.02.0", "3.2.00"):
             with self.subTest(version=version):
                 before = self.snapshot()
                 rejected = package_target(version)
@@ -168,7 +243,8 @@ class VersionPolicyTests(unittest.TestCase):
 
     def test_pipeline_mismatch_and_missing_solution_default_fail(self):
         entry = self.fixture(xdr=False)
-        self.assert_rejected_unchanged(entry, pipeline=True, calculated_version="3.2.0")
+        self.assert_rejected_unchanged(entry, pipeline=True, calculated_version="3.2.1")
+        self.assert_rejected_unchanged(entry, pipeline=True, calculated_version="3.1.999")
         document = json.loads(self.data.read_text())
         document.pop("Version")
         self.data.write_text(json.dumps(document))
@@ -215,13 +291,13 @@ class VersionPolicyTests(unittest.TestCase):
         entry = self.fixture(xdr=False)
         catalog = self.repository / ".script/package-automation/catalogAPI.ps1"
         catalog.parent.mkdir(parents=True)
-        for version in ("3.0.99", "3.1.0", "4.0.0"):
+        for version in ("3.0.99", "3.1.999", "3.2.0", "4.0.0"):
             # Isolate only the external catalog response, not any packaging or guard logic.
             catalog.write_text(
                 "function GetCatalogDetails { return @{} }\n"
                 f"function GetPackageVersion {{ return '{version}' }}\n"
             )
-            if version != "3.1.0":
+            if version != "3.2.0":
                 self.assert_rejected_unchanged(entry, version_mode="catalog")
             else:
                 before = self.data.read_bytes(), self.metadata.read_bytes()
@@ -244,7 +320,7 @@ class VersionPolicyTests(unittest.TestCase):
 
     def test_numeric_bounds_do_not_apply_floor_to_other_content_kinds(self):
         policy = attribution.ps_literal(attribution.PACKAGER / "common/versionPolicy.ps1")
-        kinds = ("Parser", "Workbook", "Playbook", "DataConnector", "LogicAppsCustomConnector",
+        kinds = ("AnalyticsRule", "HuntingQuery", "Parser", "Workbook", "Playbook", "DataConnector", "LogicAppsCustomConnector",
                  "AzureFunction", "SummaryRule", "Watchlist", "CCF DataConnector/Connections")
         for kind in kinds:
             with self.subTest(kind=kind):

@@ -164,7 +164,15 @@ def selected_workbook_files(solution) -> list[Path]:
 
 
 def _release(data: dict, config: dict) -> str | None:
+    from .packaging import validate_v31_target_version
     value = config.get("targetVersion", data.get("Version", data.get("version")))
+    try:
+        return validate_v31_target_version(value)
+    except ValueError:
+        return None
+
+
+def _content_release(value: str | None) -> str | None:
     if not isinstance(value, str) or not re.fullmatch(r"3\.[1-9]\d*\.(0|[1-9]\d*)", value):
         return None
     return value
@@ -251,6 +259,9 @@ def convert_workbooks(solution, *, config=None, report_directory=None, overwrite
     settings = deepcopy(config if config is not None else {})
     if not isinstance(settings, dict):
         raise ValueError("Workbook configuration must be an object.")
+    if "targetVersion" in settings:
+        from .packaging import validate_v31_target_version
+        validate_v31_target_version(settings["targetVersion"])
     resolutions = settings.get("workbookResolutions", {})
     dependencies = settings.get("workbookDependencies", {})
     if not isinstance(resolutions, dict) or not isinstance(dependencies, dict):
@@ -306,7 +317,7 @@ def convert_workbooks(solution, *, config=None, report_directory=None, overwrite
         if version is None:
             report["issues"].append({
                 "path": "/xdrMetadata/version", "code": "release-version-required",
-                "message": "Select targetVersion >=3.1.0 and <4.0.0; source release is unchanged."})
+                "message": "Select targetVersion >=3.2.0 and <4.0.0; source release is unchanged."})
         canonical = row["identity"]
         instance = str(uuid5(NAMESPACE_URL, f"xdr-workbook-instance:{root.name}:{canonical}"))
         target["xdrMetadata"] = {
@@ -407,8 +418,8 @@ def validate_workbooks(solution, *, selected_only=False) -> dict:
             errors.append("Duplicate authored workbook identity.")
         identities.add(identity)
         instances.add(instance)
-        if metadata.get("schemaVersion") != "1.0.0" or _release({}, {"targetVersion": metadata.get("version")}) is None:
-            errors.append("Authored metadata requires schema 1.0.0 and solution release >=3.1.0,<4.0.0.")
+        if metadata.get("schemaVersion") != "1.0.0" or _content_release(metadata.get("version")) is None:
+            errors.append("Authored metadata requires schema 1.0.0 and content release >=3.1.0,<4.0.0.")
         if not isinstance(metadata.get("displayName"), str) or not metadata["displayName"].strip():
             errors.append("Workbook displayName is required.")
         if any(key in provenance for key in ("packageId", "packageVersion", "contentId", "contentVersion")):

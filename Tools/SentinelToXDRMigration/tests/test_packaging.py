@@ -52,7 +52,7 @@ class PackagingTests(unittest.TestCase):
         (data / "Solution_Sample.json").write_text(
             json.dumps({
                 "Name": "Sample",
-                "Version": "1.2.3",
+                "Version": "3.2.3",
                 "XDR Detections": ["XDR Detections/Detection.yaml"],
             }),
             encoding="utf-8",
@@ -77,7 +77,7 @@ class PackagingTests(unittest.TestCase):
                 }]}],
             },
         }))
-        with zipfile.ZipFile(package / "1.2.3.zip", "w") as archive:
+        with zipfile.ZipFile(package / "3.2.3.zip", "w") as archive:
             archive.writestr("mainTemplate.json", "{}")
             archive.writestr("createUiDefinition.json", "{}")
 
@@ -121,12 +121,14 @@ class PackagingTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_v31_target_version_boundaries_and_conflicting_bump(self) -> None:
-        for version in ("3.1.0", "3.1.2", "3.999.999"):
+        for version in ("3.2.0", "3.2.1", "3.999.999"):
             with self.subTest(version=version):
                 self.assertEqual(version, validate_v31_target_version(version))
         for version in (
             "3.0.999",
+            "3.1.999",
             "4.0.0",
+            "4.1.0",
             "3.1",
             "3.1.0.1",
             "3.1.0-preview",
@@ -142,8 +144,23 @@ class PackagingTests(unittest.TestCase):
             package_solution_v3_1(
                 self.solution,
                 version_bump="patch",
-                target_version="3.1.2",
+                target_version="3.2.1",
             )
+
+    def test_below_floor_effective_release_rejects_before_reports_or_subprocess(self) -> None:
+        data = self.solution / "Data/Solution_Sample.json"
+        document = json.loads(data.read_text())
+        document["Version"] = "3.1.999"
+        data.write_text(json.dumps(document))
+        before = {str(path): path.read_bytes() for path in self.solution.rglob("*") if path.is_file()}
+        with mock.patch("sentinel_xdr_migration.packaging.subprocess.run") as run:
+            for bump in ("none", "patch"):
+                with self.subTest(bump=bump), self.assertRaisesRegex(ValueError, ">= 3.2.0"):
+                    package_solution_v3_1(self.solution, version_bump=bump)
+            run.assert_not_called()
+        self.assertEqual(before, {
+            str(path): path.read_bytes() for path in self.solution.rglob("*") if path.is_file()
+        })
 
     def test_v31_target_version_is_forwarded_to_official_packager(self) -> None:
         with mock.patch(
@@ -156,11 +173,11 @@ class PackagingTests(unittest.TestCase):
                 package_solution_v3_1(
                     self.solution,
                     version_bump="none",
-                    target_version="3.1.2",
+                    target_version="3.2.1",
                 )
         command = run.call_args.args[0]
         self.assertIn("-TargetVersion", command)
-        self.assertEqual("3.1.2", command[command.index("-TargetVersion") + 1])
+        self.assertEqual("3.2.1", command[command.index("-TargetVersion") + 1])
 
     def test_template_and_zip_match_partial_selection_exclusions(self) -> None:
         data_path = self.solution / "Data" / "Solution_Sample.json"
@@ -733,14 +750,14 @@ class PackagingTests(unittest.TestCase):
                     (data / "Solution_Sample.json").write_text(json.dumps({
                         "Name": "Sample",
                         "Author": "Packaging Smoke Test - test@example.invalid",
-                        "Version": "3.1.0",
+                        "Version": "3.2.0",
                         "Metadata": "SolutionMetadata.json",
                         "Description": "Synthetic V3.1 packaging smoke test.",
                         "XDR Detections": [],
                     }), encoding="utf-8")
                     (solution / "SolutionMetadata.json").write_text(json.dumps({
                         "name": "Sample",
-                        "version": "3.1.0",
+                        "version": "3.2.0",
                         "trackingId": "pid-cross-worktree-smoke-test",
                         "support": {
                             "name": "Synthetic Test",
@@ -910,7 +927,7 @@ class PackagingTests(unittest.TestCase):
             run.assert_not_called()
             which.assert_not_called()
 
-        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip") as archive:
+        with zipfile.ZipFile(self.solution / "Package" / "3.2.3.zip") as archive:
             self.assertNotIn(
                 b"PATH_TRAVERSAL_FIXTURE_ONLY",
                 b"".join(archive.read(name) for name in archive.namelist()),
@@ -942,7 +959,7 @@ class PackagingTests(unittest.TestCase):
             run.assert_not_called()
             which.assert_not_called()
 
-        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip") as archive:
+        with zipfile.ZipFile(self.solution / "Package" / "3.2.3.zip") as archive:
             self.assertNotIn(
                 b"METADATA_FIXTURE_ONLY",
                 b"".join(archive.read(name) for name in archive.namelist()),
@@ -1070,7 +1087,7 @@ class PackagingTests(unittest.TestCase):
             run.assert_not_called()
             which.assert_not_called()
 
-        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip") as archive:
+        with zipfile.ZipFile(self.solution / "Package" / "3.2.3.zip") as archive:
             self.assertNotIn(
                 b"ENCODED_ESCAPE_FIXTURE_ONLY",
                 b"".join(archive.read(name) for name in archive.namelist()),
@@ -1258,7 +1275,7 @@ class PackagingTests(unittest.TestCase):
     @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
     def test_rejects_evidence_in_marketplace_zip(self, run, which) -> None:
         run.return_value = CompletedProcess([], 0, "Starting Package Creation using V3.1 tool", "")
-        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip", "a") as archive:
+        with zipfile.ZipFile(self.solution / "Package" / "3.2.3.zip", "a") as archive:
             archive.writestr("eViDeNcE/run/evidence.json", "{}")
         with self.assertRaisesRegex(RuntimeError, "Evidence"):
             package_solution_v3_1(self.solution, version_bump="none")
@@ -1267,7 +1284,7 @@ class PackagingTests(unittest.TestCase):
     @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
     def test_rejects_runtime_logs_in_marketplace_zip(self, run, which) -> None:
         run.return_value = CompletedProcess([], 0, "Starting Package Creation using V3.1 tool", "")
-        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip", "a") as archive:
+        with zipfile.ZipFile(self.solution / "Package" / "3.2.3.zip", "a") as archive:
             archive.writestr("Logs/sentinel-xdr-migration/workflow-state.json", "{}")
         with self.assertRaisesRegex(RuntimeError, "must not contain Logs"):
             package_solution_v3_1(self.solution, version_bump="none")
@@ -1276,7 +1293,7 @@ class PackagingTests(unittest.TestCase):
     @mock.patch("sentinel_xdr_migration.packaging.subprocess.run")
     def test_rejects_local_env_in_marketplace_zip(self, run, which) -> None:
         run.return_value = CompletedProcess([], 0, "Starting Package Creation using V3.1 tool", "")
-        with zipfile.ZipFile(self.solution / "Package" / "1.2.3.zip", "a") as archive:
+        with zipfile.ZipFile(self.solution / "Package" / "3.2.3.zip", "a") as archive:
             archive.writestr("configuration/.env", "PRIVATE_ENV_SENTINEL")
         with self.assertRaisesRegex(RuntimeError, "must not contain local .env"):
             package_solution_v3_1(self.solution, version_bump="none")

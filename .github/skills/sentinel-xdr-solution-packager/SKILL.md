@@ -67,8 +67,9 @@ Use `none` for repeat local validation. Before producing a package intended for
 submission, ask which release increment to apply. Never bump the version more
 than once for the same package attempt.
 
-V3.1 requires effective solution and XDR content release versions in
-`[3.1.0, 4.0.0)`. Other content release versions must be below `4.0.0`; their
+V3.1 requires effective solution release versions in `[3.2.0, 4.0.0)`.
+Independent XDR Custom Detection release versions remain in `[3.1.0, 4.0.0)`.
+Other content release versions must be below `4.0.0`; their
 legacy lower versions remain valid. Out-of-range versions are hard errors, not
 automatic promotions. A major bump from `3.x` is therefore rejected.
 XDR requires its own top-level YAML `version` (`major.minor.patch`); new

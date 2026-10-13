@@ -210,7 +210,8 @@ class WorkflowTests(unittest.TestCase):
         result["packageInputs"]["before"] = before
         return result
 
-    def _prepare_workflow_for_package(self, version_bump: str = "patch") -> str:
+    def _prepare_workflow_for_package(self, version_bump: str | None = "patch") -> str:
+        self._ensure_solution_release()
         initialized = initialize_workflow(
             self.solution,
             version_bump=version_bump,
@@ -225,11 +226,13 @@ class WorkflowTests(unittest.TestCase):
         self,
         *,
         campaign_id: str | None = "test-campaign",
+        version_bump: str | None = "none",
     ) -> tuple[dict, Path]:
+        self._ensure_solution_release()
         self._create_source_rules()
         initialized = initialize_workflow(
             self.solution,
-            version_bump="none",
+            version_bump=version_bump,
             workflow_profile="authoring",
             campaign_id=campaign_id,
         )
@@ -331,6 +334,12 @@ class WorkflowTests(unittest.TestCase):
                        if provider == "triage-mcp" else {}),
                 }],
             }), encoding="utf-8")
+
+    def _ensure_solution_release(self) -> None:
+        data = self.solution / "Data/Solution_Sample.json"
+        if not data.exists():
+            data.parent.mkdir(exist_ok=True)
+            data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.0"}), encoding="utf-8")
 
     def _create_source_rules(self, count: int = 1) -> list[Path]:
         paths = []
@@ -585,6 +594,7 @@ class WorkflowTests(unittest.TestCase):
             )
 
     def test_partial_qualification_progresses_without_fabricating_full_validation(self) -> None:
+        self._ensure_solution_release()
         initialized = initialize_workflow(
             self.solution,
             version_bump="patch",
@@ -666,6 +676,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual("passed", completed_state["stages"]["alertParity"]["status"])
 
     def test_blocked_validation_cannot_package_without_applied_selection(self) -> None:
+        self._ensure_solution_release()
         self._create_source_rules()
         initialize_workflow(self.solution, workflow_profile="authoring")
         for stage in ("discovery", "conversion"):
@@ -784,6 +795,7 @@ class WorkflowTests(unittest.TestCase):
             )
 
     def test_initial_none_action_can_plan_first_partial_release(self) -> None:
+        self._ensure_solution_release()
         initialized = initialize_workflow(
             self.solution,
             version_bump="none",
@@ -877,6 +889,7 @@ class WorkflowTests(unittest.TestCase):
         self,
         rule_count: int,
     ) -> None:
+        self._ensure_solution_release()
         initialized = initialize_workflow(
             self.solution,
             version_bump="none",
@@ -963,6 +976,7 @@ class WorkflowTests(unittest.TestCase):
         self._assert_initial_none_action_can_plan_first_complete_release(15)
 
     def test_first_release_requires_current_applied_complete_selection_and_exact_hash(self) -> None:
+        self._ensure_solution_release()
         initialized = initialize_workflow(
             self.solution,
             version_bump="none",
@@ -1068,7 +1082,7 @@ class WorkflowTests(unittest.TestCase):
     def test_same_release_notes_refresh_rebuilds_only_approved_notes_row(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir(parents=True)
-        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.2"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.2"}), encoding="utf-8")
         aligned_header = (
             "| **Version** | **Date Modified (DD-MM-YYYY)** | "
             "**Change History**                                                           |"
@@ -1132,7 +1146,7 @@ class WorkflowTests(unittest.TestCase):
             ]))
             planned = workflow_status(self.solution)["packaging"]["pendingReleaseAction"]
             expected_row = (
-                "| 3.1.2 | 12-10-2026 | Refreshed the V3.1 hybrid package for three disabled "
+                "| 3.2.2 | 12-10-2026 | Refreshed the V3.1 hybrid package for three disabled "
                 "Defender XDR Custom Detections with reviewed Host mappings and source-rule "
                 "provenance. |"
             )
@@ -1162,7 +1176,7 @@ class WorkflowTests(unittest.TestCase):
                 )
             package.assert_called_once()
             self.assertEqual("none", refreshed["effectiveVersionBump"])
-            self.assertEqual("3.1.2", version_before)
+            self.assertEqual("3.2.2", version_before)
             self.assertEqual(version_before, json.loads(data.read_text(encoding="utf-8"))["Version"])
             self.assertEqual(first["version"], refreshed["version"])
             self.assertEqual(inserted_notes, notes.read_bytes())
@@ -1225,7 +1239,7 @@ class WorkflowTests(unittest.TestCase):
     def test_same_release_notes_refresh_rejects_non_notes_changes_and_wrong_row(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir(parents=True)
-        data.write_text(json.dumps({"Name": "Sample", "Version": "1.0.0"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.0"}), encoding="utf-8")
         notes = self.solution / "ReleaseNotes.md"
         notes.write_text(
             "| **Version** | **Date Modified (DD-MM-YYYY)** | **Change History** |\n"
@@ -1266,7 +1280,7 @@ class WorkflowTests(unittest.TestCase):
             notes.write_text(
                 notes.read_text(encoding="utf-8").replace(
                     "|---|---|---|\n",
-                    "|---|---|---|\n| 1.0.0 | 12-10-2026 | Different description |\n",
+                    "|---|---|---|\n| 3.2.0 | 12-10-2026 | Different description |\n",
                     1,
                 ),
                 encoding="utf-8",
@@ -1280,7 +1294,7 @@ class WorkflowTests(unittest.TestCase):
     def test_same_release_notes_refresh_repeat_build_without_campaign(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir(parents=True)
-        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.2"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.2"}), encoding="utf-8")
         notes = self.solution / "ReleaseNotes.md"
         notes.write_text(
             "| **Version** | **Date Modified (DD-MM-YYYY)** | **Change History** |\n"
@@ -1322,7 +1336,7 @@ class WorkflowTests(unittest.TestCase):
             notes.write_text(
                 notes.read_text(encoding="utf-8").replace(
                     "|---|---|---|\n",
-                    "|---|---|---|\n| 3.1.2 | 12-10-2026 | Approved same-release note |\n",
+                    "|---|---|---|\n| 3.2.2 | 12-10-2026 | Approved same-release note |\n",
                     1,
                 ),
                 encoding="utf-8",
@@ -1341,7 +1355,7 @@ class WorkflowTests(unittest.TestCase):
     def test_same_version_content_rebuild_archives_inputs_and_builds_without_bumping(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir(parents=True)
-        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.1"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.1"}), encoding="utf-8")
         readme = self.solution / "README.md"
         readme.write_text("approved package content before the first build\n", encoding="utf-8")
         initialized, _ = self._prepare_offline_authoring_validation()
@@ -1369,7 +1383,7 @@ class WorkflowTests(unittest.TestCase):
                     self.solution,
                     requested_version_bump="patch",
                 )
-            self.assertEqual("3.1.2", first["version"])
+            self.assertEqual("3.2.2", first["version"])
             original_input = readme.read_bytes()
             readme.write_text("explicitly approved non-notes content fix\n", encoding="utf-8")
             approved_input = readme.read_bytes()
@@ -1380,14 +1394,14 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "artifact is stale: zip"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.2",
+                    target_version="3.2.2",
                     changed_inputs=["README.md"],
                     expected_package_input_sha256=approved_hash,
                 )
             prior_zip.write_bytes(prior_zip_bytes)
             planned = plan_same_version_content_rebuild(
                 self.solution,
-                target_version="3.1.2",
+                target_version="3.2.2",
                 changed_inputs=["README.md"],
                 expected_package_input_sha256=approved_hash,
             )
@@ -1395,7 +1409,7 @@ class WorkflowTests(unittest.TestCase):
             action = state["packaging"]["pendingReleaseAction"]
             self.assertEqual("same-version-content-rebuild", action["actionType"])
             self.assertEqual("none", action["versionBump"])
-            self.assertEqual("3.1.2", action["targetVersion"])
+            self.assertEqual("3.2.2", action["targetVersion"])
             self.assertEqual(approved_hash, action["packageInputSha256"])
             self.assertEqual(
                 hashlib.sha256(approved_input).hexdigest(),
@@ -1432,8 +1446,8 @@ class WorkflowTests(unittest.TestCase):
                 )
             package.assert_called_once()
             self.assertEqual("none", rebuilt["effectiveVersionBump"])
-            self.assertEqual("3.1.2", rebuilt["version"])
-            self.assertEqual("3.1.2", json.loads(data.read_text(encoding="utf-8"))["Version"])
+            self.assertEqual("3.2.2", rebuilt["version"])
+            self.assertEqual("3.2.2", json.loads(data.read_text(encoding="utf-8"))["Version"])
             self.assertEqual(approved_input, readme.read_bytes())
             state = workflow_status(self.solution)
             self.assertEqual("consumed", state["packaging"]["releaseActions"][-1]["status"])
@@ -1450,7 +1464,7 @@ class WorkflowTests(unittest.TestCase):
                     requested_version_bump="none",
                 )
             repeat_package.assert_called_once()
-            self.assertEqual("3.1.2", repeated["version"])
+            self.assertEqual("3.2.2", repeated["version"])
             self.assertNotEqual(
                 first_rebuild_attempt,
                 workflow_status(self.solution)["packaging"]["lastConsumedAction"]["attemptId"],
@@ -1460,7 +1474,7 @@ class WorkflowTests(unittest.TestCase):
     def test_same_version_content_rebuild_retry_and_scope_guards(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir(parents=True)
-        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.1"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.1"}), encoding="utf-8")
         readme = self.solution / "README.md"
         readme.write_text("before\n", encoding="utf-8")
         release_notes = self.solution / "ReleaseNotes.md"
@@ -1492,27 +1506,27 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly match the current solution version"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.3",
+                    target_version="3.2.3",
                     changed_inputs=["README.md"],
                     expected_package_input_sha256=expected_hash,
                 )
             with self.assertRaisesRegex(ValueError, "current input identity"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.2",
+                    target_version="3.2.2",
                     changed_inputs=["README.md"],
                     expected_package_input_sha256="0" * 64,
                 )
             with self.assertRaisesRegex(ValueError, "ReleaseNotes"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.2",
+                    target_version="3.2.2",
                     changed_inputs=["ReleaseNotes.md"],
                     expected_package_input_sha256=expected_hash,
                 )
             plan_same_version_content_rebuild(
                 self.solution,
-                target_version="3.1.2",
+                target_version="3.2.2",
                 changed_inputs=["README.md"],
                 expected_package_input_sha256=expected_hash,
             )
@@ -1540,7 +1554,7 @@ class WorkflowTests(unittest.TestCase):
                 failed_state["packaging"]["pendingReleaseAction"]["packageInputSha256"],
             )
             self.assertEqual("failed", failed_state["packaging"]["currentAttempt"]["status"])
-            self.assertEqual("3.1.2", json.loads(data.read_text(encoding="utf-8"))["Version"])
+            self.assertEqual("3.2.2", json.loads(data.read_text(encoding="utf-8"))["Version"])
             with mock.patch.object(
                 workflow_module,
                 "package_solution_v3_1",
@@ -1550,13 +1564,13 @@ class WorkflowTests(unittest.TestCase):
                     self.solution,
                     requested_version_bump="none",
                 )
-            self.assertEqual("3.1.2", retried["version"])
+            self.assertEqual("3.2.2", retried["version"])
             self.assertEqual("consumed", workflow_status(self.solution)["packaging"]["releaseActions"][-1]["status"])
 
     def test_same_version_rebuild_requires_exact_receipt_to_current_path_diff(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir(parents=True)
-        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.1"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.1"}), encoding="utf-8")
         contents = {
             "README.md": b"before\n",
             "ReleaseNotes.md": b"historical notes\n",
@@ -1598,7 +1612,7 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not permit any ReleaseNotes change"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.2",
+                    target_version="3.2.2",
                     changed_inputs=["README.md"],
                     expected_package_input_sha256=current_hash,
                 )
@@ -1608,7 +1622,7 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "scope must exactly match"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.2",
+                    target_version="3.2.2",
                     changed_inputs=["README.md"],
                     expected_package_input_sha256=current_hash,
                 )
@@ -1620,14 +1634,14 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "scope must exactly match"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.2",
+                    target_version="3.2.2",
                     changed_inputs=["README.md", "Unchanged.txt"],
                     expected_package_input_sha256=current_hash,
                 )
 
             planned = plan_same_version_content_rebuild(
                 self.solution,
-                target_version="3.1.2",
+                target_version="3.2.2",
                 changed_inputs=["README.md"],
                 expected_package_input_sha256=current_hash,
             )
@@ -1642,7 +1656,7 @@ class WorkflowTests(unittest.TestCase):
     def test_same_version_rebuild_reconstructs_receipt_bound_legacy_baseline(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir(parents=True)
-        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.1"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.1"}), encoding="utf-8")
         readme = self.solution / "README.md"
         readme.write_bytes(b"legacy baseline\n")
         initialized, _ = self._prepare_offline_authoring_validation()
@@ -1705,7 +1719,7 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "provide exact receipt-bound"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.2",
+                    target_version="3.2.2",
                     changed_inputs=["README.md"],
                     expected_package_input_sha256=current_identity,
                 )
@@ -1718,7 +1732,7 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not bound to the successful receipt"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.2",
+                    target_version="3.2.2",
                     changed_inputs=["README.md"],
                     expected_package_input_sha256=current_identity,
                     legacy_baseline_evidence=(
@@ -1727,7 +1741,7 @@ class WorkflowTests(unittest.TestCase):
                 )
             planned = plan_same_version_content_rebuild(
                 self.solution,
-                target_version="3.1.2",
+                target_version="3.2.2",
                 changed_inputs=["README.md"],
                 expected_package_input_sha256=current_identity,
                 legacy_baseline_evidence=evidence_path.as_posix(),
@@ -1763,7 +1777,7 @@ class WorkflowTests(unittest.TestCase):
                     self.solution,
                     requested_version_bump="none",
                 )
-            self.assertEqual("3.1.2", rebuilt["version"])
+            self.assertEqual("3.2.2", rebuilt["version"])
             self.assertEqual("consumed", workflow_status(self.solution)["packaging"][
                 "releaseActions"
             ][-1]["status"])
@@ -1783,7 +1797,7 @@ class WorkflowTests(unittest.TestCase):
     def test_failed_v31_candidate_can_be_repaired_and_retried_at_same_version(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir(parents=True)
-        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.1"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.1"}), encoding="utf-8")
         readme = self.solution / "README.md"
         readme.write_text("candidate input\n", encoding="utf-8")
         initialized, _ = self._prepare_offline_authoring_validation()
@@ -1805,9 +1819,9 @@ class WorkflowTests(unittest.TestCase):
 
             def failed_initial_build(solution: Path, **kwargs: str) -> dict:
                 value = json.loads(data.read_text(encoding="utf-8"))
-                value["Version"] = "3.1.2"
+                value["Version"] = "3.2.2"
                 data.write_text(json.dumps(value), encoding="utf-8")
-                artifacts = self._packaging_artifacts("patch", "3.1.2")
+                artifacts = self._packaging_artifacts("patch", "3.2.2")
                 Path(artifacts["packageReport"]).unlink()
                 raise RuntimeError("synthetic ARM-TTK failure after candidate generation")
 
@@ -1832,13 +1846,13 @@ class WorkflowTests(unittest.TestCase):
                 / "Logs"
                 / "sentinel-xdr-migration"
                 / initialized["runId"]
-                / "failed-v31-3.1.2-artifacts"
+                / "failed-v31-3.2.2-artifacts"
             )
             for artifact in (
                 "mainTemplate.json",
                 "createUiDefinition.json",
                 "testParameters.json",
-                "3.1.2.zip",
+                "3.2.2.zip",
             ):
                 source = self.solution / "Package" / artifact
                 target = snapshot / "Package" / artifact
@@ -1856,7 +1870,7 @@ class WorkflowTests(unittest.TestCase):
                 ("Package/mainTemplate.json", "mainTemplate.json"),
                 ("Package/createUiDefinition.json", "createUiDefinition.json"),
                 ("Package/testParameters.json", "testParameters.json"),
-                ("Package/3.1.2.zip", "3.1.2.zip"),
+                ("Package/3.2.2.zip", "3.2.2.zip"),
             ):
                 candidate = self.solution / relative
                 generated[relative] = {
@@ -1871,7 +1885,7 @@ class WorkflowTests(unittest.TestCase):
                 "shellStatus": "completed",
                 "cliExitCode": 2,
                 "v31ChildExitCode": 1,
-                "currentVersion": "3.1.2",
+                "currentVersion": "3.2.2",
                 "bumpConsumed": True,
                 "lastConsumedAction": failed_package["lastConsumedAction"],
                 "currentPackageInput": {
@@ -1880,7 +1894,7 @@ class WorkflowTests(unittest.TestCase):
                 },
                 "generatedArtifacts": generated,
                 "packageReportExists": False,
-                "failedArtifactSnapshot": "failed-v31-3.1.2-artifacts",
+                "failedArtifactSnapshot": "failed-v31-3.2.2-artifacts",
             }
             handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
 
@@ -1911,7 +1925,7 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "target must exactly match"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.3",
+                    target_version="3.2.3",
                     changed_inputs=["README.md"],
                     expected_package_input_sha256=current_identity,
                     failed_candidate_evidence=handoff_path.relative_to(self.solution),
@@ -1922,7 +1936,7 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must be a JSON object"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.2",
+                    target_version="3.2.2",
                     changed_inputs=["README.md"],
                     expected_package_input_sha256=current_identity,
                     failed_candidate_evidence=handoff_path.relative_to(self.solution),
@@ -1934,7 +1948,7 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "matching consumed, failed V3.1 attempt"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.2",
+                    target_version="3.2.2",
                     changed_inputs=["README.md"],
                     expected_package_input_sha256=current_identity,
                     failed_candidate_evidence=handoff_path.relative_to(self.solution),
@@ -1943,7 +1957,7 @@ class WorkflowTests(unittest.TestCase):
             handoff_path.write_bytes(original_handoff)
             planned = plan_same_version_content_rebuild(
                 self.solution,
-                target_version="3.1.2",
+                target_version="3.2.2",
                 changed_inputs=["README.md"],
                 expected_package_input_sha256=current_identity,
                 failed_candidate_evidence=handoff_path.relative_to(self.solution),
@@ -1987,7 +2001,7 @@ class WorkflowTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(RuntimeError, "retry still fails"):
                     package_workflow_v3_1(self.solution, requested_version_bump="none")
-            self.assertEqual("3.1.2", workflow_module.solution_data_version(self.solution))
+            self.assertEqual("3.2.2", workflow_module.solution_data_version(self.solution))
             self.assertEqual(
                 "same-version-failed-candidate-rebuild",
                 workflow_status(self.solution)["packaging"]["pendingReleaseAction"]["actionType"],
@@ -1999,8 +2013,8 @@ class WorkflowTests(unittest.TestCase):
                 side_effect=self._mock_v3_1_package,
             ):
                 rebuilt = package_workflow_v3_1(self.solution, requested_version_bump="none")
-            self.assertEqual("3.1.2", rebuilt["version"])
-            self.assertEqual("3.1.2", workflow_module.solution_data_version(self.solution))
+            self.assertEqual("3.2.2", rebuilt["version"])
+            self.assertEqual("3.2.2", workflow_module.solution_data_version(self.solution))
             rebuilt_state = workflow_status(self.solution)
             self.assertIsNone(rebuilt_state["packaging"]["pendingReleaseAction"])
             self.assertTrue(rebuilt_state["packaging"]["lastSuccessful"]["packageSucceeded"])
@@ -2044,7 +2058,7 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "only for Authoring"):
                 plan_same_version_content_rebuild(
                     self.solution,
-                    target_version="3.1.2",
+                    target_version="3.2.2",
                     changed_inputs=["README.md"],
                     expected_package_input_sha256="a" * 64,
                 )
@@ -2069,7 +2083,7 @@ class WorkflowTests(unittest.TestCase):
     def test_same_release_notes_refresh_requires_fresh_package_receipt(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir(parents=True)
-        data.write_text(json.dumps({"Name": "Sample", "Version": "1.0.0"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.0"}), encoding="utf-8")
         notes = self.solution / "ReleaseNotes.md"
         notes.write_text(
             "| **Version** | **Date Modified (DD-MM-YYYY)** | **Change History** |\n"
@@ -2114,7 +2128,7 @@ class WorkflowTests(unittest.TestCase):
     def test_release_notes_refresh_parses_aligned_header_and_rejects_malformed_history(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir(parents=True)
-        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.2"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.2"}), encoding="utf-8")
         notes = self.solution / "ReleaseNotes.md"
         aligned_header = (
             "| **Version** | **Date Modified (DD-MM-YYYY)** | "
@@ -2545,7 +2559,7 @@ class WorkflowTests(unittest.TestCase):
         data_path = self.solution / "Data" / "Solution_Sample.json"
         data_path.parent.mkdir(parents=True)
         data_path.write_text(
-            json.dumps({"Name": "Sample", "Version": "1.2.3"}),
+            json.dumps({"Name": "Sample", "Version": "3.2.3"}),
             encoding="utf-8",
         )
         initialized = initialize_workflow(
@@ -2581,7 +2595,7 @@ class WorkflowTests(unittest.TestCase):
 
         def fail_after_consuming_initial_action(solution: Path, **_kwargs: str) -> dict:
             data = json.loads(data_path.read_text(encoding="utf-8"))
-            data["Version"] = "1.2.4"
+            data["Version"] = "3.2.4"
             data_path.write_text(json.dumps(data), encoding="utf-8")
             raise RuntimeError("synthetic first-build failure after version update")
 
@@ -2695,7 +2709,7 @@ class WorkflowTests(unittest.TestCase):
     def test_failed_new_release_consumption_retries_without_second_bump(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir()
-        data.write_text(json.dumps({"Name": "Sample", "Version": "1.2.3"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.3"}), encoding="utf-8")
         run_id = self._prepare_workflow_for_package("none")
         with using_run(self.solution, run_id), mock.patch.object(
             workflow_module,
@@ -2716,7 +2730,7 @@ class WorkflowTests(unittest.TestCase):
 
         def fail_after_consuming_release(solution: Path, **kwargs: str) -> dict:
             document = json.loads(data.read_text(encoding="utf-8"))
-            document["Version"] = "1.2.4"
+            document["Version"] = "3.2.4"
             data.write_text(json.dumps(document), encoding="utf-8")
             raise RuntimeError("synthetic failed release after version update")
 
@@ -2744,12 +2758,12 @@ class WorkflowTests(unittest.TestCase):
     def test_failed_packager_consuming_bump_allows_only_hash_matching_none_retry(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir()
-        data.write_text(json.dumps({"Name": "Sample", "Version": "1.2.3"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.3"}), encoding="utf-8")
         run_id = self._prepare_workflow_for_package("patch")
 
         def fail_after_bumping(solution: Path, **kwargs: str) -> dict:
             document = json.loads(data.read_text(encoding="utf-8"))
-            document["Version"] = "1.2.4"
+            document["Version"] = "3.2.4"
             data.write_text(json.dumps(document), encoding="utf-8")
             raise RuntimeError("synthetic package failure after version update")
 
@@ -2781,13 +2795,13 @@ class WorkflowTests(unittest.TestCase):
             initialize_workflow(
                 self.solution,
                 version_bump="patch",
-                target_version="3.1.2",
+                target_version="3.2.2",
                 workflow_profile="authoring",
             )
         initialized = initialize_workflow(
             self.solution,
             version_bump="none",
-            target_version="3.1.2",
+            target_version="3.2.2",
             workflow_profile="authoring",
             campaign_id="target-version-campaign",
         )
@@ -2798,12 +2812,12 @@ class WorkflowTests(unittest.TestCase):
         resumed = initialize_workflow(
             self.solution,
             version_bump="none",
-            target_version="3.1.2",
+            target_version="3.2.2",
             workflow_profile="authoring",
             campaign_id="target-version-campaign",
         )
         self.assertTrue(resumed["resumed"])
-        self.assertEqual("3.1.2", resumed["context"]["targetVersion"])
+        self.assertEqual("3.2.2", resumed["context"]["targetVersion"])
 
         with using_run(self.solution, run_id), mock.patch.object(
             workflow_module,
@@ -2813,40 +2827,40 @@ class WorkflowTests(unittest.TestCase):
             built = package_workflow_v3_1(
                 self.solution,
                 requested_version_bump="none",
-                requested_target_version="3.1.2",
+                requested_target_version="3.2.2",
             )
-            self.assertEqual("3.1.2", json.loads(data.read_text())["Version"])
-            self.assertEqual("3.1.2", built["version"])
-            self.assertEqual("3.1.2", workflow_status(self.solution)["packaging"]["lastConsumedAction"]["effectiveTargetVersion"])
+            self.assertEqual("3.2.2", json.loads(data.read_text())["Version"])
+            self.assertEqual("3.2.2", built["version"])
+            self.assertEqual("3.2.2", workflow_status(self.solution)["packaging"]["lastConsumedAction"]["effectiveTargetVersion"])
             package.assert_called_once()
-            self.assertEqual("3.1.2", package.call_args.kwargs["target_version"])
+            self.assertEqual("3.2.2", package.call_args.kwargs["target_version"])
 
             resumed = initialize_workflow(
                 self.solution,
                 version_bump="none",
-                target_version="3.1.2",
+                target_version="3.2.2",
                 workflow_profile="authoring",
                 campaign_id="target-version-campaign",
             )
-            self.assertEqual("3.1.2", resumed["context"]["targetVersion"])
+            self.assertEqual("3.2.2", resumed["context"]["targetVersion"])
             rebuilt = package_workflow_v3_1(
                 self.solution,
                 requested_version_bump="none",
             )
-            self.assertEqual("3.1.2", rebuilt["version"])
+            self.assertEqual("3.2.2", rebuilt["version"])
             self.assertIsNone(package.call_args.kwargs["target_version"])
-            self.assertEqual("3.1.2", json.loads(data.read_text())["Version"])
+            self.assertEqual("3.2.2", json.loads(data.read_text())["Version"])
             with self.assertRaisesRegex(ValueError, "version action was already consumed"):
                 package_workflow_v3_1(
                     self.solution,
                     requested_version_bump="none",
-                    requested_target_version="3.1.3",
+                    requested_target_version="3.2.3",
                 )
 
     def test_target_release_plan_binds_exact_version_and_current_inputs(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
         data.parent.mkdir()
-        data.write_text(json.dumps({"Name": "Sample", "Version": "3.1.0"}), encoding="utf-8")
+        data.write_text(json.dumps({"Name": "Sample", "Version": "3.2.0"}), encoding="utf-8")
         run_id = self._prepare_workflow_for_package("none")
         with using_run(self.solution, run_id), mock.patch.object(
             workflow_module,
@@ -2860,41 +2874,41 @@ class WorkflowTests(unittest.TestCase):
             original = changed_input.read_bytes()
             planned = plan_new_package_release(
                 self.solution,
-                target_version="3.1.2",
+                target_version="3.2.2",
                 expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
             )
-            self.assertEqual("3.1.2", planned["targetVersion"])
+            self.assertEqual("3.2.2", planned["targetVersion"])
             self.assertEqual("target-version", workflow_status(self.solution)["packaging"]["pendingReleaseAction"]["actionType"])
             with self.assertRaisesRegex(ValueError, "exactly one version bump or target version"):
                 plan_new_package_release(
                     self.solution,
                     version_bump="patch",
-                    target_version="3.1.3",
+                    target_version="3.2.3",
                     expected_package_input_sha256=planned["packageInputSha256"],
                 )
             with self.assertRaisesRegex(ValueError, "differs from the explicitly selected"):
                 package_workflow_v3_1(
                     self.solution,
                     requested_version_bump="none",
-                    requested_target_version="3.1.3",
+                    requested_target_version="3.2.3",
                 )
             changed_input.write_text("kind: CustomDetection\n# input changed\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "differs from the explicitly selected"):
                 package_workflow_v3_1(
                     self.solution,
                     requested_version_bump="none",
-                    requested_target_version="3.1.2",
+                    requested_target_version="3.2.2",
                 )
             changed_input.write_bytes(original)
             built = package_workflow_v3_1(
                 self.solution,
                 requested_version_bump="none",
-                requested_target_version="3.1.2",
+                requested_target_version="3.2.2",
             )
-            self.assertEqual("3.1.2", built["version"])
+            self.assertEqual("3.2.2", built["version"])
             state = workflow_status(self.solution)["packaging"]
             self.assertEqual("consumed", state["releaseActions"][-1]["status"])
-            self.assertEqual("3.1.2", state["releaseActions"][-1]["targetVersion"])
+            self.assertEqual("3.2.2", state["releaseActions"][-1]["targetVersion"])
 
     def test_target_version_remains_compatible_with_campaign_and_notes_refresh(self) -> None:
         data = self.solution / "Data" / "Solution_Sample.json"
@@ -2909,11 +2923,11 @@ class WorkflowTests(unittest.TestCase):
             + "| 3.1.0 | 01-09-2026 | Older release. |\n",
             encoding="utf-8",
         )
-        initialized, _ = self._prepare_offline_authoring_validation()
+        initialized, _ = self._prepare_offline_authoring_validation(version_bump=None)
         initialized = initialize_workflow(
             self.solution,
             version_bump="none",
-            target_version="3.1.2",
+            target_version="3.2.2",
             workflow_profile="authoring",
             campaign_id="test-campaign",
         )
@@ -2930,7 +2944,7 @@ class WorkflowTests(unittest.TestCase):
             )
             plan_new_package_release(
                 self.solution,
-                target_version="3.1.2",
+                target_version="3.2.2",
                 expected_package_input_sha256=package_input_identity(self.solution)["sha256"],
             )
             with mock.patch.object(
@@ -2941,9 +2955,9 @@ class WorkflowTests(unittest.TestCase):
                 first = package_workflow_v3_1(
                     self.solution,
                     requested_version_bump="none",
-                    requested_target_version="3.1.2",
+                    requested_target_version="3.2.2",
                 )
-            self.assertEqual("3.1.2", first["version"])
+            self.assertEqual("3.2.2", first["version"])
             base_hash = package_input_identity(self.solution)["sha256"]
             refresh = plan_release_notes_refresh(
                 self.solution,
@@ -2951,7 +2965,7 @@ class WorkflowTests(unittest.TestCase):
                 change_history="Approved target release notes.",
                 expected_package_input_sha256=base_hash,
             )
-            row = "| 3.1.2 | 12-10-2026 | Approved target release notes. |\n"
+            row = "| 3.2.2 | 12-10-2026 | Approved target release notes. |\n"
             notes.write_text(notes.read_text(encoding="utf-8").replace(
                 separator, separator + row, 1
             ), encoding="utf-8")
@@ -2969,7 +2983,7 @@ class WorkflowTests(unittest.TestCase):
                     requested_version_bump="none",
                 )
             self.assertEqual(first["version"], refreshed["version"])
-            self.assertEqual("3.1.2", json.loads(data.read_text())["Version"])
+            self.assertEqual("3.2.2", json.loads(data.read_text())["Version"])
             state = workflow_status(self.solution)["packaging"]
             self.assertEqual("consumed", state["releaseActions"][-1]["status"])
 
@@ -2980,7 +2994,7 @@ class WorkflowTests(unittest.TestCase):
         initialized = initialize_workflow(
             self.solution,
             version_bump="none",
-            target_version="3.1.2",
+            target_version="3.2.2",
             workflow_profile="authoring",
             campaign_id="target-version-retry-campaign",
         )
@@ -3004,12 +3018,12 @@ class WorkflowTests(unittest.TestCase):
                 package_workflow_v3_1(
                     self.solution,
                     requested_version_bump="none",
-                    requested_target_version="3.1.2",
+                    requested_target_version="3.2.2",
                 )
             consumed = workflow_status(self.solution)["packaging"]["lastConsumedAction"]
             self.assertTrue(consumed["bumpConsumed"])
             self.assertTrue(consumed["targetConsumed"])
-            self.assertEqual("3.1.2", consumed["effectiveTargetVersion"])
+            self.assertEqual("3.2.2", consumed["effectiveTargetVersion"])
             self.assertFalse(consumed["packageSucceeded"])
 
         with using_run(self.solution, run_id), mock.patch.object(
@@ -3018,10 +3032,10 @@ class WorkflowTests(unittest.TestCase):
             side_effect=self._mock_v3_1_package,
         ) as package:
             retry = package_workflow_v3_1(self.solution, requested_version_bump="none")
-            self.assertEqual("3.1.2", retry["version"])
+            self.assertEqual("3.2.2", retry["version"])
             package.assert_called_once()
             self.assertIsNone(package.call_args.kwargs["target_version"])
-            self.assertEqual("3.1.2", json.loads(data.read_text())["Version"])
+            self.assertEqual("3.2.2", json.loads(data.read_text())["Version"])
 
     def test_stale_package_artifact_blocks_next_workflow_stage(self) -> None:
         run_id = self._prepare_workflow_for_package("none")
@@ -3137,13 +3151,13 @@ class WorkflowTests(unittest.TestCase):
                 "package-v3-1",
                 "--solution", str(self.solution),
                 "--version-bump", "none",
-                "--target-version", "3.1.2",
+                "--target-version", "3.2.2",
             ])
         self.assertEqual(0, result)
         workflow_package.assert_called_once_with(
             str(self.solution),
             requested_version_bump="none",
-            requested_target_version="3.1.2",
+            requested_target_version="3.2.2",
             toolkit_root=None,
             legacy_baseline_evidence=None,
         )
@@ -3155,20 +3169,20 @@ class WorkflowTests(unittest.TestCase):
         with mock.patch.object(cli_module, "configure_logging"), mock.patch.object(
             cli_module,
             "plan_new_package_release",
-            return_value={"targetVersion": "3.1.2", "packageInputSha256": expected_hash},
+            return_value={"targetVersion": "3.2.2", "packageInputSha256": expected_hash},
         ) as release_plan:
             result = cli_module.main([
                 "workflow-plan-package-release",
                 "--solution", str(self.solution),
                 "--run-id", initialized["runId"],
-                "--target-version", "3.1.2",
+                "--target-version", "3.2.2",
                 "--expected-package-input-sha256", expected_hash,
             ])
         self.assertEqual(0, result)
         release_plan.assert_called_once_with(
             str(self.solution),
             version_bump=None,
-            target_version="3.1.2",
+            target_version="3.2.2",
             expected_package_input_sha256=expected_hash,
         )
 
@@ -3181,13 +3195,13 @@ class WorkflowTests(unittest.TestCase):
         with mock.patch.object(cli_module, "configure_logging"), mock.patch.object(
             cli_module,
             "plan_same_version_content_rebuild",
-            return_value={"version": "3.1.2", "packageInputSha256": expected_hash},
+            return_value={"version": "3.2.2", "packageInputSha256": expected_hash},
         ) as plan:
             result = cli_module.main([
                 "workflow-plan-same-version-content-rebuild",
                 "--solution", str(self.solution),
                 "--run-id", initialized["runId"],
-                "--target-version", "3.1.2",
+                "--target-version", "3.2.2",
                 "--expected-package-input-sha256", expected_hash,
                 "--changed-input", "XDR Detections\\Rule.yaml",
                 "--changed-input", "Data\\Solution_Sample.json",
@@ -3200,7 +3214,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(0, result)
         plan.assert_called_once_with(
             str(self.solution),
-            target_version="3.1.2",
+            target_version="3.2.2",
             changed_inputs=[
                 "XDR Detections\\Rule.yaml",
                 "Data\\Solution_Sample.json",
