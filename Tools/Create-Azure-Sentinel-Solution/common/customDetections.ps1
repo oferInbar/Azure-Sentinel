@@ -330,6 +330,9 @@ function New-CustomDetectionInstallDeployment {
         [string]$ExtensionVersion
     )
 
+    if ($null -eq $DetectionResource.properties.contentProvenance) {
+        throw 'Custom Detection installation requires resolved content provenance.'
+    }
     $deploymentDetection = Copy-CustomDetectionObject -InputObject $DetectionResource
     $deploymentDetection.properties.id = ConvertTo-CustomDetectionArmLiteral -Value ([string]$deploymentDetection.properties.id)
     foreach ($mappingGroup in $deploymentDetection.properties.detectionAction.alertTemplate.entityMappings.PSObject.Properties) {
@@ -423,12 +426,10 @@ function New-CustomDetectionRegistration {
         version              = $ContentVersion
     }
 
-    $requiredWorkloads = @($DetectionDocument.contentProvenance.conversion.requiredWorkloads)
-    if ($requiredWorkloads.Count -gt 0) {
-        $properties['dependency'] = [pscustomobject]@{
-            requiredWorkloads = $requiredWorkloads
-        }
-    }
+    $fullProvenance = Copy-CustomDetectionObject -InputObject $DetectionResource.properties.contentProvenance
+    $fullProvenance | Add-Member -NotePropertyName requiredWorkloads -NotePropertyValue @($DetectionDocument.contentProvenance.requiredWorkloads)
+    $fullProvenance | Add-Member -NotePropertyName requiredDataConnectors -NotePropertyValue @($DetectionDocument.contentProvenance.requiredDataConnectors)
+    $properties['contentProvenance'] = $fullProvenance
 
     return [pscustomobject]@{
         type       = 'Microsoft.OperationalInsights/workspaces/providers/contentTemplates'
@@ -608,9 +609,6 @@ function Add-XdrCustomDetectionsToSolution {
             throw "Expected exactly one AnalyticsRule content template for Custom Detection source id '$sourceId'; found $($matches.Count)."
         }
 
-        $deploymentName = Get-CustomDetectionDeploymentName -SolutionName $SolutionName -DetectionId $detectionId
-        $Template.resources += New-CustomDetectionInstallDeployment -DeploymentName $deploymentName -DetectionResource $detectionResource -ExtensionVersion $extensionVersion
-
         $contentVersion = [string]$detectionDocument.version
         if ($v31VersionPolicy) {
             Assert-V31ReleaseVersion -Version $contentVersion -ContentKind CustomDetection -ContentPath $configuredPath
@@ -622,6 +620,47 @@ function Add-XdrCustomDetectionsToSolution {
                 $contentVersion = $defaultContentVersion
             }
         }
+        $workloads = @('mde', 'mdo', 'mdi', 'mda', 'mdc', 'entraid', 'purview', 'appgovernance', 'sentinel', 'mtp')
+        foreach ($field in @('requiredWorkloads', 'requiredDataConnectors')) {
+            $fieldValue = $detectionDocument.contentProvenance.PSObject.Properties[$field]
+            if ($null -eq $fieldValue -or $fieldValue.Value -isnot [System.Array]) {
+                throw "Custom Detection '$detectionId' requires contentProvenance.$field as an array."
+            }
+            $identityField = if ($field -eq 'requiredWorkloads') { 'workload' } else { 'connectorId' }
+            foreach ($record in $fieldValue.Value) {
+                if ($null -eq $record -or $record.$identityField -isnot [string] -or
+                    [string]::IsNullOrWhiteSpace($record.$identityField) -or
+                    $record.dataTypes -isnot [System.Array]) {
+                    throw "Custom Detection '$detectionId' has malformed contentProvenance.$field."
+                }
+                if ($field -eq 'requiredWorkloads' -and $record.workload -cnotin $workloads) {
+                    throw "Custom Detection '$detectionId' has unknown workload '$($record.workload)'."
+                }
+                foreach ($dataType in $record.dataTypes) {
+                    if ($dataType -isnot [string] -or [string]::IsNullOrWhiteSpace($dataType)) {
+                        throw "Custom Detection '$detectionId' has invalid dependency dataTypes."
+                    }
+                }
+            }
+        }
+        if ($detectionDocument.contentProvenance.dependencyReviewRequired -eq $true) {
+            throw "Custom Detection '$detectionId' has unresolved dependency provenance."
+        }
+        $packageId = [string]$Template.variables.solutionId
+        $packageVersion = [string]$Template.variables._solutionVersion
+        if ([string]::IsNullOrWhiteSpace($packageId) -or $packageId.StartsWith('[') -or
+            [string]::IsNullOrWhiteSpace($packageVersion) -or $packageVersion.StartsWith('[') -or
+            [string]::IsNullOrWhiteSpace($contentVersion)) {
+            throw "Custom Detection '$detectionId' requires resolved package and content identity/version."
+        }
+        $detectionResource.properties | Add-Member -NotePropertyName contentProvenance -NotePropertyValue ([pscustomobject]@{
+            packageId = $packageId
+            packageVersion = $packageVersion
+            contentId = $detectionId
+            contentVersion = $contentVersion
+        }) -Force
+        $deploymentName = Get-CustomDetectionDeploymentName -SolutionName $SolutionName -DetectionId $detectionId
+        $Template.resources += New-CustomDetectionInstallDeployment -DeploymentName $deploymentName -DetectionResource $detectionResource -ExtensionVersion $extensionVersion
         $registration = New-CustomDetectionRegistration -DeploymentName $deploymentName -DetectionResource $detectionResource -DetectionDocument $detectionDocument -ContentVersion $contentVersion -ExtensionVersion $extensionVersion
         $Template.resources += $registration
         $dependencyCriteria += [pscustomobject]@{

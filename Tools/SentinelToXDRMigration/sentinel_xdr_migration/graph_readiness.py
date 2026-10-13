@@ -153,6 +153,7 @@ def project_graph_tactics(
 
 def graph_detection_payload_with_projection(
     document: dict[str, Any],
+    *, package_context: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build a disabled Graph payload and return explicit projection diagnostics."""
     prepared = deepcopy(document)
@@ -172,12 +173,18 @@ def graph_detection_payload_with_projection(
     result = deepcopy(properties)
     result["@odata.type"] = "#microsoft.graph.security.detectionRule"
     result["status"] = "disabled"
+    if package_context is not None:
+        from .dependencies import deployed_provenance
+
+        result["contentProvenance"] = deployed_provenance(prepared, package_context)
     return result, projection
 
 
-def graph_detection_payload(document: dict[str, Any]) -> dict[str, Any]:
+def graph_detection_payload(
+    document: dict[str, Any], *, package_context: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Compatibility wrapper returning only the projected Graph request body."""
-    payload, _ = graph_detection_payload_with_projection(document)
+    payload, _ = graph_detection_payload_with_projection(document, package_context=package_context)
     return payload
 
 

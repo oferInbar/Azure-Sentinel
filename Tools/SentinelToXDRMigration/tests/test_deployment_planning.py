@@ -73,6 +73,8 @@ class DeploymentPlanningTests(unittest.TestCase):
             "resourceType": "Microsoft.Security/detectionRules",
             "apiVersion": "2026-06-01-preview",
             "contentProvenance": {
+                "requiredWorkloads": [{"workload": "mde", "dataTypes": ["DeviceEvents"]}],
+                "requiredDataConnectors": [],
                 "source": {
                     "platform": "Microsoft Sentinel",
                     "kind": "AnalyticsRule",

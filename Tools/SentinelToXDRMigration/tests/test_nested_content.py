@@ -248,6 +248,13 @@ class NestedContentTests(unittest.TestCase):
 
     def test_mocked_deployment_covers_all_nested_ars_and_cds(self) -> None:
         convert_solution(self.solution)
+        (self.solution / "Data").mkdir(exist_ok=True)
+        (self.solution / "Data/Solution_Nested.json").write_text(json.dumps({
+            "Version": "3.1.0", "Metadata": "SolutionMetadata.json",
+        }))
+        (self.solution / "SolutionMetadata.json").write_text(json.dumps({
+            "publisherId": "testpublisher", "offerId": "nested",
+        }))
         with (
             mock.patch("sentinel_xdr_migration.analytic_deployment.require_locked_target", return_value={"workspaceResourceId": "test"}),
             mock.patch("sentinel_xdr_migration.analytic_deployment._arm_token", return_value="test"),
@@ -256,10 +263,17 @@ class NestedContentTests(unittest.TestCase):
             result = deploy_analytic_rules(self.solution)
         self.assertEqual(len(self.names), result["succeeded"])
         self.assertEqual(len(self.names), arm.call_count)
+        stored = {}
+
+        def graph_request(method, url, token, payload=None):
+            if method == "PATCH":
+                stored[url] = payload
+            return 200, {"status": "disabled", **stored.get(url, {})}
+
         with (
             mock.patch("sentinel_xdr_migration.deployment.require_locked_target", return_value={"tenantId": "test"}),
             mock.patch("sentinel_xdr_migration.deployment._deployment_token", return_value="test"),
-            mock.patch("sentinel_xdr_migration.deployment._graph_request", return_value=(200, {"status": "disabled"})),
+            mock.patch("sentinel_xdr_migration.deployment._graph_request", side_effect=graph_request),
         ):
             result = deploy_solution(self.solution)
         self.assertEqual(len(self.names), result["succeeded"])

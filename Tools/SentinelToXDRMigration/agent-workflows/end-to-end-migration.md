@@ -92,6 +92,34 @@ blocks dispatch. This route cannot satisfy Qualification's source/runtime,
 target, consent, dispatch, completeness, schema, packaging, deployment, or
 parity gates; source SDK validation remains Qualification-only.
 
+#### Dependency provenance validation
+
+Conversion is always offline. Each XDR YAML requires
+`contentProvenance.requiredWorkloads` and `requiredDataConnectors` record arrays.
+Structural validation checks the workload vocabulary and record shape;
+unresolved `dependencyReviewRequired` records block validation.
+The legacy `conversion.requiredWorkloads` labels are not deployment dependencies.
+
+The `sentinel-xdr-dependency-helper` skill may help users fill and review these
+records from a Log Analytics lab in either profile. This optional validation
+capability requires fresh explicit read-only approval for the exact original
+queries and selected tenant/subscription/workspace. It does not reinterpret
+Authoring Advanced Hunting consent, select Qualification, or broaden SDK,
+deployment, authentication, ingestion, or parity authorization.
+Prefer an advertised official Triage capability supporting input metadata;
+otherwise use the approved REST read route. Request
+`Prefer: include-dataSources=true`. The offline `dependency-plan` importer
+checks exact current query hashes and workspace binding before comparing YAML.
+Use API input metadata for 1-10 distinct tables, otherwise a recorded
+conservative scanner fallback after a successful query. Failures and partial
+results remain failures. Unknown tables/connectors require user input.
+
+Keep dependency arrays in authored provenance; do not add the deployment
+package/content identity quartet to YAML. V3.1 packaging and actual Graph
+deployment resolve that quartet from package metadata and canonical content
+identity/version. Only full Content Hub registration includes dependencies.
+Preserve disabled status, source content and classification.
+
 #### Optional resumable full-inventory authoring
 
 The CLI also provides a separate, explicit `--yolo` mode for durable local

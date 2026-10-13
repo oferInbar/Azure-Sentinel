@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import yaml
+from sentinel_xdr_migration.dependencies import dependency_identity
 
 from sentinel_xdr_migration.workflow import (
     complete_workflow_stage,
@@ -326,6 +327,8 @@ class WorkflowTests(unittest.TestCase):
                     "status": "passed",
                     "rowCount": 0,
                     "querySha256": query_hash,
+                    **({"dependencyProvenanceSha256": dependency_identity(target)}
+                       if provider == "triage-mcp" else {}),
                 }],
             }), encoding="utf-8")
 
