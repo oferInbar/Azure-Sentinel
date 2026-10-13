@@ -77,7 +77,7 @@ def create_arm_candidate(
     Qualification additionally requires its existing runtime/locked-target gate.
     References here bind their exact current bytes.
     """
-    from .packaging import package_input_identity, validate_v31_target_version
+    from .packaging import package_input_file_hashes, package_input_identity, validate_v31_target_version
 
     method = arm_validation_method(context)
     if context.get("workbookCapabilityVersion") != 1:
@@ -98,8 +98,25 @@ def create_arm_candidate(
         raise ValueError("candidate package attempt identity is missing")
     validate_v31_target_version(report.get("version"))
     inputs = package_input_identity(root)
-    if (report.get("packageInputs") or {}).get("after") != inputs:
+    recorded_inputs = (report.get("packageInputs") or {}).get("after")
+    if (
+        not isinstance(recorded_inputs, dict)
+        or type(recorded_inputs.get("fileCount")) is not int
+        or any(recorded_inputs.get(key) != value for key, value in inputs.items())
+    ):
         raise ValueError("candidate package inputs are stale")
+    current_files = package_input_file_hashes(root)
+    recorded_files = recorded_inputs.get("files")
+    manifest_sha256 = _canonical_sha256(
+        [{"path": path, "sha256": digest} for path, digest in current_files.items()]
+    )
+    if (
+        not isinstance(recorded_files, dict)
+        or recorded_files != current_files
+        or len(current_files) != inputs["fileCount"]
+        or manifest_sha256 != inputs["sha256"]
+    ):
+        raise ValueError("candidate package input file manifest is missing, incomplete or stale")
     required_gates = (*_GATES, "qualification") if context["workflowProfile"] == "qualification" else _GATES
     if set(prerequisite_evidence) != set(required_gates):
         raise ValueError("candidate requires fresh conversion, review, structure and package gate evidence")

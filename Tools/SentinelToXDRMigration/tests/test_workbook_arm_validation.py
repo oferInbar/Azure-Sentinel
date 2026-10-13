@@ -14,7 +14,7 @@ import pytest
 
 from sentinel_xdr_migration import workbook_validation as validation
 from sentinel_xdr_migration.arm_acceptance_support import _canonical_sha256
-from sentinel_xdr_migration.packaging import package_input_identity
+from sentinel_xdr_migration.packaging import package_input_file_hashes, package_input_identity
 
 ROOT = Path(__file__).resolve().parents[3]
 TARGET = {
@@ -77,7 +77,7 @@ def case():
     hashes = {name: hashlib.sha256((solution / path).read_bytes()).hexdigest() for name, path in paths.items()}
     identity = package_input_identity(solution)
     report = {"packager": "V3.1", "workflowRunId": CONTEXT["runId"], "packageAttemptId": "fixture-attempt", "version": "3.1.1",
-              "armValidationMethod": "lab-deployment", "packageInputs": {"after": identity},
+              "armValidationMethod": "lab-deployment", "packageInputs": {"after": {**identity, "files": package_input_file_hashes(solution)}},
               "packageArtifactHashes": hashes, "packageArtifactsSha256": _canonical_sha256(hashes), **paths}
     report_path = logs / "packaging.v3_1.json"
     report_path.write_text(json.dumps(report))
@@ -169,6 +169,42 @@ def test_candidate_is_not_accepted_and_binds_every_artifact(case):
     assert candidate["status"] == "candidate-generated"
     assert set(candidate["packageIdentity"]["packageArtifactHashes"]) == {"mainTemplate", "createUiDefinition", "testParameters", "zip"}
     assert validation.refresh_arm_candidate(CONTEXT, candidate) == candidate
+
+
+def test_production_input_manifest_is_verified_without_rejecting_additive_fields(case):
+    recorded = case["report"]["packageInputs"]["after"]
+    assert set(recorded) == {"sha256", "fileCount", "files"}
+    assert recorded["files"] == package_input_file_hashes(case["solution"])
+    case["report"]["packageInputs"]["after"]["captureStatus"] = "complete"
+    (case["solution"] / "Logs/packaging.v3_1.json").write_text(json.dumps(case["report"]))
+    candidate = validation.create_arm_candidate(
+        CONTEXT, solution=case["solution"], package_report="Logs/packaging.v3_1.json",
+        validation_receipt=case["receipt"], prerequisite_evidence=case["gates"],
+    )
+    assert candidate["packageIdentity"]["packageInputSha256"] == recorded["sha256"]
+
+
+@pytest.mark.parametrize("corruption", ["missing", "null", "list", "wrong-hash", "missing-file", "extra-file"])
+def test_production_input_manifest_must_be_exact_even_when_aggregate_is_current(case, corruption):
+    recorded = case["report"]["packageInputs"]["after"]
+    if corruption == "missing":
+        recorded.pop("files")
+    elif corruption == "null":
+        recorded["files"] = None
+    elif corruption == "list":
+        recorded["files"] = []
+    elif corruption == "wrong-hash":
+        recorded["files"]["input.json"] = "b" * 64
+    elif corruption == "missing-file":
+        recorded["files"].pop("input.json")
+    else:
+        recorded["files"]["unexpected.json"] = "c" * 64
+    (case["solution"] / "Logs/packaging.v3_1.json").write_text(json.dumps(case["report"]))
+    with pytest.raises(ValueError, match="input file manifest"):
+        validation.create_arm_candidate(
+            CONTEXT, solution=case["solution"], package_report="Logs/packaging.v3_1.json",
+            validation_receipt=case["receipt"], prerequisite_evidence=case["gates"],
+        )
 
 
 @pytest.mark.parametrize("item", ["input.json", "Package/mainTemplate.json", "Package/3.1.1.zip", "Logs/review.json", "Logs/packaging.v3_1.json"])
