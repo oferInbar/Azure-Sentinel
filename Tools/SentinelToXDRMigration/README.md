@@ -141,6 +141,22 @@ adaptations. Refreshing this slice is a deliberate maintainer change requiring
 reviewed import evidence and the differential workbook fixture tests, not an
 automatic runtime fetch.
 
+### Toolkit-owner managed update policy
+
+Toolkit-managed Defender Workbooks and XDR detections are updated by stable ID.
+Same-ID overwrites are expected, including in the approved lab; a different
+existing content hash or version is not an overwrite blocker. Managed workbooks
+are intended to be consumed read-only, with personalization in separate copies
+using different IDs. Toolkit updates must not overwrite those copies.
+
+This does not waive target/identity binding, effective-access checks, current
+candidate evidence, deployment consent, immediate write confirmation or exact
+post-write provenance/readback. Detections remain deployed disabled. It neither
+authorizes other resources/deletion nor relaxes local source-file safeguards.
+Read-only portal/provider enforcement remains something to verify, not a
+capability established by this policy. See the
+[canonical owner policy](agent-workflows/end-to-end-migration.md#toolkit-owner-policy-managed-same-id-updates).
+
 ### Versioned ARM route and workbook QA
 
 New CLI runs persist workbook capability 1 and default to lab ARM validation in

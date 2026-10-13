@@ -113,8 +113,14 @@ authored detection YAML or provenance. Installation and registration IDs and
 references must use the same normalized identity. Existing deployed identities
 are not migrated or deleted. An optional read-only identity review may help
 diagnose known legacy IDs or collisions, but it is not a mandatory
-pre-deployment existence check. Stop for manual reconciliation if an observed
-ID's ownership or content is uncertain; never overwrite unrelated content.
+pre-deployment existence check. Follow the canonical toolkit-owner managed
+update policy: approved same-ID workbook and XDR detection overwrites are normal,
+including in labs. Do not require a previous remote-content hash match or an
+extra overwrite decision solely because existing content/version differs.
+Stop for wrong or ambiguously mapped identities and out-of-scope resources,
+not for an intended managed same-ID update. Personalized workbook copies use
+separate IDs and are not selected for toolkit updates. Preserve deployment
+consent, disabled detection payloads and exact post-write acceptance checks.
 
 `Include XDR Content Registration` is deprecated: any supplied value warns and
 is ignored. V3.1 emits installation and registration together under

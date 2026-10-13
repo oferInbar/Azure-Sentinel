@@ -121,6 +121,33 @@ runtime prerequisites before candidate generation; workbook UI proof remains
 post-installation. A passed ARM candidate contract can supply workbook-only
 Deployment evidence; do not run a detection-only deployer or invent detections.
 
+### Toolkit-owner policy: managed same-ID updates
+
+Toolkit-managed Defender Workbooks and XDR Custom Detections use stable-ID
+upserts. Deploying approved content to the same ID intentionally replaces the
+existing managed content; this is expected update behavior, including in labs.
+Do not block an intended same-ID update merely because the remote content,
+version or hash differs from the candidate or a previous deployment.
+
+The intended workbook consumption model is read-only managed content.
+Personalization uses a separate copy with its own identity; toolkit updates
+must not discover or overwrite those copies. This policy defines the product
+contract, not proof that the preview provider or portal currently enforces
+read-only behavior.
+
+Preflight must bind the selected target and intended resource identities,
+verify effective access, and reject wrong returned IDs, ambiguous identity
+mappings or operations outside the approved scope. A managed same-ID update
+does not itself require an additional overwrite decision or previous-content
+hash match. It still requires current candidate/review evidence, applicable
+deployment consent and immediate write confirmation. Lab overwrite approval
+does not authorize production, other identities, activation, deletion or
+permission grants; XDR detections remain deployed disabled.
+
+Keep exact post-write provenance/readback and package acceptance checks.
+This managed cloud-update policy does not relax local source-file protection,
+edited generated-file overwrite safeguards, or the QA prohibition on Save/Edit.
+
 ### Workbook Qualification and browser QA
 
 `workbook-query-plan/review/execute` bind the exact reviewed fixture harness
