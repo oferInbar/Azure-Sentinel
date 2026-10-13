@@ -14,6 +14,11 @@
     "defaultValue": true,
     "description": "Deploy the Microsoft Sentinel workbook content and its Content Hub registration carried by this solution (ContentKind Workbook and WorkbookTemplate)."
   },
+  "DeployDefenderWorkbook": {
+    "kinds": ["DefenderWorkbook"],
+    "defaultValue": false,
+    "description": "Deploy Defender Workbooks and their Content Hub registrations independently of Microsoft Sentinel DeployWorkbook. Candidate provider contract requires approved lab installation, readback and update verification."
+  },
   "DeployDataConnector": {
     "kinds": ["DataConnector", "ResourceDataConnector", "ResourcesDataConnector", "DataType"],
     "defaultValue": true,

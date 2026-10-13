@@ -35,6 +35,8 @@ param (
     [string]$TargetVersion = $null,
     [Parameter(ParameterSetName = "Local")]
     [string]$ToolkitRootPath = $null,
+    [ValidateSet("arm-ttk", "lab-deployment")]
+    [string]$ArmValidationMethod = "arm-ttk",
     [Parameter(ParameterSetName = "Local")]
     [Parameter(ParameterSetName = "Pipeline")]
     [switch]$SkipAttributionLookup
@@ -64,6 +66,7 @@ if ($PSCmdlet.ParameterSetName -eq "Local") {
         -EntryPointName "V3.1" `
         -DefaultInputPath (Join-Path $PSScriptRoot "input") `
         -ToolkitRootPath $ToolkitRootPath `
+        -ArmValidationMethod $ArmValidationMethod `
         -IncludeXdrDetections $true `
         -EnforceV31Versions $true `
         -SkipAttributionLookup:$SkipAttributionLookup

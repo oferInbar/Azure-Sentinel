@@ -4,8 +4,21 @@ param(
     [ValidateSet("catalog", "local")]
     [string]$VersionMode = "catalog",
     [ValidateSet("patch", "minor", "major")]
-    [string]$VersionBump = "patch"
+    [string]$VersionBump = "patch",
+    [ValidateSet("arm-ttk", "lab-deployment")]
+    [string]$ArmValidationMethod = "arm-ttk"
 )
+
+if ($ArmValidationMethod -eq 'lab-deployment') {
+    & (Join-Path $PSScriptRoot '..\common\createSolutionLocal.ps1') `
+        -SolutionDataFolderPath $SolutionDataFolderPath `
+        -VersionMode $VersionMode `
+        -VersionBump $VersionBump `
+        -EntryPointName 'V3' `
+        -DefaultInputPath (Join-Path $PSScriptRoot 'input') `
+        -ArmValidationMethod $ArmValidationMethod
+    return
+}
 
 Write-Host '=======Starting Package Creation using V3 tool========='
 Write-Host "Version Mode: $VersionMode"
