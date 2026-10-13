@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Authored Defender XDR Workbook",
+  "description": "Complete Notebook with additive authoring identity and provenance. Not an installed deployment payload.",
+  "type": "object",
+  "required": ["version", "items", "xdrMetadata", "contentProvenance"],
+  "properties": {
+    "version": {"const": "Notebook/1.0"},
+    "items": {"type": "array", "items": {"type": "object"}},
+    "xdrMetadata": {
+      "type": "object",
+      "required": ["contentId", "instanceId", "version", "schemaVersion", "displayName"],
+      "properties": {
+        "contentId": {"$ref": "#/$defs/guid"},
+        "instanceId": {"$ref": "#/$defs/guid"},
+        "version": {"type": "string", "pattern": "^3\\.[1-9][0-9]*\\.(0|[1-9][0-9]*)$"},
+        "schemaVersion": {"const": "1.0.0"},
+        "displayName": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "contentProvenance": {
+      "type": "object",
+      "required": ["source", "conversion", "requiredWorkloads", "requiredDataConnectors", "dependencyReviewRequired"],
+      "properties": {
+        "source": {
+          "type": "object",
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": {"type": "string", "pattern": "^Workbooks/[^\\\\]+\\.[jJ][sS][oO][nN]$"},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "contentId": {"type": ["string", "null"]},
+            "originalMetadataVersion": {"type": ["string", "null"]}
+          }
+        },
+        "conversion": {
+          "type": "object",
+          "required": ["tool", "version", "reviewRequired", "queries"],
+          "properties": {
+            "tool": {"const": "sentinel-xdr-migration"},
+            "version": {"type": "string", "minLength": 1},
+            "reviewRequired": {"const": false},
+            "queries": {"type": "array", "items": {"$ref": "#/$defs/query"}}
+          }
+        },
+        "requiredWorkloads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["workload", "dataTypes"],
+            "properties": {
+              "workload": {"enum": ["mde", "mdo", "mdi", "mda", "mdc", "entraid", "purview", "appgovernance", "sentinel", "mtp"]},
+              "dataTypes": {"$ref": "#/$defs/dataTypes"}
+            }
+          }
+        },
+        "requiredDataConnectors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["connectorId", "dataTypes"],
+            "properties": {
+              "connectorId": {"type": "string", "minLength": 1},
+              "dataTypes": {"$ref": "#/$defs/dataTypes"}
+            }
+          }
+        },
+        "dependencyReviewRequired": {"const": false}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "guid": {"type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "dataTypes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "query": {
+      "type": "object",
+      "required": ["sourcePath", "outputPath", "sourceSha256", "targetSha256", "status"],
+      "properties": {
+        "sourcePath": {"type": "string", "pattern": "^/"},
+        "outputPath": {"type": ["string", "null"]},
+        "sourceSha256": {"$ref": "#/$defs/sha256"},
+        "targetSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "status": {"enum": ["converted", "removed-scope-helper"]}
+      },
+      "allOf": [{
+        "if": {"properties": {"status": {"const": "removed-scope-helper"}}},
+        "then": {"properties": {"outputPath": {"type": "null"}, "targetSha256": {"type": "null"}}},
+        "else": {"properties": {"outputPath": {"type": "string", "pattern": "^/"}, "targetSha256": {"$ref": "#/$defs/sha256"}}}
+      }]
+    }
+  }
+}
