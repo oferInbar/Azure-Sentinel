@@ -219,11 +219,24 @@ def bind_conversion(
                     or row.get("managedOutputSha256") != row.get("outputSha256")
                 ):
                     raise ValueError("workbook manifest per-query review evidence differs from the current authored bytes")
-    return {
+                if row["sourceRelativePath"] in state["workbooks"]["selection"]["included"]:
+                    from .workbook_functions import validate_functions
+                    validate_functions(root, provenance.get("requiredWorkspaceFunctions", []))
+    binding = {
         "workbookManifest": path.relative_to(root).as_posix(),
         "workbookManifestSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "workbookSelectionSha256": _digest(state["workbooks"]["selection"]),
     }
+    function_records = []
+    for row in results:
+        if row["sourceRelativePath"] in state["workbooks"]["selection"]["included"] and row.get("outputRelativePath"):
+            authored = json.loads(content_path(root, row["outputRelativePath"]).read_bytes())
+            records = authored.get("contentProvenance", {}).get("requiredWorkspaceFunctions", [])
+            if records:
+                function_records.append({"workbook": row["sourceRelativePath"], "functions": records})
+    if function_records:
+        binding["workbookFunctionDependenciesSha256"] = _digest(function_records)
+    return binding
 
 
 def validate_evidence(solution: str | Path, state: dict[str, Any]) -> dict[str, Any]:
@@ -285,16 +298,21 @@ def inspect_content(solution: str | Path) -> dict[str, Any]:
 
 def convert_content(solution: str | Path, *, overwrite: bool = False,
                     config_path: str | Path | None = None,
-                    rule_id: str | None = None) -> dict[str, Any]:
+                    rule_id: str | None = None,
+                    overwrite_workbooks: bool = False) -> dict[str, Any]:
     from .converter import convert_solution, load_config
     from .workbooks import convert_workbooks
 
     root = Path(solution).expanduser().resolve()
     state = current_state(root)
     if not state or not enabled(state):
+        if overwrite_workbooks:
+            raise ValueError("--overwrite-workbooks requires a workbook-capable frozen workflow run.")
         return convert_solution(root, overwrite=overwrite, config_path=config_path, rule_id=rule_id)
     verify_inventory(root, state)
     if rule_id:
+        if overwrite_workbooks:
+            raise ValueError("--overwrite-workbooks cannot be combined with rule-scoped conversion.")
         # Rule-scoped repairs must never rewrite workbook evidence or selection.
         return convert_solution(root, overwrite=overwrite, config_path=config_path, rule_id=rule_id)
     from .packaging import solution_data_version, validate_v31_effective_version, validate_v31_target_version
@@ -329,7 +347,8 @@ def convert_content(solution: str | Path, *, overwrite: bool = False,
             raise ValueError("workbook targetVersion conflicts with the selected solution release")
         config["targetVersion"] = selected_version
     workbook_result = convert_workbooks(root, config=config,
-                                       report_directory=report_directory(root), overwrite=overwrite)
+                                       report_directory=report_directory(root),
+                                       overwrite=overwrite or overwrite_workbooks)
     binding = bind_conversion(root, state)
     manifest = json.loads(Path(workbook_result["manifestPath"]).read_bytes())
     selected_sources = set(state["workbooks"]["selection"]["included"])

@@ -106,7 +106,7 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
     def write(self) -> None:
         self.target.write_text(json.dumps(self.notebook), encoding="utf-8")
 
-    def invoke(self, *, success: bool = True, package: bool = False) -> dict:
+    def invoke(self, *, success: bool = True, package: bool = False, unchanged: bool = False) -> dict:
         payload = self.root / "input.json"
         payload.write_text(json.dumps({
             "data": self.data, "template": self.template, "ui": self.ui,
@@ -135,7 +135,14 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
             f". {literal(COMMON)}; "
             f"$inputData=Get-Content -Raw -LiteralPath {literal(payload)} | ConvertFrom-Json; "
             "$template=$inputData.template; $ui=$inputData.ui; "
-            + emit +
+            "Register-SolutionResourceKind -Resources @($template.resources | Where-Object "
+            "{$_.type -eq 'Microsoft.OperationalInsights/workspaces/savedSearches'}) -Kind Parser; "
+            + (
+                "$before=$template | ConvertTo-Json -Depth 100 -Compress; try {" + emit +
+                "} catch {if (($template | ConvertTo-Json -Depth 100 -Compress) -cne $before) "
+                "{throw 'TEMPLATE_MUTATED_BEFORE_FAILURE'}; throw}; "
+                if unchanged else emit
+            ) +
             "Write-Output '__RESULT__'; "
             "[pscustomobject]@{count=$count;template=$template;ui=$ui} | ConvertTo-Json -Depth 100 -Compress"
         )
@@ -146,10 +153,450 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
         if not success:
             self.assertNotEqual(0, result.returncode, result.stdout)
             self.assertNotIn("__RESULT__", result.stdout)
+            self.assertNotIn("TEMPLATE_MUTATED_BEFORE_FAILURE", result.stderr)
             return {"error": result.stderr}
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("__RESULT__", result.stdout)
         return json.loads(result.stdout.split("__RESULT__", 1)[1].strip())
+
+    def add_function(
+        self, alias: str = "ReviewedParser", *, folder: str = "Parsers",
+        name: str = "[variables('parserObject1')._parserName1]",
+    ) -> dict:
+        path = self.solution / folder / f"{alias}.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"FunctionName: {alias}\nFunctionAlias: {alias}\n"
+            "FunctionParams:\n  - Name: limit\n    Type: int\n    Default: 1\n"
+            "FunctionQuery: |\n  DeviceEvents | take limit\n", encoding="utf-8",
+        )
+        record = {
+            "functionAlias": alias, "sourcePath": path.relative_to(self.solution).as_posix(),
+            "sourceSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        self.notebook["contentProvenance"].setdefault("requiredWorkspaceFunctions", []).append(record)
+        self.notebook["contentProvenance"]["conversion"]["queries"][0].setdefault(
+            "workspaceFunctions", [],
+        ).append(alias)
+        self.data.setdefault("Parsers", []).append(record["sourcePath"])
+        self.template["variables"]["parserObject1"] = {
+            "_parserName1": "[concat(parameters('workspace'),'/','different-arm-name')]",
+        }
+        resource = {
+            "type": "Microsoft.OperationalInsights/workspaces/savedSearches",
+            "name": name,
+            "properties": {
+                "functionAlias": alias, "query": "DeviceEvents | take limit\n",
+                "functionParameters": "limit:int=1", "eTag": "*",
+            },
+        }
+        self.template["resources"].append(resource)
+        self.write()
+        return resource
+
+    def test_required_parser_dependencies_use_emitted_names_and_preserve_provenance(self) -> None:
+        self.add_function()
+        self.add_function("SecondParser", folder="Workspace Functions", name="lab/arm-name-not-alias")
+        source = self.source.read_bytes()
+        authored = self.target.read_bytes()
+        result = self.invoke()
+        resources = result["template"]["resources"]
+        install = next(r for r in resources if r["type"] == "Microsoft.Resources/deployments")
+        self.assertEqual([
+            "[extensionResourceId(resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspace')), "
+            "'Microsoft.SecurityInsights/contentPackages', variables('_solutionId'))]",
+            "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', variables('parserObject1')._parserName1)]",
+            "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', 'lab/arm-name-not-alias')]",
+        ], install["dependsOn"])
+        registration = next(r for r in resources if r["type"].endswith("/contentTemplates"))
+        self.assertEqual(
+            self.notebook["contentProvenance"]["requiredWorkspaceFunctions"],
+            registration["properties"]["contentProvenance"]["requiredWorkspaceFunctions"],
+        )
+        installed = install["properties"]["template"]["resources"]["workbook"]["properties"]["content"]
+        self.assertEqual({"packageId", "packageVersion", "contentId", "contentVersion"}, set(installed["contentProvenance"]))
+        self.assertEqual(authored, self.target.read_bytes())
+        self.assertEqual(source, self.source.read_bytes())
+        self.assertNotIn("DeployParser", result["template"]["parameters"])
+        self.assertNotIn("DeployParser", result["ui"]["parameters"]["outputs"])
+        for resource in resources:
+            if resource["type"].endswith("/savedSearches"):
+                self.assertNotIn("condition", resource)
+                self.assertEqual("*", resource["properties"]["eTag"])
+
+    def test_function_dependency_ids_deduplicate_and_contract_references_work(self) -> None:
+        self.add_function()
+        self.add_function("SecondParser")
+        query = self.notebook["contentProvenance"]["conversion"]["queries"][0]
+        query["contract"] = {"workspaceFunctions": query.pop("workspaceFunctions")}
+        self.write()
+        result = self.invoke()
+        install = next(r for r in result["template"]["resources"] if r["type"] == "Microsoft.Resources/deployments")
+        self.assertEqual(2, len(install["dependsOn"]))
+
+    def test_full_package_requires_parsers_and_linked_registrations_but_not_unrelated_parsers(self) -> None:
+        self.add_function()
+        metadata = {
+            "type": "Microsoft.OperationalInsights/workspaces/providers/metadata",
+            "name": "lab/Microsoft.SecurityInsights/required-parser",
+            "properties": {
+                "kind": "Parser", "contentId": "[variables('parserObject1').parserContentId1]",
+            },
+        }
+        registration = {
+            "type": "Microsoft.OperationalInsights/workspaces/providers/contentTemplates",
+            "name": "lab/Microsoft.SecurityInsights/required-registration",
+            "properties": {
+                "contentKind": "Parser", "contentId": "[variables('parserObject1').parserContentId1]",
+            },
+        }
+        self.template["variables"]["parserObject1"]["parserContentId1"] = "ReviewedParser-Parser"
+        self.template["resources"] += [
+            metadata, registration, {
+                "type": "Microsoft.OperationalInsights/workspaces/savedSearches",
+                "name": "lab/unrelated",
+                "properties": {"functionAlias": "UnrelatedParser", "query": "DeviceEvents"},
+            },
+        ]
+        original = self.target.read_bytes()
+        self.invoke(package=True)
+        package = json.loads((self.solution / "Package/mainTemplate.json").read_text(encoding="utf-8-sig"))
+        self.assertIn("DeployParser", package["parameters"])
+        for resource in package["resources"][2:5]:
+            self.assertNotIn("condition", resource)
+        self.assertEqual("[parameters('DeployParser')]", package["resources"][5]["condition"])
+        installation = next(r for r in package["resources"] if r["type"] == "Microsoft.Resources/deployments")
+        self.assertIn(
+            "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', variables('parserObject1')._parserName1)]",
+            installation["dependsOn"],
+        )
+        self.assertEqual(original, self.target.read_bytes())
+        self.template["resources"][3]["condition"] = False
+        self.invoke(success=False, unchanged=True)
+
+    def test_invalid_parser_provenance_and_selections_fail_without_mutation(self) -> None:
+        self.add_function()
+        baseline = copy.deepcopy(self.notebook)
+        data = copy.deepcopy(self.data)
+        for mutation in (
+            "missing", "empty", "null", "extra", "duplicate", "bad-alias", "bad-path",
+            "uppercase-hash", "stale-hash", "not-selected", "duplicate-selection",
+            "missing-yaml", "wrong-yaml-alias", "conflicting-yaml-alias",
+        ):
+            with self.subTest(mutation=mutation):
+                self.notebook = copy.deepcopy(baseline)
+                self.data = copy.deepcopy(data)
+                provenance = self.notebook["contentProvenance"]
+                record = provenance["requiredWorkspaceFunctions"][0]
+                path = self.solution / record["sourcePath"]
+                original = path.read_bytes()
+                if mutation == "missing":
+                    provenance.pop("requiredWorkspaceFunctions")
+                elif mutation == "empty":
+                    provenance["requiredWorkspaceFunctions"] = []
+                elif mutation == "null":
+                    provenance["requiredWorkspaceFunctions"] = None
+                elif mutation == "extra":
+                    record["unreviewed"] = True
+                elif mutation == "duplicate":
+                    provenance["requiredWorkspaceFunctions"].append(copy.deepcopy(record))
+                elif mutation == "bad-alias":
+                    record["functionAlias"] = "bad-alias"
+                elif mutation == "bad-path":
+                    record["sourcePath"] = "Parsers/../Parsers/ReviewedParser.yaml"
+                elif mutation == "uppercase-hash":
+                    record["sourceSha256"] = record["sourceSha256"].upper()
+                elif mutation == "stale-hash":
+                    record["sourceSha256"] = "0" * 64
+                elif mutation == "not-selected":
+                    self.data["Parsers"] = []
+                elif mutation == "duplicate-selection":
+                    self.data["Parsers"] *= 2
+                elif mutation == "missing-yaml":
+                    path.unlink()
+                else:
+                    path.write_bytes(
+                        original.replace(b"ReviewedParser", b"OtherParser")
+                        if mutation == "wrong-yaml-alias"
+                        else original.replace(b"FunctionAlias: ReviewedParser", b"FunctionAlias: OtherParser")
+                    )
+                    record["sourceSha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                self.write()
+                self.invoke(success=False, unchanged=True)
+                path.write_bytes(original)
+
+    def test_effective_yaml_alias_and_all_selection_fields(self) -> None:
+        self.add_function()
+        record = self.notebook["contentProvenance"]["requiredWorkspaceFunctions"][0]
+        path = self.solution / record["sourcePath"]
+        original = path.read_bytes()
+        for field in ("Parsers", "Data Parsers", "Workspace Functions"):
+            with self.subTest(field=field):
+                for selection in ("Parsers", "Data Parsers", "Workspace Functions"):
+                    self.data.pop(selection, None)
+                self.data[field] = [record["sourcePath"]]
+                path.write_bytes(original.replace(b"FunctionName: ReviewedParser", b"FunctionName: InternalParserName"))
+                record["sourceSha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                self.write()
+                self.assertEqual(1, self.invoke()["count"])
+        path.write_bytes(original.replace(b"FunctionAlias: ReviewedParser\n", b""))
+        record["sourceSha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.write()
+        self.assertEqual(1, self.invoke()["count"])
+
+    def test_parser_resource_failures_are_atomic_across_workbooks(self) -> None:
+        self.add_function()
+        other = self.target.with_name("ordinary.json")
+        ordinary = copy.deepcopy(self.notebook)
+        ordinary["contentProvenance"].pop("requiredWorkspaceFunctions")
+        ordinary["contentProvenance"]["conversion"]["queries"][0].pop("workspaceFunctions")
+        for field in ("contentId", "instanceId"):
+            ordinary["xdrMetadata"][field] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ordinary/{field}"))
+        other.write_text(json.dumps(ordinary), encoding="utf-8")
+        self.data["XDR Workbooks"].insert(0, other.relative_to(self.solution).as_posix())
+        template = copy.deepcopy(self.template)
+        for mutation in (
+            "missing", "duplicate", "conditional", "conditional-true", "copy",
+            "wrong-alias", "wrong-query", "wrong-parameters", "stored-only", "nested-only",
+            "bad-name",
+        ):
+            with self.subTest(mutation=mutation):
+                self.template = copy.deepcopy(template)
+                resource = self.template["resources"][-1]
+                if mutation == "missing":
+                    self.template["resources"].pop()
+                elif mutation == "duplicate":
+                    self.template["resources"].append(copy.deepcopy(resource))
+                elif mutation in ("conditional", "conditional-true"):
+                    resource["condition"] = True if mutation.endswith("true") else "[parameters('DeployParser')]"
+                elif mutation == "copy":
+                    resource["copy"] = {"name": "parserLoop", "count": 1}
+                elif mutation == "wrong-alias":
+                    resource["properties"]["functionAlias"] = "reviewedparser"
+                elif mutation == "wrong-query":
+                    resource["properties"]["query"] = "DeviceEvents | take 2"
+                elif mutation == "wrong-parameters":
+                    resource["properties"]["functionParameters"] = ""
+                elif mutation == "bad-name":
+                    resource["name"] = "alias-only"
+                else:
+                    self.template["resources"].pop()
+                    self.template["resources"].append({
+                        "type": "Microsoft.OperationalInsights/workspaces/providers/contentTemplates"
+                        if mutation == "stored-only" else "Microsoft.Resources/deployments",
+                        "properties": {"mainTemplate" if mutation == "stored-only" else "template": {
+                            "resources": [resource],
+                        }},
+                    })
+                self.invoke(success=False, unchanged=True)
+
+    def test_implicit_function_calls_cannot_omit_reviewed_prerequisites(self) -> None:
+        source = self.source.read_bytes()
+        baseline = copy.deepcopy(self.notebook)
+        for query in (
+            "HiddenParser() | take 1",
+            "(HiddenParser()) | count",
+            "SourceTable | invoke HiddenParser()",
+            "DeviceEvents | join (HiddenParser()) on DeviceId",
+            "DeviceEvents | lookup kind=leftouter (HiddenParser()) on DeviceId",
+            "union DeviceEvents, (HiddenParser())",
+            "let Data = HiddenParser(); Data",
+            "let x = (HiddenParser()); x",
+            "print toscalar(HiddenParser() | summarize count())",
+            "print HiddenParser()",
+            "print tostring(HiddenParser())",
+            "DeviceEvents | extend x = HiddenParser()",
+            "DeviceEvents | where DeviceName == HiddenParser()",
+            "DeviceEvents | where DeviceName in (HiddenParser())",
+            "print (HiddenParser())",
+            "find in (HiddenParser()) where * has 'x'",
+            "search in (HiddenParser()) 'x'",
+            "find in (HiddenParser) where * has 'x'",
+            "search in (HiddenParser) 'x'",
+            "HiddenParser | count",
+            "(HiddenParser) | count",
+            "let x = HiddenParser; x",
+            "let x = (HiddenParser); x",
+            "let x = materialize(HiddenParser | take 1); x",
+            "let x = materialize(HiddenParser); x",
+            "DeviceEvents | where DeviceName in (HiddenParser | project DeviceName)",
+            "DeviceEvents | where DeviceName in ((HiddenParser) | project DeviceName)",
+            "DeviceEvents | where DeviceName in ( ( HiddenParser ) | project DeviceName)",
+            "['HiddenParser']() | take 1",
+            '["HiddenParser"]() | take 1',
+            "[\n'HiddenParser'\n]() | take 1",
+            "print ['HiddenParser']()",
+            "['HiddenParser'] | take 10",
+            "union ['HiddenParser']",
+            "union kind=outer ['HiddenParser']",
+            "union isfuzzy=true ['HiddenParser']",
+            "DeviceEvents | invoke ['HiddenParser']()",
+            "DeviceEvents | invoke ['HiddenParser']",
+            "table('HiddenParser') | take 10",
+            "table('HiddenParser', 'all') | take 10",
+            "table('HiddenParser', 'hotcache') | take 10",
+            "table('HiddenParser', 'default') | take 10",
+            "totable('HiddenParser') | take 10",
+            "totable('HiddenParser', 'all') | take 10",
+            "table(strcat('Hidden', 'Parser')) | take 10",
+            "totable(strcat('Hidden', 'Parser')) | take 10",
+            "let local=(){HiddenParser()}; local()",
+            "let local=(){HiddenParser}; local()",
+            "let local=view(){HiddenParser}; local()",
+            "view() { HiddenParser }",
+            "DeviceEvents | partition by DeviceId { HiddenParser }",
+            "DeviceEvents | fork (HiddenParser)",
+            "DeviceEvents | fork (['HiddenParser'])",
+            "DeviceEvents | where DeviceName has ['HiddenParser']()",
+            "DeviceEvents | where DeviceName !has ['HiddenParser']()",
+            "DeviceEvents | where DeviceName contains ['HiddenParser']()",
+            "DeviceEvents | where DeviceName !contains ['HiddenParser']()",
+            "DeviceEvents | where DeviceName startswith ['HiddenParser']()",
+            "DeviceEvents | where DeviceName endswith ['HiddenParser']()",
+            "DeviceEvents | where DeviceName has_cs ['HiddenParser']()",
+            "DeviceEvents | where DeviceName has['HiddenParser']()",
+            "DeviceEvents | where DeviceName !has['HiddenParser']()",
+            "DeviceEvents | where DeviceName has['HiddenParser'] ()",
+            "DeviceEvents | where DeviceName has['HiddenParser']\n()",
+            "DeviceEvents | where DeviceName contains['HiddenParser']()",
+            "DeviceEvents | where DeviceName !contains['HiddenParser']()",
+            "DeviceEvents | where DeviceName startswith['HiddenParser']()",
+            "DeviceEvents | where DeviceName endswith['HiddenParser']()",
+            "DeviceEvents | where DeviceName has_cs['HiddenParser']()",
+            "DeviceEvents | distinct ['HiddenParser']()",
+            "DeviceEvents | distinct['HiddenParser']()",
+            "DeviceEvents | mv-expand ['HiddenParser']()",
+            "DeviceEvents | mv-expand['HiddenParser']()",
+            "print['HiddenParser']()",
+            "union['HiddenParser']",
+            "union kind=outer['HiddenParser']",
+            "union isfuzzy=true['HiddenParser']",
+            "DeviceEvents | invoke['HiddenParser']()",
+            "DeviceEvents | invoke['HiddenParser']",
+            "print bag['HiddenParser']()",
+            "DeviceEvents | join hint.strategy=broadcast (HiddenParser) on DeviceId",
+            "DeviceEvents | join kind=inner hint.strategy=broadcast (HiddenParser) on DeviceId",
+            "DeviceEvents | join hint.strategy=shuffle (['HiddenParser']) on DeviceId",
+            "Evil_CL | take 1",
+            "union Evil_CL",
+            "table('Evil_CL') | take 1",
+            "/* HiddenParser() */ | take 1",
+            "{QueryParameter} | take 1",
+            "{QueryParameter}() | take 1",
+            "({QueryParameter} | project DeviceName)",
+            "DeviceEvents | where DeviceName in ({QueryParameter} | project DeviceName)",
+            "{Hidden Func}() | take 1",
+            "({Hidden Func} | project DeviceName)",
+            "table({QueryParameter}) | take 1",
+        ):
+            for side in ("source", "target"):
+                with self.subTest(query=query, side=side):
+                    self.notebook = copy.deepcopy(baseline)
+                    self.source.write_bytes(source)
+                    record = self.notebook["contentProvenance"]["conversion"]["queries"][0]
+                    if side == "source":
+                        document = json.loads(source)
+                        document["items"][0]["content"]["query"] = query
+                        self.source.write_text(json.dumps(document), encoding="utf-8")
+                        self.notebook["contentProvenance"]["source"]["sha256"] = hashlib.sha256(self.source.read_bytes()).hexdigest()
+                        record["sourceSha256"] = hashlib.sha256(query.encode()).hexdigest()
+                    else:
+                        self.notebook["items"][0]["content"]["query"] = query
+                        record["targetSha256"] = hashlib.sha256(query.encode()).hexdigest()
+                    self.write()
+                    self.invoke(success=False, unchanged=True)
+        self.notebook = copy.deepcopy(baseline)
+        self.source.write_bytes(source)
+        wrapped = json.dumps({"__advancedHuntingSettings": True, "query": "HiddenParser()", "selectedWorkspaceIds": []})
+        self.notebook["items"][0]["content"].update({"query": wrapped, "queryType": 18})
+        self.notebook["contentProvenance"]["conversion"]["queries"][0]["targetSha256"] = hashlib.sha256(wrapped.encode()).hexdigest()
+        self.write()
+        self.invoke(success=False, unchanged=True)
+        self.notebook = copy.deepcopy(baseline)
+        self.source.write_bytes(source)
+        self.add_function()
+        self.notebook["items"][0]["content"]["query"] = "ReviewedParser() | take 1"
+        self.notebook["contentProvenance"]["conversion"]["queries"][0]["targetSha256"] = hashlib.sha256(
+            b"ReviewedParser() | take 1",
+        ).hexdigest()
+        self.write()
+        self.assertEqual(1, self.invoke()["count"])
+
+    def test_ordinary_workbooks_allow_absent_or_empty_functions_and_ignore_literals(self) -> None:
+        for functions in (None, []):
+            with self.subTest(functions=functions):
+                if functions is not None:
+                    self.notebook["contentProvenance"]["requiredWorkspaceFunctions"] = functions
+                self.write()
+                result = self.invoke()
+                registration = result["template"]["resources"][-1]
+                self.assertEqual([], registration["properties"]["contentProvenance"]["requiredWorkspaceFunctions"])
+                self.assertEqual(1, len(result["template"]["resources"][-2]["dependsOn"]))
+        for query in (
+            "print text='HiddenParser()' // HiddenParser()\n",
+            "print text=@'HiddenParser()' // /* HiddenParser() */\n",
+            "let Local = () { DeviceEvents }; Local()",
+            "let LocalTable = DeviceEvents; LocalTable | count",
+            "DeviceEvents | where DeviceName in ({QueryParameter}) | take 1",
+            "let Watchlist = _GetWatchlist('sample'); Watchlist",
+            "_GetWatchlist('sample') | take 1",
+            "let Window = ago(1h); DeviceEvents | where Timestamp > Window",
+            "DeviceEvents | where (array_length(AdditionalFields) > 0)",
+            "DeviceEvents | extend ['Activity Count'] = 1 | project ['Activity Count'], [\"ResolutionTime\"] = 2 | order by ['Activity Count'] desc",
+            "DeviceEvents | extend v = todynamic(AdditionalFields)['nested'] | where isnotempty(['Activity Count'])",
+            "DeviceEvents | where tostring(AdditionalFields['Leak']) != '' and isnotempty(AdditionalFields['Leak']['nested'])",
+            "let LocalView = view() { DeviceEvents }; LocalView()",
+            "table('DeviceEvents') | take 1",
+            "table('DeviceEvents', 'all') | take 1",
+            "totable('DeviceEvents') | take 1",
+            "externaldata(Value:string)['https://example.invalid/reference.csv'] with (format='csv')",
+        ):
+            with self.subTest(query=query):
+                self.notebook["items"][0]["content"]["query"] = query
+                self.notebook["contentProvenance"]["conversion"]["queries"][0]["targetSha256"] = hashlib.sha256(query.encode()).hexdigest()
+                self.write()
+                self.assertEqual(1, self.invoke()["count"])
+
+    def test_decoy_functions_cannot_satisfy_hint_flags_or_unsupported_table_indirection(self) -> None:
+        source = self.source.read_bytes()
+        decoys = ("hint", "broadcast", "__unsupported_table_indirection__", "__unsupported_escaped_call_context__")
+        for idx, alias in enumerate(decoys, start=1):
+            self.add_function(alias=alias, name=f"synthetic-parser-{idx}")
+        baseline = copy.deepcopy(self.notebook)
+        for query in (
+            "DeviceEvents | join hint.strategy=broadcast (HiddenParser) on DeviceId",
+            "DeviceEvents | join kind=inner hint.strategy=broadcast (HiddenParser) on DeviceId",
+            "DeviceEvents | join hint.strategy=shuffle (['HiddenParser']) on DeviceId",
+            "table(strcat('Hidden', 'Parser')) | take 1",
+            "print bag['HiddenParser']()",
+            "DeviceEvents | where isnotempty(todynamic(AdditionalFields)['HiddenParser']())",
+        ):
+            with self.subTest(query=query):
+                self.notebook = copy.deepcopy(baseline)
+                self.source.write_bytes(source)
+                record = self.notebook["contentProvenance"]["conversion"]["queries"][0]
+                self.notebook["items"][0]["content"]["query"] = query
+                record["targetSha256"] = hashlib.sha256(query.encode()).hexdigest()
+                self.write()
+                self.invoke(success=False, unchanged=True)
+
+    def test_watchlist_reference_data_cannot_be_a_telemetry_dependency(self) -> None:
+        baseline = copy.deepcopy(self.notebook)
+        for field in ("requiredWorkloads", "requiredDataConnectors"):
+            for data_type in ("Watchlist", "watchlist"):
+                with self.subTest(field=field, data_type=data_type):
+                    self.notebook = copy.deepcopy(baseline)
+                    self.notebook["contentProvenance"][field][0]["dataTypes"].append(data_type)
+                    self.write()
+                    self.invoke(success=False, unchanged=True)
+        self.notebook = copy.deepcopy(baseline)
+        query = "let Reference = _GetWatchlist('sample'); DeviceEvents | take 1"
+        self.notebook["items"][0]["content"]["query"] = query
+        provenance = self.notebook["contentProvenance"]["conversion"]["queries"][0]
+        provenance["targetSha256"] = hashlib.sha256(query.encode()).hexdigest()
+        provenance["referenceInputs"] = ["Watchlist"]
+        self.write()
+        self.assertEqual(1, self.invoke()["count"])
 
     def test_three_records_identity_registration_projection_and_source_preservation(self) -> None:
         authored = {self.source: self.source.read_bytes(), self.target: self.target.read_bytes()}

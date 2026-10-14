@@ -5,6 +5,41 @@ description: Help authors review and fill XDR YAML workload and connector depend
 
 # Review detection dependency provenance
 
+For workbook gaps, use the same explicit accept/change/defer experience with
+individual query pointers and hashes. Workbook proposals/configuration are
+separate from the detection-only `dependency-plan` command. Static/manual review
+starts with `workbook-dependency-plan --solution "<path>" --run-id "<run-id>"`.
+Use `workbook-review` with `--plan`, `--decisions`, `--plan-sha256`, `--actor`,
+`--reference`, and a new run-local `--output-dir` to emit reviewed conversion
+configuration and a receipt. These commands do not edit source content or
+authenticate. A reviewed removal request is a pending parser-change action,
+not proof of an applied removal. `convert --overwrite-workbooks` can replace
+unchanged hash-bound managed workbook drafts without authorizing detection
+overwrites. Static/manual review
+and explicitly approved lab metadata discovery are available in either profile.
+Do not execute unresolved workbook parameters or reuse detection consent for
+workbook queries. Show underlying data types, workload mappings, connector
+alternatives, function prerequisites, and all remaining technical failures.
+Prefer modern connectors over deprecated alternatives only with reviewed
+recommendation/lifecycle evidence. Never require both by default.
+
+Reviewed Sentinel workspace functions can be preserved for workbooks and AH,
+not Custom Detections. Standard built-in ASIM parsers starting with `_` (such
+as `_ASim_*` and `_Im_*`) are accepted by Defender XDR Advanced Hunting and can
+be used in both Custom Detections and Defender Workbooks; do not reject them as
+unsupported workspace-saved functions. Keep exact packaged function-definition
+hashes in `contentProvenance.requiredWorkspaceFunctions`; function aliases are
+not tables.
+`_GetWatchlist` is a supported built-in in Sentinel/AH; do not surface it as a
+missing parser or add saved-search installation dependencies for it.
+`Watchlist` is platform reference data, not a connector-fed telemetry data type.
+Preserve raw lineage but exclude it from required workload/connector data types;
+do not ask the user to choose a connector for it.
+Required parsers must be installed before the workbook. Optional vendor branches
+can remain unavailable with explicit warnings and incomplete coverage. Offer
+keep/remove/defer; removal needs a scoped parser-change preview and approval,
+not deletion of shared functions or automatic clearance of technical blockers.
+
 Use this skill when YAML prerequisites are missing or uncertain, or when a user
 requests lab-assisted dependency validation. This is a validation helper, not
 deployment, ingestion, qualification, or permission to change toolkit code.

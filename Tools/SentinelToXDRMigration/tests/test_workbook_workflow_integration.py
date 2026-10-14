@@ -295,6 +295,81 @@ def test_combined_solution_keeps_detection_gates_and_inventory_separate(solution
         workflow._validate_offline_authoring_gates(solution, Path(current["statePath"]), workflow._load(solution)[1])
 
 
+def test_family_overwrite_replaces_managed_workbook_not_detection_conflicts(solution):
+    rules = solution / "Analytic Rules"
+    rules.mkdir()
+    (rules / "rule.yaml").write_text(RULE)
+    initialize(solution)
+    config(solution)
+    first = integration.convert_content(solution)
+    assert first["workbooks"]["converted"] == 1
+    detection = next((solution / "XDR Detections").glob("*.yaml"))
+    detection.write_text(detection.read_text() + "\n# Independent authored change\n")
+    before = detection.read_bytes()
+    settings_path = artifact_path(solution, "migration-config.yaml")
+    settings = yaml.safe_load(settings_path.read_bytes())
+    settings["workbookResolutions"]["Workbooks/nested/source.json"]["/items/0/content/query"]["evidence"] += " updated"
+    settings_path.write_text(yaml.safe_dump(settings))
+    code, result, error = cli_run(["convert", "--solution", str(solution),
+                                  "--config", str(settings_path), "--overwrite-workbooks"])
+    assert code == 1, error  # Detection conflict is still a real gate.
+    assert result["conflicts"] == 1
+    assert result["workbooks"]["converted"] == 1
+    assert detection.read_bytes() == before
+    output = solution / "XDR Workbooks/nested/source.json"
+    output.write_text(output.read_text() + "\n")
+    workbook_before = output.read_bytes()
+    settings["workbookResolutions"]["Workbooks/nested/source.json"]["/items/0/content/query"]["evidence"] += " again"
+    settings_path.write_text(yaml.safe_dump(settings))
+    result = integration.convert_content(solution, config_path=settings_path, overwrite_workbooks=True)
+    assert result["workbooks"]["results"][0]["status"] == "conflict"
+    assert output.read_bytes() == workbook_before
+    assert detection.read_bytes() == before
+
+
+def test_family_overwrite_rejects_unfrozen_legacy_run(solution):
+    workflow.initialize_workflow(solution, workflow_profile="authoring")
+    with pytest.raises(ValueError, match="workbook-capable"):
+        integration.convert_content(solution, overwrite_workbooks=True)
+
+
+def test_workspace_function_fingerprint_and_stale_parser_block_workflow(solution):
+    from sentinel_xdr_migration.workbook_functions import candidates
+    parser = solution / "Parsers/source.yaml"
+    parser.parent.mkdir()
+    parser.write_text("FunctionName: ReviewedSource\nFunctionQuery: DeviceEvents | count\n")
+    data_path = solution / "Data/Solution_Fixture.json"
+    data = json.loads(data_path.read_bytes())
+    data["Parsers"] = ["Parsers/source.yaml"]
+    data_path.write_text(json.dumps(data))
+    source = solution / "Workbooks/nested/source.json"
+    document = json.loads(source.read_bytes())
+    document["items"][0]["content"]["query"] = "ReviewedSource() | count"
+    source.write_text(json.dumps(document))
+    state = initialize(solution)
+    record = {key: candidates(solution)[0][key] for key in ("functionAlias", "sourcePath", "sourceSha256")}
+    settings = {"workbookResolutions": {"Workbooks/nested/source.json": {
+        "/items/0/content/query": {"querySha256": workbook.query_hash("ReviewedSource() | count"),
+                                  "tables": ["DeviceEvents"], "workspaceFunctions": ["ReviewedSource"],
+                                  "evidence": "Reviewed exact fixture"}}},
+        "workbookDependencies": {"Workbooks/nested/source.json": {"requiredWorkspaceFunctions": [record]}}}
+    settings_path = artifact_path(solution, "migration-config.yaml", create_parent=True)
+    settings_path.write_text(yaml.safe_dump(settings))
+    workflow.start_workflow_stage(solution, "discovery")
+    integration.inspect_content(solution)
+    workflow.complete_workflow_stage(solution, "discovery", status="passed")
+    workflow.start_workflow_stage(solution, "conversion")
+    result = integration.convert_content(solution, config_path=settings_path)
+    assert result["workbooks"]["converted"] == 1
+    assert len(result["workbookArtifacts"]["workbookFunctionDependenciesSha256"]) == 64
+    workflow.complete_workflow_stage(solution, "conversion", status="passed")
+    state = workflow._load(solution)[1]
+    assert integration.validate_evidence(solution, state)["valid"] == 1
+    parser.write_text(parser.read_text() + "# changed\n")
+    with pytest.raises(ValueError, match="stale"):
+        integration.bind_conversion(solution, state)
+
+
 def test_workbook_only_yolo_uses_budget_without_invented_rule_guids(solution):
     state = initialize(solution, yolo=True, campaign_id="workbook-fixture")
     with using_run(solution, state["runId"]):
@@ -349,6 +424,39 @@ def test_python_verifies_full_install_registration_stored_template_and_zip(emitt
     assert receipt["contractSupport"] == "unverified"
     assert template["parameters"]["DeployWorkbook"]["defaultValue"] is True
     assert template["parameters"]["DeployDefenderWorkbook"]["defaultValue"] is False
+
+
+@pytest.mark.parametrize("change", [None, "clip-newline-eof", "missing-dependency", "conditional-parser", "parameter-drift", "stale-source"])
+def test_python_rechecks_required_workspace_function_package_contract(emitted, change):
+    harness, _ = emitted
+    harness.add_function()
+    if change == "clip-newline-eof":
+        path = harness.solution / "Parsers/ReviewedParser.yaml"
+        path.write_text(path.read_text().rstrip("\n"))
+        record = harness.notebook["contentProvenance"]["requiredWorkspaceFunctions"][0]
+        record["sourceSha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        harness.write()
+    (harness.solution / "Data/Solution_Sample.json").write_text(json.dumps({"Name": "Sample", **harness.data}))
+    harness.invoke(package=True)
+    package = harness.solution / "Package"
+    template = json.loads((package / "mainTemplate.json").read_bytes())
+    installation = next(row for row in template["resources"] if row["type"] == "Microsoft.Resources/deployments")
+    parser = next(row for row in template["resources"] if row["type"].endswith("/savedSearches"))
+    if change == "missing-dependency":
+        installation["dependsOn"] = installation["dependsOn"][:1]
+    elif change == "conditional-parser":
+        parser["condition"] = True
+    elif change == "parameter-drift":
+        parser["properties"]["functionParameters"] = "limit:int=2"
+    elif change == "stale-source":
+        path = harness.solution / "Parsers/ReviewedParser.yaml"
+        path.write_text(path.read_text() + "# changed\n")
+    if change not in (None, "clip-newline-eof"):
+        with pytest.raises((ValueError, RuntimeError)):
+            packaging._verify_workbook_package(harness.solution, [harness.target], template, package / "3.2.7.zip")
+    else:
+        assert packaging._verify_workbook_package(
+            harness.solution, [harness.target], template, package / "3.2.7.zip")["count"] == 1
 
 
 @pytest.mark.parametrize("change", ["provenance", "registration", "storedTemplate", "install", "dependency", "zip"])

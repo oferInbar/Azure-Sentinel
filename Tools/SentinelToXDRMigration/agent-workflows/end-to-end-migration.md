@@ -254,6 +254,47 @@ deployment resolve that quartet from package metadata and canonical content
 identity/version. Only full Content Hub registration includes dependencies.
 Preserve disabled status, source content and classification.
 
+#### Workbook dependency review
+
+For a workbook gap, show each query/picker pointer and exact hash, source evidence,
+proposed data types, workload/connector mappings, and unresolved technical issues.
+Offer static/manual review or separately approved bounded lab metadata discovery
+in either profile. Acceptance, changes, and deferrals are explicit and hash-bound;
+batch acceptance must retain individual query records. Static suggestions are not
+automatically reviewed facts. Query errors, partial failures, stale evidence,
+unknown functions, and unsupported providers remain blockers after acceptance.
+Parameterized lab queries need approved concrete bindings, not unresolved workbook
+tokens or an invented time range. Source metadata is not output-schema lineage or
+proof that a connector is installed.
+
+When reviewed connector alternatives are equivalent for the declared requirement,
+recommend the modern connector over a deprecated route, citing recommendation or
+lifecycle evidence. Do not require both merely because both appear in the solution.
+
+Preserve explicitly reviewed Sentinel workspace function invocations for workbooks
+and AH queries; this support does not apply to Custom Detections. Standard
+built-in ASIM parsers starting with `_` (such as `_ASim_*` and `_Im_*`) are
+accepted by Defender XDR Advanced Hunting and can be used in both Custom
+Detections and Defender Workbooks; do not reject them as unsupported
+workspace-saved functions. Bind required
+functions to packaged definition paths, aliases, and current file hashes in
+`contentProvenance.requiredWorkspaceFunctions`. Resolve underlying tables separately.
+Treat `_GetWatchlist` as a supported built-in, not a missing workspace parser,
+an installation prerequisite, or an AH function-support blocker.
+Keep `Watchlist` platform-reference inputs in raw lineage, but omit them from
+telemetry data types in required workload/connector records. They are not fed
+by a data connector and must not cause connector-discovery prompts.
+During V3.1 packaging, required parser installation is unconditional and the outer
+workbook installer depends on the actual saved-search resources in the enclosing
+template. Content registration is not installation; deployment order is not AH
+visibility or runtime acceptance evidence.
+
+Reviewed optional vendor branches may be absent with visible warnings and incomplete
+coverage. Offer keep/remove/defer; removal requires a scoped parser-change preview,
+explicit approval, current definition evidence and fresh validation. Never silently
+remove shared parser resources or treat missing branches as confirmed no telemetry.
+Accepting a removal request does not itself establish that the function was edited.
+
 #### Optional resumable full-inventory authoring
 
 The CLI also provides a separate, explicit `--yolo` mode for durable local

@@ -160,6 +160,15 @@ def main(argv: list[str] | None = None) -> int:
     dependency_parser.add_argument("--solution", required=True)
     dependency_parser.add_argument("--results", help="Exact-query-bound successful LA metadata results.")
     dependency_parser.add_argument("--workspace-id", help="Explicitly approved lab workspace customer ID.")
+    workbook_dependencies = subparsers.add_parser(
+        "workbook-dependency-plan", help="Propose offline workbook gaps; import separately approved exact-query lab metadata.")
+    workbook_dependencies.add_argument("--solution", required=True)
+    workbook_dependencies.add_argument("--results")
+    workbook_dependencies.add_argument("--workspace-id")
+    workbook_review = subparsers.add_parser(
+        "workbook-review", help="Apply complete hash-bound accept/change/defer decisions to run-local config and receipt.")
+    for option in ("solution", "plan", "decisions", "plan-sha256", "actor", "reference", "output-dir"):
+        workbook_review.add_argument("--" + option, required=True)
     migration = subparsers.add_parser("migrate-reports", help="Plan a non-destructive copy of legacy reports into solution Logs.")
     migration.add_argument("--solution", required=True)
     migration.add_argument("--apply", action="store_true", help="Copy after reviewing the dry-run; originals are preserved.")
@@ -182,6 +191,8 @@ def main(argv: list[str] | None = None) -> int:
         subparser.add_argument("--solution", required=True)
         if command == "convert":
             subparser.add_argument("--overwrite", action="store_true")
+            subparser.add_argument("--overwrite-workbooks", action="store_true",
+                                   help="Replace only unchanged hash-bound managed workbook drafts; never overwrite detections.")
             subparser.add_argument("--config")
             subparser.add_argument(
                 "--rule-id", action="append",
@@ -1041,6 +1052,8 @@ def main(argv: list[str] | None = None) -> int:
         isolated_permission_commands = {
             "plan-delegated-app-permission-update",
             "verify-delegated-app-permission-update",
+            "workbook-dependency-plan",
+            "workbook-review",
         }
         if getattr(args, "solution", None) and args.command not in isolated_permission_commands:
             selection = select_run(args.solution, args.run_id)
@@ -1406,6 +1419,16 @@ def main(argv: list[str] | None = None) -> int:
             result = plan_solution_dependencies(
                 args.solution, results_path=args.results, workspace_id=args.workspace_id,
             )
+        elif args.command == "workbook-dependency-plan":
+            from .workbook_dependencies import plan_workbook_dependencies
+            result = plan_workbook_dependencies(
+                args.solution, results_path=args.results, workspace_id=args.workspace_id)
+        elif args.command == "workbook-review":
+            from .workbook_dependencies import review_workbook_dependencies
+            result = review_workbook_dependencies(
+                args.solution, plan_path=args.plan, decisions_path=args.decisions,
+                expected_plan_sha256=args.plan_sha256, actor=args.actor, reference=args.reference,
+                output_directory=args.output_dir)
         elif args.command == "inspect":
             from .workbook_workflow import inspect_content
             result = inspect_content(args.solution)
@@ -1413,6 +1436,7 @@ def main(argv: list[str] | None = None) -> int:
             from .workbook_workflow import convert_content
             result = convert_content(
                 args.solution, overwrite=args.overwrite, config_path=args.config,
+                overwrite_workbooks=args.overwrite_workbooks,
                 rule_id=args.rule_id[0] if args.rule_id else None,
             )
             if args.rule_id:

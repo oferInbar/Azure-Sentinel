@@ -155,6 +155,9 @@ function Assert-DefenderWorkbookDocument {
                     -not $types.Add($dataType)) {
                     throw "Defender Workbook '$ContentPath' has malformed or duplicate dependency dataTypes."
                 }
+                if ($dataType -ieq 'Watchlist') {
+                    throw "Defender Workbook '$ContentPath' Watchlist is platform reference data, not a telemetry dependency."
+                }
             }
         }
     }
@@ -202,6 +205,535 @@ function Get-DefenderWorkbookDeploymentName {
     return 'DefenderWorkbook-' + $hash.Substring(0, 32)
 }
 
+function Get-DefenderWorkbookKnownCatalogTables {
+    if ($null -eq $script:DefenderWorkbookKnownCatalogTables) {
+        $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        $catalogDir = Join-Path $PSScriptRoot '../../SentinelToXDRMigration/sentinel_xdr_migration/catalog'
+        foreach ($file in @('xdr_only_tables.json', 'table_mappings.json')) {
+            $full = Join-Path $catalogDir $file
+            if (Test-Path -LiteralPath $full -PathType Leaf) {
+                $json = Get-Content -LiteralPath $full -Raw | ConvertFrom-Json
+                if ($null -ne $json.tables) {
+                    foreach ($prop in $json.tables.PSObject.Properties) {
+                        [void]$set.Add($prop.Name)
+                    }
+                }
+            }
+        }
+        $script:DefenderWorkbookKnownCatalogTables = $set
+    }
+    return ,$script:DefenderWorkbookKnownCatalogTables
+}
+
+function Get-DefenderWorkbookImplicitFunctions {
+    param(
+        [AllowNull()][object]$Value,
+        [AllowNull()][System.Collections.Generic.HashSet[string]]$AllowedBareTables = $null,
+        [AllowNull()][System.Collections.Generic.HashSet[string]]$KnownFunctionAliases = $null
+    )
+    if ($Value -is [pscustomobject]) {
+        foreach ($property in $Value.PSObject.Properties) {
+            if ($property.Name -ceq 'query' -and $property.Value -is [string]) {
+                $queryText = $property.Value
+                if ($Value.queryType -eq 18 -and $queryText.TrimStart().StartsWith('{')) {
+                    try { $settings = $queryText | ConvertFrom-Json -ErrorAction Stop }
+                    catch { throw 'Malformed Defender Workbook query wrapper.' }
+                    if ($settings -isnot [pscustomobject] -or
+                        $settings.__advancedHuntingSettings -isnot [bool] -or
+                        -not $settings.__advancedHuntingSettings -or $settings.query -isnot [string] -or
+                        @($settings.PSObject.Properties.Name | Where-Object {
+                            $_ -cnotin @('__advancedHuntingSettings', 'query', 'selectedWorkspaceIds')
+                        }).Count -gt 0) {
+                        throw 'Unrecognized Defender Workbook query wrapper.'
+                    }
+                    $queryText = $settings.query
+                }
+                # Ignore single-line // comments first (/* */ is NOT a KQL comment).
+                $noComments = [regex]::Replace($queryText, '//[^\r\n]*', ' ')
+                $strPat = '@"(?:""|[^"])*"|@''(?:''''|[^''])*''|"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*'''
+                $bracketPat = "(?s)\[\s*($strPat)\s*\]"
+                $tableCallPat = "(?i)(?<![.\w])(?:table|totable)\s*\(\s*($strPat)\s*(?:,[^;\r\n)]*)?\)"
+                $tableAnyCallPat = "(?i)(?<![.\w])(?:table|totable)\s*\("
+                function ConvertFrom-KqlQuotedString([string]$lit) {
+                    if ($lit.StartsWith('@"') -and $lit.EndsWith('"')) { return $lit.Substring(2, $lit.Length - 3).Replace('""', '"') }
+                    if ($lit.StartsWith("@'") -and $lit.EndsWith("'")) { return $lit.Substring(2, $lit.Length - 3).Replace("''", "'") }
+                    if ($lit.Length -ge 2 -and $lit[0] -eq $lit[$lit.Length - 1]) {
+                        return [regex]::Replace($lit.Substring(1, $lit.Length - 2), '\\(.)', '$1')
+                    }
+                    return $lit
+                }
+                $protectedSpans = [System.Collections.Generic.List[pscustomobject]]::new()
+                foreach ($m in [regex]::Matches($noComments, $bracketPat)) {
+                    $protectedSpans.Add([pscustomobject]@{Start=$m.Index; End=($m.Index + $m.Length)})
+                }
+                foreach ($m in [regex]::Matches($noComments, $tableCallPat)) {
+                    $protectedSpans.Add([pscustomobject]@{Start=$m.Index; End=($m.Index + $m.Length)})
+                }
+                $validSpans = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+                $validSpanStarts = [System.Collections.Generic.HashSet[int]]::new()
+                $strMatches = [regex]::Matches($noComments, $strPat)
+                foreach ($sp in $protectedSpans) {
+                    $insideOuterString = $false
+                    foreach ($sm in $strMatches) {
+                        if ($sm.Index -lt $sp.Start -and ($sm.Index + $sm.Length) -gt $sp.Start) {
+                            $insideOuterString = $true
+                            break
+                        }
+                    }
+                    if (-not $insideOuterString) {
+                        [void]$validSpans.Add("$($sp.Start):$($sp.End)")
+                        [void]$validSpanStarts.Add($sp.Start)
+                    }
+                }
+                $tokPat = '\{[A-Za-z0-9_.:$ -]+\}'
+                $braceBodyPrefixPat = '(?i)(?:\)|(?<![.\w])\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*)\s*\z'
+                $codeWithTokens = [regex]::Replace($noComments, "(?s)$strPat", ' ')
+                $code = [regex]::Replace($codeWithTokens, $tokPat, {
+                    param($m)
+                    $before = $codeWithTokens.Substring(0, $m.Index)
+                    if ([regex]::IsMatch($before, $braceBodyPrefixPat)) { $m.Value }
+                    elseif ($m.Value -match '[A-Za-z0-9_]') { ' ' * $m.Length }
+                    else { $m.Value }
+                })
+                $codeWithTokens = [regex]::Replace($codeWithTokens, $tokPat, {
+                    param($m)
+                    $before = $codeWithTokens.Substring(0, $m.Index)
+                    if ([regex]::IsMatch($before, $braceBodyPrefixPat)) { '{()' + $m.Value.Substring(1, $m.Value.Length - 2) + '}' }
+                    else { $m.Value }
+                })
+                $locals = @([regex]::Matches($code, '\blet\s+([A-Za-z_]\w*)\s*=') |
+                    ForEach-Object { $_.Groups[1].Value })
+                $builtins = @(
+                    'datatable', 'externaldata', 'external_data', 'range', 'print', 'dynamic', 'datetime', 'timespan',
+                    'toscalar', 'tostring', 'toint', 'tolong', 'todouble', 'todatetime', 'todecimal', 'todynamic', 'toreal', 'totable',
+                    'totimespan', 'tobool', 'now', 'ago', 'startofday', 'endofday', 'startofweek', 'endofweek',
+                    'startofmonth', 'endofmonth', 'startofyear', 'endofyear', 'tolower', 'toupper', 'coalesce', 'iff', 'iif', 'case',
+                    '_GetWatchlist', 'workspace', 'app', 'resource', 'cluster', 'database', 'table', 'view', 'materialize',
+                    'abs', 'acos', 'asin', 'atan', 'atan2', 'beta_cdf', 'beta_inv', 'beta_pdf', 'bin', 'bin_at', 'ceiling',
+                    'cos', 'cot', 'count', 'count_distinct', 'count_distinctif', 'countif', 'countof',
+                    'dcount', 'dcount_hll', 'dcountif', 'degrees', 'exp', 'exp10', 'exp2', 'floor', 'gamma',
+                    'hash', 'hash_combine', 'hash_many', 'hash_md5', 'hash_sha1', 'hash_sha256', 'hash_xxhash64',
+                    'isnan', 'isfinite', 'isinf', 'isascii', 'isempty', 'isnotempty', 'isnull', 'isnotnull', 'isutf8',
+                    'log', 'log10', 'log2', 'loggamma', 'max', 'max_of', 'maxif', 'min', 'min_of', 'minif', 'mod',
+                    'not', 'and', 'or', 'between', 'in', 'has', 'has_all', 'has_any', 'has_cs', 'contains', 'contains_cs',
+                    'startswith', 'startswith_cs', 'endswith', 'endswith_cs', 'matches', 'regex',
+                    'avg', 'avgif', 'sum', 'sumif', 'stdev', 'stdevif', 'stdevp', 'variance', 'varianceif', 'variancep',
+                    'percentile', 'percentiles', 'percentilew', 'percentilesw', 'arg_max', 'arg_min', 'any', 'anyif', 'take_any', 'take_anyif',
+                    'make_list', 'make_list_if', 'make_list_with_nulls', 'makelist', 'make_set', 'make_set_if', 'makeset',
+                    'make_bag', 'make_bag_if', 'pack', 'pack_all', 'pack_array', 'pack_dictionary', 'bag_keys', 'bag_pack',
+                    'bag_pack_columns', 'bag_merge', 'bag_remove_keys', 'bag_set_key', 'bag_has_key', 'bag_unpack',
+                    'unpack_object', 'treepath', 'zip', 'repeat',
+                    'array_concat', 'array_iif', 'array_index_of', 'array_iff', 'array_length', 'array_reverse',
+                    'array_rotate_left', 'array_rotate_right', 'array_shift_left', 'array_shift_right', 'array_slice',
+                    'array_sort_asc', 'array_sort_desc', 'array_split', 'array_strcat', 'array_sum',
+                    'set_difference', 'set_has_element', 'set_intersect', 'set_union',
+                    'strcat', 'strcat_array', 'strcat_delim', 'strcmp', 'string_size', 'strlen', 'strrep', 'substring',
+                    'split', 'trim', 'trim_end', 'trim_start', 'replace', 'replace_regex', 'replace_string', 'replace_strings',
+                    'reverse', 'translate', 'url_decode', 'url_encode', 'url_encode_component',
+                    'base64_decode_toarray', 'base64_decode_toguid', 'base64_decode_tostring', 'base64_encode_fromguid', 'base64_encode_tostring',
+                    'zlib_compress_to_base64_string', 'zlib_decompress_from_base64_string', 'gzip_compress_to_base64_string', 'gzip_decompress_from_base64_string',
+                    'extract', 'extract_all', 'extractall', 'extract_json', 'extractjson',
+                    'parse_command_line', 'parse_csv', 'parse_ipv4', 'parse_ipv4_mask', 'parse_ipv6', 'parse_ipv6_mask',
+                    'parse_json', 'parsejson', 'parse_path', 'parse_url', 'parse_urlquery', 'parse_user_agent', 'parse_version', 'parse_xml',
+                    'dynamic_to_json', 'format_bytes', 'format_datetime', 'format_ipv4', 'format_ipv4_mask', 'format_timespan',
+                    'datetime_add', 'datetime_diff', 'datetime_local_to_utc', 'datetime_part', 'datetime_utc_to_local',
+                    'dayofmonth', 'dayofweek', 'dayofyear', 'getmonth', 'getyear', 'hourofday', 'monthofyear', 'weekofyear', 'week_of_year',
+                    'make_datetime', 'make_timespan', 'unixtime_microseconds_todatetime', 'unixtime_milliseconds_todatetime',
+                    'unixtime_nanoseconds_todatetime', 'unixtime_seconds_todatetime', 'ingestion_time', 'cursor_after', 'cursor_before_or_at', 'current_cursor',
+                    'ipv4_compare', 'ipv4_is_in_any_range', 'ipv4_is_in_range', 'ipv4_is_match', 'ipv4_is_private', 'ipv4_lookup',
+                    'ipv4_netmask_suffix', 'ipv6_compare', 'ipv6_is_in_any_range', 'ipv6_is_in_range', 'ipv6_is_match',
+                    'geo_distance_2points', 'geo_info_from_ip_address', 'geo_point_in_circle', 'geo_point_in_polygon', 'geo_point_to_geohash', 'geo_point_to_s2cell', 'geo_point_to_h3cell',
+                    'indexof', 'indexof_regex', 'next', 'prev', 'row_cumsum', 'row_number', 'row_rank_dense', 'row_rank_min', 'row_window_session',
+                    'pi', 'pow', 'radians', 'rand', 'round', 'sign', 'sin', 'sqrt', 'tan',
+                    'series_abs', 'series_acos', 'series_add', 'series_asin', 'series_atan', 'series_ceiling', 'series_cos',
+                    'series_decompose', 'series_decompose_anomalies', 'series_decompose_forecast', 'series_divide', 'series_equals',
+                    'series_exp', 'series_fill_backward', 'series_fill_const', 'series_fill_forward', 'series_fill_linear',
+                    'series_fir', 'series_fit_2lines', 'series_fit_2lines_dynamic', 'series_fit_line', 'series_fit_line_dynamic',
+                    'series_fit_poly', 'series_greater', 'series_greater_equals', 'series_iir', 'series_less', 'series_less_equals',
+                    'series_multiply', 'series_not_equals', 'series_outliers', 'series_pearson_correlation', 'series_periods_detect',
+                    'series_periods_validate', 'series_pow', 'series_seasonal', 'series_sign', 'series_sin', 'series_stats',
+                    'series_stats_dynamic', 'series_subtract', 'series_tan',
+                    'column_ifexists', 'columnifexists', 'gettype', 'typeof', 'bool', 'int', 'long', 'real', 'double', 'decimal', 'string', 'guid', 'new_guid',
+                    'autocluster', 'basket', 'diffpatterns', 'narrow', 'pivot', 'rolling_percentile', 'sql_request', 'cosmosdb_sql_request',
+                    'true', 'false', 'null', 'by', 'from', 'to', 'on', 'with', 'as', 'asc', 'desc', 'step', 'default', 'kind', 'in'
+                )
+                $statementPrefixes = @(
+                    'let', 'set', 'alias', 'declare', 'pattern', 'restrict', 'access',
+                    'find', 'search', 'fork', 'facet', 'evaluate', 'consume', 'as',
+                    'where', 'project', 'project-away', 'project-keep', 'project-rename', 'project-reorder',
+                    'extend', 'summarize', 'order', 'sort', 'top', 'take', 'limit', 'distinct', 'count', 'render',
+                    'mv-expand', 'mvexpand', 'mv-apply', 'mvapply', 'parse', 'parse-where', 'parse-kv',
+                    'make-series', 'lookup', 'join', 'union', 'invoke', 'partition', 'serialize',
+                    'sample', 'sample-distinct', 'scan', 'reduce', 'top-nested', 'top-hitters', 'getschema'
+                )
+                $calls = [System.Collections.Generic.List[string]]::new()
+                $bare = [System.Collections.Generic.List[string]]::new()
+                foreach ($m in [regex]::Matches($noComments, $tableCallPat)) {
+                    if ($validSpans.Contains("$($m.Index):$($m.Index + $m.Length)")) {
+                        $unq = (ConvertFrom-KqlQuotedString $m.Groups[1].Value).Trim()
+                        if (-not [string]::IsNullOrWhiteSpace($unq)) { $bare.Add($unq) }
+                    }
+                }
+                foreach ($m in [regex]::Matches($noComments, $tableAnyCallPat)) {
+                    $inStr = $false
+                    foreach ($sm in $strMatches) {
+                        if ($sm.Index -le $m.Index -and ($sm.Index + $sm.Length) -gt $m.Index) {
+                            $inStr = $true
+                            break
+                        }
+                    }
+                    if (-not $inStr -and -not $validSpanStarts.Contains($m.Index)) {
+                        $calls.Add('{__unsupported_table_indirection__}')
+                    }
+                }
+                foreach ($m in [regex]::Matches($noComments, $bracketPat)) {
+                    if (-not $validSpans.Contains("$($m.Index):$($m.Index + $m.Length)")) { continue }
+                    $unq = (ConvertFrom-KqlQuotedString $m.Groups[1].Value).Trim()
+                    if ([string]::IsNullOrWhiteSpace($unq)) { continue }
+                    $before = $noComments.Substring(0, $m.Index)
+                    $after = $noComments.Substring($m.Index + $m.Length)
+                    if ([regex]::IsMatch($before, '(?i)\bexternal_?data\s*\([^;|\r\n]*\z')) { continue }
+                    $openParensBefore = [regex]::Match($before, '(\(\s*(?:\(\s*)*)\z')
+                    $closeParensAfter = [regex]::Match($after, '\A((?:\s*\))*)\s*(?:\*/\s*)?\|')
+                    $isUnclosedSubqueryPipe = $openParensBefore.Success -and $closeParensAfter.Success -and (([regex]::Matches($openParensBefore.Groups[1].Value, '\(')).Count -gt ([regex]::Matches($closeParensAfter.Groups[1].Value, '\)')).Count)
+                    if ([regex]::IsMatch($after, '\A\s*\(')) {
+                        $calls.Add($unq)
+                        if ([regex]::IsMatch($before, '(?:[)\]}]|\.[A-Za-z_]\w*)\s*\z')) {
+                            $calls.Add('{__unsupported_escaped_call_context__}')
+                        }
+                    }
+                    elseif (-not [regex]::IsMatch($before, '(?:[)\]}]|\.[A-Za-z_]\w*)\s*\z') -and (
+                        ([regex]::IsMatch($before, '(?i)(?:^|[;{]|/\*|\*/|\bmaterialize\s*\(|\btoscalar\s*\(|\b(?:join|lookup|union)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*)(?:\s*\()*\s*\z') -and [regex]::IsMatch($after, '\A(?:\s*\))*\s*(?:\*/\s*)?\|')) -or
+                        $isUnclosedSubqueryPipe -or
+                        [regex]::IsMatch($before, '\binvoke\s*\z') -or
+                        ([regex]::IsMatch($before, '\blet\s+[A-Za-z_]\w*\s*=(?:\s*\()*\s*\z') -and [regex]::IsMatch($after, '\A(?:\s*\))*\s*[;|]')) -or
+                        ([regex]::IsMatch($before, '\blet\s+[A-Za-z_]\w*\s*=\s*(?:view\s*)?\([^)]*\)\s*\{(?:\s*\()*\s*\z') -and [regex]::IsMatch($after, '\A(?:\s*\))*\s*[;|}]')) -or
+                        ([regex]::IsMatch($before, '\bview\s*\([^)]*\)\s*\{(?:\s*\()*\s*\z') -and [regex]::IsMatch($after, '\A(?:\s*\))*\s*[;|}]')) -or
+                        ([regex]::IsMatch($before, '(?i)\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*\s*\{(?:\s*\()*\s*\z') -and [regex]::IsMatch($after, '\A(?:\s*\))*\s*[;|}]')) -or
+                        ([regex]::IsMatch($before, '(?i)\bfork\b(?:\s+[A-Za-z_]\w*\s*=)?\s*\((?:\s*\()*\s*\z') -and [regex]::IsMatch($after, '\A(?:\s*\))*\s*[|)]')) -or
+                        ([regex]::IsMatch($before, '(?i)\b(?:toscalar|materialize)\s*\((?:\s*\()*\s*\z') -and [regex]::IsMatch($after, '\A(?:\s*\))*\s*[|)]')) -or
+                        ([regex]::IsMatch($before, '\b(?:join|lookup|union)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*(?:\s*\()*\s*\z') -and -not [regex]::IsMatch($after, '\A\s*=')) -or
+                        [regex]::IsMatch($before, '\bunion\b[^;|]*,\s*(?:\(\s*)*\z') -or
+                        [regex]::IsMatch($before, '(?i)\b(?:find|search)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*\s+in\s*\([^)]*\z'))) {
+                        $bare.Add($unq)
+                    }
+                }
+                $codeNoFlags = [regex]::Replace($code, '\b(?:union|join|lookup)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)+', {
+                    param($m) [regex]::Replace($m.Value, '\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+', ' ')
+                })
+                $codeNoPartitionHeader = [regex]::Replace($codeNoFlags, '(?i)\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*\s*(?=[({])', 'partition ')
+                foreach ($match in [regex]::Matches($codeNoPartitionHeader, '(?<![.\w])([A-Za-z_]\w*)\s*\(|\binvoke\s+([A-Za-z_]\w*)')) {
+                    foreach ($group in $match.Groups | Select-Object -Skip 1) {
+                        if ($group.Success) { $calls.Add($group.Value) }
+                    }
+                }
+                foreach ($match in [regex]::Matches($codeWithTokens, "($tokPat)\s*\(|(?i)(?:^|[;{]|/\*|\*/|\bmaterialize\s*\(|\btoscalar\s*\(|\b(?:join|lookup|union)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*)(?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?:\*/\s*)?(?=\|)|\(\s*($tokPat)\s*(?:\*/\s*)?(?=\|)|\binvoke\s+($tokPat)|\blet\s+[A-Za-z_]\w*\s*=(?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[;|(])|\blet\s+[A-Za-z_]\w*\s*=\s*(?:view\s*)?\([^)]*\)\s*\{(?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[;|(\}])|\bview\s*\([^)]*\)\s*\{(?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[;|(\}])|\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*\s*\{(?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[;|(\}])|\bfork\b(?:\s+[A-Za-z_]\w*\s*=)?\s*\((?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[|)\(])|\b(?:toscalar|materialize|table|totable)\s*\((?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[|)\(,])")) {
+                    foreach ($group in $match.Groups | Select-Object -Skip 1) {
+                        if ($group.Success -and $group.Value -match '[A-Za-z0-9_]') { $calls.Add($group.Value) }
+                    }
+                }
+                foreach ($m in [regex]::Matches($codeWithTokens, "(\(\s*(?:\(\s*)*)($tokPat)((?:\s*\))*)\s*(?:\*/\s*)?(?=\|)")) {
+                    $nOpen = ([regex]::Matches($m.Groups[1].Value, '\(')).Count
+                    $nClose = ([regex]::Matches($m.Groups[3].Value, '\)')).Count
+                    if ($nOpen -gt $nClose -and $m.Groups[2].Value -match '[A-Za-z0-9_]') {
+                        $calls.Add($m.Groups[2].Value)
+                    }
+                }
+                foreach ($op in [regex]::Matches($codeWithTokens, '\b(?:union|join|lookup)\b')) {
+                    $pos = $op.Index + $op.Length
+                    $flags = [regex]::Match($codeWithTokens.Substring($pos), '\A(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*')
+                    $pos += $flags.Length
+                    $tokTarget = [regex]::Match($codeWithTokens.Substring($pos), "\A(?:\s*\()*\s*($tokPat)")
+                    if ($tokTarget.Success -and $tokTarget.Groups[1].Value -match '[A-Za-z0-9_]') { $calls.Add($tokTarget.Groups[1].Value) }
+                }
+                foreach ($op in [regex]::Matches($codeWithTokens, '(?i)\b(?:find|search)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*\s+in\s*\(([^)]*)\)')) {
+                    foreach ($tm in [regex]::Matches($op.Groups[1].Value, $tokPat)) {
+                        if ($tm.Value -match '[A-Za-z0-9_]') { $calls.Add($tm.Value) }
+                    }
+                }
+                foreach ($match in [regex]::Matches($codeNoFlags, '(?i)(?:^|[;{]|/\*|\*/|\bmaterialize\s*\(|\btoscalar\s*\(|\b(?:join|lookup|union)\b)(?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?:\*/\s*)?(?=\|)|\(\s*([A-Za-z_]\w*)\s*(?:\*/\s*)?(?=\|)|\blet\s+[A-Za-z_]\w*\s*=(?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[;|])|\blet\s+[A-Za-z_]\w*\s*=\s*(?:view\s*)?\([^)]*\)\s*\{(?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[;|}])|\bview\s*\([^)]*\)\s*\{(?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[;|}])|\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*\s*\{(?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[;|}])|\b(?:toscalar|materialize)\s*\((?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[|)])')) {
+                    foreach ($group in $match.Groups | Select-Object -Skip 1) {
+                        if ($group.Success) { $bare.Add($group.Value) }
+                    }
+                }
+                foreach ($m in [regex]::Matches($codeNoFlags, '(?i)\bfork\b([^;|]*)')) {
+                    foreach ($bm in [regex]::Matches($m.Groups[1].Value, '(?:[A-Za-z_]\w*\s*=\s*)?\((?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[|)])')) {
+                        $bare.Add($bm.Groups[1].Value)
+                    }
+                }
+                foreach ($m in [regex]::Matches($codeNoFlags, '(\(\s*(?:\(\s*)*)([A-Za-z_]\w*)((?:\s*\))*)\s*(?:\*/\s*)?(?=\|)')) {
+                    $nOpen = ([regex]::Matches($m.Groups[1].Value, '\(')).Count
+                    $nClose = ([regex]::Matches($m.Groups[3].Value, '\)')).Count
+                    if ($nOpen -gt $nClose) {
+                        $bare.Add($m.Groups[2].Value)
+                    }
+                }
+                foreach ($op in [regex]::Matches($code, '(?i)\b(?:find|search)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*\s+in\s*\(([^)]*)\)')) {
+                    foreach ($im in [regex]::Matches($op.Groups[1].Value, '(?<![.\w])([A-Za-z_]\w*)\b(?!\s*\()')) {
+                        $bare.Add($im.Groups[1].Value)
+                    }
+                }
+                foreach ($op in [regex]::Matches($code, '\b(?:union|join|lookup)\b')) {
+                    $pos = $op.Index + $op.Length
+                    $flags = [regex]::Match($code.Substring($pos), '\A(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*')
+                    $pos += $flags.Length
+                    $tail = $code.Substring($pos)
+                    $callTarget = [regex]::Match($tail, '\A(?:\s*\()*\s*([A-Za-z_]\w*)\s*\(')
+                    if ($callTarget.Success) {
+                        $calls.Add($callTarget.Groups[1].Value)
+                    }
+                    elseif ($op.Value -cne 'union') {
+                        $bareTarget = [regex]::Match($tail, '\A(?:\s*\()*\s*([A-Za-z_]\w*)\b(?!\s*[\(=.])')
+                        if ($bareTarget.Success) { $bare.Add($bareTarget.Groups[1].Value) }
+                    }
+                }
+                foreach ($union in [regex]::Matches($code, '\bunion\b')) {
+                    $pos = $union.Index + $union.Length
+                    $flags = [regex]::Match($code.Substring($pos), '\A(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*')
+                    $pos += $flags.Length
+                    $depth = 0
+                    $operand = $true
+                    for ($i = $pos; $i -lt $code.Length; $i++) {
+                        $ch = $code[$i]
+                        if ($operand -and -not [char]::IsWhiteSpace($ch)) {
+                            $src = [regex]::Match($code.Substring($i), '\A(?:\(\s*)*([A-Za-z_]\w*)\s*(\()?(\s*[=.])?')
+                            if ($src.Success -and -not $src.Groups[3].Success) {
+                                if ($src.Groups[2].Success) { $calls.Add($src.Groups[1].Value) }
+                                else { $bare.Add($src.Groups[1].Value) }
+                            }
+                            $operand = $false
+                        }
+                        if ($depth -eq 0 -and ($ch -eq '|' -or $ch -eq ';')) { break }
+                        if ($ch -eq '(' -or $ch -eq '[' -or $ch -eq '{') { $depth++ }
+                        elseif ($ch -eq ')' -or $ch -eq ']' -or $ch -eq '}') {
+                            if ($depth -eq 0) { break }
+                            $depth--
+                        }
+                        elseif ($ch -eq ',' -and $depth -eq 0) { $operand = $true }
+                    }
+                }
+                foreach ($name in $calls) {
+                    if ($name -cnotin $builtins -and $name -cnotin $statementPrefixes -and $name -cnotin $locals) { $name }
+                }
+                $knownTables = Get-DefenderWorkbookKnownCatalogTables
+                foreach ($name in $bare) {
+                    if ($name -cin $builtins -or $name -cin $statementPrefixes -or $name -cin $locals) { continue }
+                    $isKnownFunc = $null -ne $KnownFunctionAliases -and $KnownFunctionAliases.Contains($name)
+                    if (-not $isKnownFunc -and ($knownTables.Contains($name) -or
+                        ($null -ne $AllowedBareTables -and $AllowedBareTables.Contains($name)))) {
+                        continue
+                    }
+                    $name
+                }
+            }
+            else {
+                Get-DefenderWorkbookImplicitFunctions -Value $property.Value `
+                    -AllowedBareTables $AllowedBareTables -KnownFunctionAliases $KnownFunctionAliases
+            }
+        }
+    }
+    elseif ($Value -is [array]) {
+        foreach ($item in $Value) {
+            Get-DefenderWorkbookImplicitFunctions -Value $item `
+                -AllowedBareTables $AllowedBareTables -KnownFunctionAliases $KnownFunctionAliases
+        }
+    }
+}
+
+function Get-DefenderWorkbookParserDependencies {
+    param(
+        [psobject]$Document, [psobject]$ContentToImport, [psobject]$Template,
+        [string]$SolutionRoot, [string]$SolutionName
+    )
+
+    $provenance = $Document.contentProvenance
+    $declared = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $property = $provenance.PSObject.Properties['requiredWorkspaceFunctions']
+    if ($null -ne $property -and $property.Value -isnot [array]) {
+        throw 'Defender Workbook requiredWorkspaceFunctions must be an array.'
+    }
+    $records = if ($null -ne $property) { @($property.Value) } else { @() }
+    foreach ($record in $records) {
+        if ($record -isnot [pscustomobject] -or @($record.PSObject.Properties).Count -ne 3 -or
+            @($record.PSObject.Properties.Name | Where-Object {
+                $_ -cnotin @('functionAlias', 'sourcePath', 'sourceSha256')
+            }).Count -gt 0 -or
+            $record.functionAlias -isnot [string] -or $record.functionAlias -cnotmatch '\A[A-Za-z_][A-Za-z0-9_]*\z' -or
+            $record.sourcePath -isnot [string] -or $record.sourcePath -cnotmatch '\A(?:Parsers|Workspace Functions)/.+\.yaml\z' -or
+            $record.sourceSha256 -isnot [string] -or $record.sourceSha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+            -not $declared.Add($record.functionAlias)) {
+            throw 'Defender Workbook has malformed or duplicate requiredWorkspaceFunctions.'
+        }
+    }
+    $referenced = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($query in $provenance.conversion.queries) {
+        foreach ($container in @($query, $query.contract, $query.conversion)) {
+            if ($null -eq $container) { continue }
+            $references = $container.PSObject.Properties['workspaceFunctions']
+            if ($null -eq $references) { continue }
+            if ($references.Value -isnot [array]) { throw 'Query workspaceFunctions must be an array.' }
+            foreach ($alias in $references.Value) {
+                if ($alias -isnot [string] -or $alias -cnotmatch '\A[A-Za-z_][A-Za-z0-9_]*\z') {
+                    throw 'Query workspaceFunctions contains an invalid alias.'
+                }
+                [void]$referenced.Add($alias)
+            }
+        }
+    }
+    if (-not $declared.SetEquals($referenced)) {
+        throw 'Defender Workbook requiredWorkspaceFunctions must exactly cover reviewed query workspaceFunctions.'
+    }
+    $knownFunctionAliases = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($item in $declared) { [void]$knownFunctionAliases.Add($item) }
+    foreach ($res in @($Template.resources)) {
+        if ($null -ne $res -and $res.type -ieq 'Microsoft.OperationalInsights/workspaces/savedSearches' -and
+            $null -ne $res.properties -and $res.properties.functionAlias -is [string] -and
+            -not [string]::IsNullOrWhiteSpace($res.properties.functionAlias)) {
+            [void]$knownFunctionAliases.Add($res.properties.functionAlias)
+        }
+    }
+    foreach ($folderName in @('Parsers', 'Workspace Functions')) {
+        $folderPath = Join-Path (Join-Path $SolutionRoot $SolutionName) $folderName
+        if (Test-Path -LiteralPath $folderPath -PathType Container) {
+            foreach ($file in Get-ChildItem -LiteralPath $folderPath -Filter '*.yaml' -File -Recurse) {
+                $rawYaml = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction SilentlyContinue
+                if ($null -ne $rawYaml) {
+                    foreach ($m in [regex]::Matches($rawYaml, '(?m)^\s*Function(?:Alias|Name)\s*:\s*[''"]?([A-Za-z_][A-Za-z0-9_]*)[''"]?\s*$')) {
+                        [void]$knownFunctionAliases.Add($m.Groups[1].Value)
+                    }
+                }
+            }
+        }
+    }
+    $allowedBareTables = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($depField in @('requiredWorkloads', 'requiredDataConnectors')) {
+        $depProp = $provenance.PSObject.Properties[$depField]
+        if ($null -ne $depProp -and $depProp.Value -is [array]) {
+            foreach ($entry in $depProp.Value) {
+                if ($null -ne $entry -and $entry.dataTypes -is [array]) {
+                    foreach ($dt in $entry.dataTypes) {
+                        if ($dt -is [string] -and -not $knownFunctionAliases.Contains($dt)) {
+                            [void]$allowedBareTables.Add($dt)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    foreach ($query in $provenance.conversion.queries) {
+        foreach ($container in @($query, $query.contract, $query.conversion)) {
+            if ($null -eq $container) { continue }
+            $rtProp = $container.PSObject.Properties['resolvedTables']
+            if ($null -ne $rtProp -and $rtProp.Value -is [array]) {
+                foreach ($dt in $rtProp.Value) {
+                    if ($dt -is [string] -and -not $knownFunctionAliases.Contains($dt)) {
+                        [void]$allowedBareTables.Add($dt)
+                    }
+                }
+            }
+        }
+    }
+    $source = Resolve-SolutionContentPath -SolutionRoot $SolutionRoot -SolutionName $SolutionName `
+        -ContentPath $provenance.source.path -RequireFile
+    $sourceNotebook = Get-Content -LiteralPath $source.FullPath -Raw | ConvertFrom-Json
+    $sourceAllowedBareTables = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($item in $allowedBareTables) { [void]$sourceAllowedBareTables.Add($item) }
+    $catalogPath = Join-Path $PSScriptRoot '../../SentinelToXDRMigration/sentinel_xdr_migration/catalog/table_mappings.json'
+    if (Test-Path -LiteralPath $catalogPath -PathType Leaf) {
+        $catalogJson = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+        if ($null -ne $catalogJson.tables) {
+            foreach ($prop in $catalogJson.tables.PSObject.Properties) {
+                $targetTable = $prop.Value.target_table
+                if ($targetTable -is [string] -and $allowedBareTables.Contains($targetTable) -and
+                    -not $knownFunctionAliases.Contains($prop.Name)) {
+                    [void]$sourceAllowedBareTables.Add($prop.Name)
+                }
+            }
+        }
+    }
+    if (-not $knownFunctionAliases.Contains('SourceTable')) {
+        [void]$sourceAllowedBareTables.Add('SourceTable')
+    }
+    foreach ($alias in @(Get-DefenderWorkbookImplicitFunctions -Value $sourceNotebook.items `
+                -AllowedBareTables $sourceAllowedBareTables -KnownFunctionAliases $knownFunctionAliases) +
+            @(Get-DefenderWorkbookImplicitFunctions -Value $Document.items `
+                -AllowedBareTables $allowedBareTables -KnownFunctionAliases $knownFunctionAliases)) {
+        if (-not $referenced.Contains($alias)) {
+            throw "Defender Workbook has an unreviewed implicit workspace function '$alias'."
+        }
+    }
+    $dependencies = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($record in $records) {
+        $resolved = Resolve-SolutionContentPath -SolutionRoot $SolutionRoot -SolutionName $SolutionName `
+            -ContentPath $record.sourcePath -RequireFile
+        if ($resolved.RelativePath -cne $record.sourcePath -or
+            (Get-FileHash -LiteralPath $resolved.FullPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $record.sourceSha256) {
+            throw "Defender Workbook workspace function '$($record.functionAlias)' source path/hash is stale."
+        }
+        $selected = @(
+            foreach ($field in @('Parsers', 'Data Parsers', 'Workspace Functions')) {
+                foreach ($path in $ContentToImport.$field) {
+                    (Resolve-SolutionContentPath -SolutionRoot $SolutionRoot -SolutionName $SolutionName `
+                        -ContentPath $path -RequireFile).RelativePath
+                }
+            }
+        )
+        if (@($selected | Where-Object { $_ -ceq $record.sourcePath }).Count -ne 1) {
+            throw "Defender Workbook workspace function '$($record.functionAlias)' must be selected exactly once for packaging."
+        }
+        $yaml = ConvertFrom-Yaml (Get-Content -LiteralPath $resolved.FullPath -Raw -ErrorAction Stop)
+        $yamlAliases = @($yaml.FunctionName, $yaml.FunctionAlias) | Where-Object { $null -ne $_ }
+        $effectiveAlias = if ($null -ne $yaml.FunctionAlias) { $yaml.FunctionAlias } else { $yaml.FunctionName }
+        if (@($yamlAliases).Count -eq 0 -or
+            @($yamlAliases | Where-Object {
+                $_ -isnot [string] -or $_ -cnotmatch '\A[A-Za-z_][A-Za-z0-9_]*\z'
+            }).Count -gt 0 -or $effectiveAlias -cne $record.functionAlias -or
+            $yaml.FunctionQuery -isnot [string] -or [string]::IsNullOrWhiteSpace($yaml.FunctionQuery)) {
+            throw "Defender Workbook workspace function '$($record.functionAlias)' YAML identity/query does not match."
+        }
+        $matches = @($Template.resources | Where-Object {
+            $_.type -ieq 'Microsoft.OperationalInsights/workspaces/savedSearches' -and
+            $_.properties.functionAlias -ceq $record.functionAlias
+        })
+        if ($matches.Count -ne 1) {
+            throw "Defender Workbook workspace function '$($record.functionAlias)' requires exactly one emitted top-level savedSearch."
+        }
+        $resource = $matches[0]
+        $parameters = if ($null -ne $yaml.FunctionParams) { ConvertHashTo-StringData $yaml.FunctionParams } else { '' }
+        if ($null -ne $resource.PSObject.Properties['condition'] -or $null -ne $resource.PSObject.Properties['copy'] -or
+            $resource.properties.query -cne $yaml.FunctionQuery -or
+            [string]$resource.properties.functionParameters -cne $parameters -or
+            $resource.name -isnot [string] -or [string]::IsNullOrWhiteSpace($resource.name)) {
+            throw "Defender Workbook workspace function '$($record.functionAlias)' savedSearch is conditional or does not match current YAML."
+        }
+        $name = $resource.name
+        if ($name.StartsWith('[')) {
+            if ($name.StartsWith('[[') -or -not $name.EndsWith(']')) { throw 'Invalid savedSearch ARM name.' }
+            $argument = $name.Substring(1, $name.Length - 2)
+        }
+        else {
+            if ($name.Split('/').Count -ne 2 -or @($name.Split('/') | Where-Object { -not $_ }).Count -gt 0) {
+                throw 'savedSearch name must include the workspace and resource name.'
+            }
+            $argument = "'" + $name.Replace("'", "''") + "'"
+        }
+        $dependency = "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', $argument)]"
+        if ($dependencies.Add($dependency)) { $dependency }
+    }
+}
+
+function Get-DefenderWorkbookParserIdentityValue {
+    param([AllowNull()][object]$Value, [psobject]$Variables)
+    if ($Value -isnot [string]) { return $null }
+    if ($Value -cmatch "\A\[variables\('([^']+)'\)(?:\.([A-Za-z_][A-Za-z0-9_]*))?\]\z") {
+        $variable = $Variables.PSObject.Properties[$Matches[1]]
+        if ($null -eq $variable) { return $null }
+        if ($Matches[2]) { return $variable.Value.PSObject.Properties[$Matches[2]].Value }
+        return $variable.Value
+    }
+    return $Value
+}
+
 function ConvertTo-DefenderWorkbookArmCopy {
     param([AllowNull()][object]$Value)
 
@@ -227,7 +759,7 @@ function ConvertTo-DefenderWorkbookArmCopy {
 }
 
 function New-DefenderWorkbookInstallDeployment {
-    param([string]$DeploymentName, [psobject]$WorkbookResource)
+    param([string]$DeploymentName, [psobject]$WorkbookResource, [string[]]$ParserDependencies = @())
 
     [pscustomobject]@{
         type = 'Microsoft.Resources/deployments'
@@ -236,7 +768,7 @@ function New-DefenderWorkbookInstallDeployment {
         condition = "[parameters('DeployDefenderWorkbook')]"
         dependsOn = @(
             "[extensionResourceId(resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspace')), 'Microsoft.SecurityInsights/contentPackages', variables('_solutionId'))]"
-        )
+        ) + @($ParserDependencies)
         properties = [pscustomobject]@{
             mode = 'Incremental'
             expressionEvaluationOptions = [pscustomobject]@{ scope = 'inner' }
@@ -265,6 +797,10 @@ function New-DefenderWorkbookRegistration {
     $fullProvenance = $ResolvedProvenance | ConvertTo-Json -Depth 100 | ConvertFrom-Json
     $fullProvenance | Add-Member -NotePropertyName requiredWorkloads -NotePropertyValue @($Document.contentProvenance.requiredWorkloads)
     $fullProvenance | Add-Member -NotePropertyName requiredDataConnectors -NotePropertyValue @($Document.contentProvenance.requiredDataConnectors)
+    $functions = if ($null -ne $Document.contentProvenance.PSObject.Properties['requiredWorkspaceFunctions']) {
+        @($Document.contentProvenance.requiredWorkspaceFunctions)
+    } else { @() }
+    $fullProvenance | Add-Member -NotePropertyName requiredWorkspaceFunctions -NotePropertyValue @($functions)
     [pscustomobject]@{
         type = 'Microsoft.OperationalInsights/workspaces/providers/contentTemplates'
         apiVersion = '2023-04-01-preview'
@@ -332,11 +868,17 @@ function Add-XdrDefenderWorkbooksToSolution {
     }
     $resources = @()
     $criteria = @()
+    $requiredAliases = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $identities = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($file in $selected) {
         $document = Get-Content -LiteralPath $file.FullPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
         Assert-DefenderWorkbookDocument -Document $document -SolutionRoot $solutionRoot `
             -SolutionName $SolutionName -ContentPath $file.RelativePath
+        $parserDependencies = @(Get-DefenderWorkbookParserDependencies -Document $document `
+            -ContentToImport $ContentToImport -Template $Template -SolutionRoot $solutionRoot -SolutionName $SolutionName)
+        foreach ($record in $document.contentProvenance.requiredWorkspaceFunctions) {
+            [void]$requiredAliases.Add($record.functionAlias)
+        }
         foreach ($id in @($document.xdrMetadata.contentId, $document.xdrMetadata.instanceId)) {
             if (-not $identities.Add($id)) { throw "Duplicate Defender Workbook content/instance identity '$id'." }
         }
@@ -360,7 +902,8 @@ function Add-XdrDefenderWorkbooksToSolution {
         }
         $resource = ConvertTo-DefenderWorkbookArmCopy -Value $resource
         $deploymentName = Get-DefenderWorkbookDeploymentName -SolutionName $SolutionName -ContentId $document.xdrMetadata.contentId
-        $installation = New-DefenderWorkbookInstallDeployment -DeploymentName $deploymentName -WorkbookResource $resource
+        $installation = New-DefenderWorkbookInstallDeployment -DeploymentName $deploymentName `
+            -WorkbookResource $resource -ParserDependencies $parserDependencies
         $registration = New-DefenderWorkbookRegistration -DeploymentName $deploymentName `
             -InstallDeployment $installation -Document $document -ResolvedProvenance $resolved -PackageName $SolutionName
         $resources += @($installation, $registration)
@@ -370,6 +913,28 @@ function Add-XdrDefenderWorkbooksToSolution {
             version = $resolved.contentVersion
         }
     }
+    $requiredResources = @(
+        foreach ($existingResource in $Template.resources) {
+            $isSavedSearch = $existingResource.type -ieq 'Microsoft.OperationalInsights/workspaces/savedSearches' -and
+                $requiredAliases.Contains([string]$existingResource.properties.functionAlias)
+            $isParserRegistration = $existingResource.type -in @(
+                'Microsoft.OperationalInsights/workspaces/providers/contentTemplates',
+                'Microsoft.OperationalInsights/workspaces/providers/metadata'
+            ) -and ($existingResource.properties.contentKind -eq 'Parser' -or $existingResource.properties.kind -eq 'Parser')
+            $contentId = Get-DefenderWorkbookParserIdentityValue -Value $existingResource.properties.contentId -Variables $Template.variables
+            if ($isSavedSearch -or ($isParserRegistration -and @($requiredAliases | Where-Object {
+                        $contentId -ceq "$_-Parser"
+                    }).Count -gt 0)) {
+                if ($null -ne $existingResource.PSObject.Properties['condition'] -or
+                    $null -ne $existingResource.PSObject.Properties['copy']) {
+                    throw 'Required Defender Workbook parser infrastructure must be unconditional.'
+                }
+                $existingResource
+            }
+        }
+    )
+    # Exempt only reviewed prerequisites and their registration faces from DeployParser.
+    Register-SolutionRequiredResources -Resources $requiredResources
     $Template.resources += $resources
     $existing = @($contentPackages[0].properties.dependencies.criteria | Where-Object { $_.kind -ine 'DefenderWorkbook' })
     $contentPackages[0].properties.dependencies.criteria = @($existing) + @($criteria)

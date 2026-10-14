@@ -1,22 +1,31 @@
 $script:contentDeploymentContract = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'contentDeploymentParameters.json') -Raw | ConvertFrom-Json
 $script:solutionResourceKinds = [System.Collections.Generic.Dictionary[object,string]]::new([System.Collections.Generic.ReferenceEqualityComparer]::Instance)
+$script:solutionRequiredResources = [System.Collections.Generic.HashSet[object]]::new([System.Collections.Generic.ReferenceEqualityComparer]::Instance)
+
+function Register-SolutionRequiredResources {
+    param([object[]]$Resources)
+    foreach ($resource in $Resources) {
+        [void]$script:solutionRequiredResources.Add($resource)
+    }
+}
 
 function Register-SolutionResourceKind {
     param([object[]]$Resources, [string]$Kind)
     foreach ($resource in $Resources) {
-        $script:solutionResourceKinds[$resource.PSObject.BaseObject] = $Kind
+        $script:solutionResourceKinds[$resource] = $Kind
     }
 }
 
 function Get-SolutionResourceSelection {
     param([psobject]$Resource)
 
+    if ($script:solutionRequiredResources.Contains($Resource)) { return $null }
     $kind = [string]$Resource.properties.contentKind
     if (-not $kind -and $Resource.type -eq 'Microsoft.OperationalInsights/workspaces/providers/metadata') {
         $kind = [string]$Resource.properties.kind
     }
     if (-not $kind) {
-        $kind = $script:solutionResourceKinds[$Resource.PSObject.BaseObject]
+        $kind = $script:solutionResourceKinds[$Resource]
     }
     if (-not $kind) {
         $kind = switch ($Resource.type) {

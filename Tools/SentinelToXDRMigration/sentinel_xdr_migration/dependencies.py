@@ -5,6 +5,7 @@ from collections import defaultdict
 from copy import deepcopy
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,14 @@ WORKLOADS = (
     "mde", "mdo", "mdi", "mda", "mdc", "entraid", "purview",
     "appgovernance", "sentinel", "mtp",
 )
+PLATFORM_REFERENCE_INPUTS = frozenset({"Watchlist"})
+
+
+def telemetry_data_types(tables):
+    """Platform reference data is source lineage, not connector telemetry."""
+    return sorted(set(tables) - PLATFORM_REFERENCE_INPUTS)
+
+
 TABLE_WORKLOADS = {
     **{table: "mde" for table in NATIVE_XDR_TABLES if table.startswith("Device")},
     **{table: "mdo" for table in (
@@ -77,6 +86,8 @@ def workload_records(tables: list[str]) -> tuple[list[dict[str, Any]], list[str]
     grouped: dict[str, set[str]] = defaultdict(set)
     unknown = []
     for table in tables:
+        if table in PLATFORM_REFERENCE_INPUTS:
+            continue
         workload = TABLE_WORKLOADS.get(table)
         if workload is None and table.endswith("_CL"):
             workload = "sentinel"
@@ -99,18 +110,34 @@ def dependency_plan(
     table_mappings: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     resolution = resolve_data_types(source_query, metadata)
+    source_types = set(resolution["dataTypes"])
+    from ._workbook_core import rewrite
+    code = "".join(text if kind == "code" else " " * len(text)
+                   for kind, text in rewrite._segments(source_query))
+    if re.search(r"\b_GetWatchlist\s*\(", code):
+        source_types.add("Watchlist")
+    references = sorted(source_types & PLATFORM_REFERENCE_INPUTS)
+    resolution["dataTypes"] = telemetry_data_types(source_types)
     mappings = table_mappings or {}
     target_table_names = {mappings.get(table, table) for table in resolution["dataTypes"]}
     if target_query is not None:
         target_table_names.update(resolve_data_types(target_query)["dataTypes"])
-    target_tables = sorted(target_table_names)
+    target_tables = telemetry_data_types(target_table_names)
     workloads, unknown = workload_records(target_tables)
     reasons = []
-    if not resolution["dataTypes"]:
-        reasons.append("No data types resolved; provide the data types and required connectors.")
+    if not source_types:
+        reasons.append("No source inputs resolved; provide source evidence and any telemetry connector prerequisites.")
     if unknown:
         reasons.append(f"Provide workload mappings for: {', '.join(unknown)}.")
     required_connectors = deepcopy(connectors) if connectors is not None else []
+    if isinstance(required_connectors, list):
+        required_connectors = [
+            {**record, "dataTypes": telemetry_data_types(record["dataTypes"])}
+            if isinstance(record, dict) and isinstance(record.get("dataTypes"), list) else record
+            for record in required_connectors
+            if not isinstance(record, dict) or not isinstance(record.get("dataTypes"), list)
+            or telemetry_data_types(record["dataTypes"])
+        ]
     if any(item["workload"] == "sentinel" for item in workloads) and connectors is None:
         reasons.append("Provide or explicitly confirm the Sentinel connector prerequisites.")
     return {
@@ -123,6 +150,7 @@ def dependency_plan(
         "reviewRequired": bool(reasons),
         "reviewReasons": reasons,
         "runtimeParityVerified": False,
+        **({"sourceDataTypes": sorted(source_types), "referenceInputs": references} if references else {}),
     }
 
 
@@ -154,6 +182,8 @@ def dependency_validation_errors(document: dict[str, Any]) -> list[str]:
                 not isinstance(table, str) or not table.strip() for table in data_types
             ):
                 errors.append(f"{prefix}.dataTypes must be an array of non-empty strings")
+            elif any(table in PLATFORM_REFERENCE_INPUTS for table in data_types):
+                errors.append(f"{prefix}.dataTypes must not include platform reference input Watchlist")
     if provenance.get("dependencyReviewRequired") is True:
         errors.append("Dependency provenance needs review; use sentinel-xdr-dependency-helper.")
     return errors
@@ -190,7 +220,7 @@ def live_dependency_check(
     ]
     if unknown:
         errors.append(f"Provide workload mappings for: {', '.join(unknown)}.")
-    if not plan["dataTypes"]:
+    if not plan["dataTypes"] and not plan.get("referenceInputs"):
         errors.append("No data types resolved; provide the data types and required connectors.")
     connector_records = (document.get("contentProvenance") or {}).get("requiredDataConnectors") or []
     connector_pairs = {
@@ -332,6 +362,8 @@ def dependency_identity(document: dict[str, Any]) -> str:
         for field in ("requiredWorkloads", "requiredDataConnectors")
     }
     values["dependencyReviewRequired"] = provenance.get("dependencyReviewRequired", False)
+    if "requiredWorkspaceFunctions" in provenance:
+        values["requiredWorkspaceFunctions"] = provenance["requiredWorkspaceFunctions"]
     return hashlib.sha256(json.dumps(
         values, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
     ).encode()).hexdigest()

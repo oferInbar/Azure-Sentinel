@@ -182,8 +182,343 @@ def _raw_query(query, query_type):
     return query
 
 
+_BUILTINS = {
+    "datatable", "range", "print", "externaldata", "external_data", "dynamic", "datetime", "timespan",
+    "toscalar", "tostring", "toint", "tolong", "todouble", "todatetime", "todecimal", "todynamic", "toreal", "totable",
+    "totimespan", "tobool", "now", "ago", "startofday", "endofday", "startofweek", "endofweek",
+    "startofmonth", "endofmonth", "startofyear", "endofyear", "tolower", "toupper", "coalesce", "iff", "iif", "case",
+    "_GetWatchlist", "workspace", "app", "resource", "cluster", "database", "table", "view", "materialize",
+    "abs", "acos", "asin", "atan", "atan2", "beta_cdf", "beta_inv", "beta_pdf", "bin", "bin_at", " ceiling", "ceiling",
+    "cos", "cot", " count", "count", "count_distinct", "count_distinctif", "countif", "countof",
+    " dcount", "dcount", "dcount_hll", "dcountif", "degrees", "exp", "exp10", "exp2", "floor", "gamma",
+    "hash", "hash_combine", "hash_many", "hash_md5", "hash_sha1", "hash_sha256", "hash_xxhash64",
+    "isnan", "isfinite", "isinf", "isascii", "isempty", "isnotempty", "isnull", "isnotnull", "isutf8",
+    "log", "log10", "log2", "loggamma", "max", "max_of", "maxif", "min", "min_of", "minif", "mod",
+    "not", "and", "or", "between", "in", "has", "has_all", "has_any", "has_cs", "contains", "contains_cs",
+    "startswith", "startswith_cs", "endswith", "endswith_cs", "matches", "regex",
+    "avg", "avgif", "sum", "sumif", "stdev", "stdevif", "stdevp", "variance", "varianceif", "variancep",
+    "percentile", "percentiles", "percentilew", "percentilesw", "arg_max", "arg_min", "any", "anyif", "take_any", "take_anyif",
+    "make_list", "make_list_if", "make_list_with_nulls", "makelist", "make_set", "make_set_if", "makeset",
+    "make_bag", "make_bag_if", "pack", "pack_all", "pack_array", "pack_dictionary", "bag_keys", "bag_pack",
+    "bag_pack_columns", "bag_merge", "bag_remove_keys", "bag_set_key", "bag_has_key", "bag_unpack",
+    "unpack_object", "treepath", "zip", "repeat",
+    "array_concat", "array_iif", "array_index_of", "array_iff", "array_length", "array_reverse",
+    "array_rotate_left", "array_rotate_right", "array_shift_left", "array_shift_right", "array_slice",
+    "array_sort_asc", "array_sort_desc", "array_split", "array_strcat", "array_sum",
+    "set_difference", "set_has_element", "set_intersect", "set_union",
+    "strcat", "strcat_array", "strcat_delim", "strcmp", "string_size", "strlen", "strrep", "substring",
+    "split", "trim", "trim_end", "trim_start", "replace", "replace_regex", "replace_string", "replace_strings",
+    "reverse", "translate", "url_decode", "url_encode", "url_encode_component",
+    "base64_decode_toarray", "base64_decode_toguid", "base64_decode_tostring", "base64_encode_fromguid", "base64_encode_tostring",
+    " zlib_compress_to_base64_string", "zlib_decompress_from_base64_string", "gzip_compress_to_base64_string", "gzip_decompress_from_base64_string",
+    "extract", "extract_all", "extractall", "extract_json", "extractjson",
+    "parse_command_line", "parse_csv", "parse_ipv4", "parse_ipv4_mask", "parse_ipv6", "parse_ipv6_mask",
+    "parse_json", "parsejson", "parse_path", "parse_url", "parse_urlquery", "parse_user_agent", "parse_version", "parse_xml",
+    "dynamic_to_json", "format_bytes", "format_datetime", "format_ipv4", "format_ipv4_mask", "format_timespan",
+    "datetime_add", "datetime_diff", "datetime_local_to_utc", "datetime_part", "datetime_utc_to_local",
+    "dayofmonth", "dayofweek", "dayofyear", "getmonth", "getyear", "hourofday", "monthofyear", "weekofyear", " week_of_year",
+    "make_datetime", "make_timespan", "unixtime_microseconds_todatetime", "unixtime_milliseconds_todatetime",
+    "unixtime_nanoseconds_todatetime", "unixtime_seconds_todatetime", "ingestion_time", "cursor_after", "cursor_before_or_at", "current_cursor",
+    "ipv4_compare", "ipv4_is_in_any_range", "ipv4_is_in_range", "ipv4_is_match", "ipv4_is_private", "ipv4_lookup",
+    "ipv4_netmask_suffix", "ipv6_compare", "ipv6_is_in_any_range", "ipv6_is_in_range", "ipv6_is_match",
+    "geo_distance_2points", "geo_info_from_ip_address", "geo_point_in_circle", "geo_point_in_polygon", "geo_point_to_geohash", "geo_point_to_s2cell", "geo_point_to_h3cell",
+    "indexof", "indexof_regex", "next", "prev", "row_cumsum", "row_number", "row_rank_dense", "row_rank_min", "row_window_session",
+    "pi", "pow", "radians", "rand", "round", "sign", "sin", "sqrt", "tan",
+    "series_abs", "series_acos", "series_add", "series_asin", "series_atan", "series_ ceiling", "series_cos",
+    "series_decompose", "series_decompose_anomalies", "series_decompose_forecast", "series_divide", "series_equals",
+    "series_exp", "series_fill_backward", "series_fill_const", "series_fill_forward", "series_fill_linear",
+    "series_fir", "series_fit_2lines", "series_fit_2lines_dynamic", "series_fit_line", "series_fit_line_dynamic",
+    "series_fit_poly", "series_greater", "series_greater_equals", "series_iir", "series_less", "series_less_equals",
+    "series_multiply", "series_not_equals", "series_outliers", "series_pearson_correlation", "series_periods_detect",
+    "series_periods_validate", "series_pow", "series_ seasonal", "series_sign", "series_sin", "series_stats",
+    "series_stats_dynamic", "series_subtract", "series_tan",
+    "column_ifexists", "columnifexists", "gettype", "typeof", "bool", "int", "long", "real", "double", "decimal", "string", "guid", " new_guid",
+    "autocluster", "basket", "diffpatterns", "narrow", "pivot", "rolling_percentile", "sql_request", "cosmosdb_sql_request",
+    "true", "false", "null", "by", "from", "to", "on", "with", "as", "asc", "desc", "step", "default", "kind", "in",
+}
+_STATEMENT_PREFIXES = {
+    "let", "set", "alias", "declare", "restrict", "evaluate", "access", "pattern",
+    "find", "search", "fork", "facet", "consume", "where", "project", "project-away",
+    "project-keep", "project-rename", "project-reorder", "extend", "summarize",
+    "order", "sort", "top", "take", "limit", "distinct", "count", "render",
+    "mv-expand", "mvexpand", "mv-apply", "mvapply", "parse", "parse-where", "parse-kv",
+    "make-series", "lookup", "join", "union", "invoke", "as", "partition", "serialize",
+    "sample", "sample-distinct", "scan", "reduce", "top-nested", "top-hitters", "getschema",
+}
+
+
+_QUOTED_LITERAL_RE = re.compile(
+    r"//[^\r\n]*|@\"(?:\"\"|[^\"])*\"|@'(?:''|[^'])*'|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'"
+)
+_BRACKETED_QUOTED_NAME_RE = re.compile(
+    r"\[\s*(@\"(?:\"\"|[^\"])*\"|@'(?:''|[^'])*'|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')\s*\]",
+    re.DOTALL,
+)
+_TABLE_LITERAL_CALL_RE = re.compile(
+    r"(?<![.\w])(?:table|totable)\s*\(\s*(@\"(?:\"\"|[^\"])*\"|@'(?:''|[^'])*'|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')\s*(?:,[^;\r\n)]*)?\)",
+    re.IGNORECASE,
+)
+_TABLE_ANY_CALL_RE = re.compile(
+    r"(?<![.\w])(?:table|totable)\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _unquote_kql_string(literal: str) -> str:
+    if literal.startswith('@"') and literal.endswith('"'):
+        return literal[2:-1].replace('""', '"')
+    if literal.startswith("@'") and literal.endswith("'"):
+        return literal[2:-1].replace("''", "'")
+    if len(literal) >= 2 and literal[0] == literal[-1] and literal[0] in ('"', "'"):
+        inner = literal[1:-1]
+        return re.sub(r"\\(.)", r"\1", inner)
+    return literal
+
+
+def _union_operands(code):
+    # Union operands are separated at the union's own depth, not by commas
+    # inside function arguments. Include later operands, not only the first.
+    for union in re.finditer(r"\bunion\b", code):
+        start = union.end()
+        flags = re.match(r"(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*", code[start:])
+        start += flags.end()
+        depth, operand = 0, True
+        for index in range(start, len(code)):
+            char = code[index]
+            if operand and not char.isspace():
+                source = re.match(r"(?:\(\s*)*([A-Za-z_]\w*)\s*(\()?", code[index:])
+                if source:
+                    yield source.group(1), bool(source.group(2))
+                operand = False
+            if depth == 0 and char in "|;":
+                break
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif char == "," and depth == 0:
+                operand = True
+
+
+def _stripped_code(query: str, *, preserve_tokens: bool = False) -> str:
+    masked = _QUOTED_LITERAL_RE.sub(lambda m: " " * len(m.group(0)), query)
+    if preserve_tokens:
+        return masked
+    return re.sub(
+        r"\{[A-Za-z0-9_.:$ -]+\}",
+        lambda m: (
+            m.group(0)
+            if re.search(
+                r"(?:\)|(?<![.\w])\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*)\s*$",
+                masked[:m.start()],
+                re.IGNORECASE,
+            )
+            else (" " * len(m.group(0)) if re.search(r"[A-Za-z0-9_]", m.group(0)) else m.group(0))
+        ),
+        masked,
+    )
+
+
+def _quoted_calls_and_table_sources(query: str) -> tuple[set[str], set[str]]:
+    calls: set[str] = set()
+    bare: set[str] = set()
+    # Mask single-line // comments only first, then inspect quoted constructs at top level.
+    no_comments = re.sub(r"//[^\r\n]*", lambda m: " " * len(m.group(0)), query)
+    protectedspans: list[tuple[int, int]] = []
+    for m in _BRACKETED_QUOTED_NAME_RE.finditer(no_comments):
+        protectedspans.append(m.span())
+    for m in _TABLE_LITERAL_CALL_RE.finditer(no_comments):
+        protectedspans.append(m.span())
+
+    # Check that each protected span does not start inside an outer string literal
+    valid_spans: set[tuple[int, int]] = set()
+    outer_string_spans: list[tuple[int, int]] = []
+    idx = 0
+    n = len(no_comments)
+    while idx < n:
+        for s, e in protectedspans:
+            if s == idx:
+                valid_spans.add((s, e))
+                idx = e
+                break
+        else:
+            m_str = _QUOTED_LITERAL_RE.match(no_comments, idx)
+            if m_str:
+                outer_string_spans.append(m_str.span())
+                idx = m_str.end()
+                continue
+            idx += 1
+
+    for m in _TABLE_LITERAL_CALL_RE.finditer(no_comments):
+        if m.span() in valid_spans:
+            name = _unquote_kql_string(m.group(1)).strip()
+            if name:
+                bare.add(name)
+
+    # Fail closed on non-literal or unsupported table()/totable() indirection
+    for m in _TABLE_ANY_CALL_RE.finditer(no_comments):
+        if any(s <= m.start() < e for s, e in outer_string_spans):
+            continue
+        if not any(s == m.start() for s, _ in valid_spans):
+            calls.add("{__unsupported_table_indirection__}")
+
+    for m in _BRACKETED_QUOTED_NAME_RE.finditer(no_comments):
+        if m.span() not in valid_spans:
+            continue
+        name = _unquote_kql_string(m.group(1)).strip()
+        if not name:
+            continue
+        before = no_comments[:m.start()]
+        after = no_comments[m.end():]
+        # Skip externaldata(...) [...]
+        if re.search(r"\bexternal_?data\s*\([^;|\r\n]*$", before, re.IGNORECASE):
+            continue
+        if re.match(r"^\s*\(", after):
+            calls.add(name)
+            if re.search(r"(?:[)\]}]|\.[A-Za-z_]\w*)\s*$", before):
+                calls.add("{__unsupported_escaped_call_context__}")
+        elif not re.search(r"(?:[)\]}]|\.[A-Za-z_]\w*)\s*$", before) and (
+            (re.search(r"(?:^|[;{]|/\*|\*/|\bmaterialize\s*\(|\btoscalar\s*\(|\b(?:join|lookup|union)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*)(?:\s*\()*\s*$", before, re.IGNORECASE) and re.match(r"^(?:\s*\))*\s*(?:\*/\s*)?\|", after))
+            or (re.search(r"(\(\s*(?:\(\s*)*)$", before) and re.match(r"^((?:\s*\))*)\s*(?:\*/\s*)?\|", after) and re.search(r"(\(\s*(?:\(\s*)*)$", before).group(1).count("(") > re.match(r"^((?:\s*\))*)\s*(?:\*/\s*)?\|", after).group(1).count(")"))
+            or re.search(r"\binvoke\s*$", before)
+            or (re.search(r"\blet\s+[A-Za-z_]\w*\s*=(?:\s*\()*\s*$", before) and re.match(r"^(?:\s*\))*\s*[;|]", after))
+            or (re.search(r"\blet\s+[A-Za-z_]\w*\s*=\s*(?:view\s*)?\([^)]*\)\s*\{(?:\s*\()*\s*$", before) and re.match(r"^(?:\s*\))*\s*[;|}]", after))
+            or (re.search(r"\bview\s*\([^)]*\)\s*\{(?:\s*\()*\s*$", before) and re.match(r"^(?:\s*\))*\s*[;|}]", after))
+            or (re.search(r"\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*\s*\{(?:\s*\()*\s*$", before, re.IGNORECASE) and re.match(r"^(?:\s*\))*\s*[;|}]", after))
+            or (re.search(r"\bfork\b(?:\s+[A-Za-z_]\w*\s*=)?\s*\((?:\s*\()*\s*$", before, re.IGNORECASE) and re.match(r"^(?:\s*\))*\s*[|)]", after))
+            or (re.search(r"\b(?:toscalar|materialize)\s*\((?:\s*\()*\s*$", before, re.IGNORECASE) and re.match(r"^(?:\s*\))*\s*[|)]", after))
+            or (re.search(r"\b(?:join|lookup|union)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*(?:\s*\()*\s*$", before) and not re.match(r"^\s*=", after))
+            or re.search(r"\bunion\b[^;|]*,\s*(?:\(\s*)*$", before)
+            or re.search(r"\b(?:find|search)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*\s+in\s*\([^)]*$", before, re.IGNORECASE)
+        ):
+            bare.add(name)
+    return calls, bare
+
+
+def union_source_names(query: str) -> set[str]:
+    """Heuristic operands, not proof of a table or saved-function dependency."""
+    code = _stripped_code(query)
+    locals = set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=", code))
+    return {name for name, _ in _union_operands(code)} - locals
+
+
+def _bare_source_identifiers(code: str) -> set[str]:
+    code_no_flags = re.sub(
+        r"\b(?:union|join|lookup)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)+",
+        lambda m: re.sub(r"\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+", " ", m.group(0)),
+        code,
+    )
+    bare_matches = re.findall(
+        r"(?:^|[;{]|/\*|\*/|\bmaterialize\s*\(|\btoscalar\s*\(|\b(?:join|lookup|union)\b)(?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?:\*/\s*)?(?=\|)"
+        r"|\(\s*([A-Za-z_]\w*)\s*(?:\*/\s*)?(?=\|)"
+        r"|\blet\s+[A-Za-z_]\w*\s*=(?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[;|])"
+        r"|\blet\s+[A-Za-z_]\w*\s*=\s*(?:view\s*)?\([^)]*\)\s*\{(?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[;|}])"
+        r"|\bview\s*\([^)]*\)\s*\{(?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[;|}])"
+        r"|\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*\s*\{(?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[;|}])"
+        r"|\b(?:toscalar|materialize)\s*\((?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[|)])",
+        code_no_flags,
+        flags=re.IGNORECASE,
+    )
+    bare = {name for groups in bare_matches for name in groups if name}
+    for m in re.finditer(r"(\(\s*(?:\(\s*)*)([A-Za-z_]\w*)((?:\s*\))*)\s*(?:\*/\s*)?(?=\|)", code_no_flags):
+        if m.group(1).count("(") > m.group(3).count(")"):
+            bare.add(m.group(2))
+    for m in re.finditer(r"\bfork\b([^;|]*)", code_no_flags, re.IGNORECASE):
+        for bm in re.finditer(r"(?:[A-Za-z_]\w*\s*=\s*)?\((?:\s*\()*\s*([A-Za-z_]\w*)(?:\s*\))*\s*(?=[|)])", m.group(1)):
+            bare.add(bm.group(1))
+    for op in re.finditer(r"\b(?:join|lookup)\b", code):
+        pos = op.end()
+        flags = re.match(r"(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*", code[pos:])
+        pos += flags.end()
+        target = re.match(r"(?:\s*\()*\s*([A-Za-z_]\w*)\b(?!\s*[\(=.])", code[pos:])
+        if target:
+            bare.add(target.group(1))
+    for op in re.finditer(r"\b(?:find|search)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*\s+in\s*\(([^)]*)\)", code, re.IGNORECASE):
+        for ident in re.findall(r"(?<![.\w])([A-Za-z_]\w*)\b(?!\s*\()", op.group(1)):
+            bare.add(ident)
+    bare.update(name for name, is_call in _union_operands(code) if not is_call)
+    local_vars = set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=", code))
+    return bare - _BUILTINS - _STATEMENT_PREFIXES - local_vars
+
+
+def _parameter_source_or_call_tokens(query: str) -> set[str]:
+    code = _stripped_code(query, preserve_tokens=True)
+    # Mask KQL function/view/partition brace bodies `{ ... }` so they are not misread as `{Param}` tokens.
+    code = re.sub(
+        r"((?:\)|(?<![.\w])\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*)\s*)\{([A-Za-z0-9_.:$ -]+)\}",
+        lambda m: f"{m.group(1)}{{(){m.group(2)}}}",
+        code,
+        flags=re.IGNORECASE,
+    )
+    tok_pat = r"\{[A-Za-z0-9_.:$ -]+\}"
+    tokens: set[str] = set()
+    for match in re.finditer(rf"({tok_pat})\s*\(", code):
+        tokens.add(match.group(1))
+    for match in re.finditer(
+        rf"(?:^|[;{{]|/\*|\*/|\bmaterialize\s*\(|\btoscalar\s*\(|\b(?:join|lookup|union)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*)(?:\s*\()*\s*({tok_pat})(?:\s*\))*\s*(?:\*/\s*)?(?=\|)"
+        rf"|\(\s*({tok_pat})\s*(?:\*/\s*)?(?=\|)"
+        rf"|\binvoke\s+({tok_pat})"
+        rf"|\blet\s+[A-Za-z_]\w*\s*=(?:\s*\()*\s*({tok_pat})(?:\s*\))*\s*(?=[;|(])"
+        rf"|\blet\s+[A-Za-z_]\w*\s*=\s*(?:view\s*)?\([^)]*\)\s*\{{(?:\s*\()*\s*({tok_pat})(?:\s*\))*\s*(?=[;|(\}}])"
+        rf"|\bview\s*\([^)]*\)\s*\{{(?:\s*\()*\s*({tok_pat})(?:\s*\))*\s*(?=[;|(\}}])"
+        rf"|\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*\s*\{{(?:\s*\()*\s*({tok_pat})(?:\s*\))*\s*(?=[;|(\}}])"
+        rf"|\bfork\b(?:\s+[A-Za-z_]\w*\s*=)?\s*\((?:\s*\()*\s*({tok_pat})(?:\s*\))*\s*(?=[|)\(])"
+        rf"|\b(?:toscalar|materialize|table|totable)\s*\((?:\s*\()*\s*({tok_pat})(?:\s*\))*\s*(?=[|)\(,])",
+        code,
+        flags=re.IGNORECASE,
+    ):
+        tokens.update(g for g in match.groups() if g)
+    for m in re.finditer(rf"(\(\s*(?:\(\s*)*)({tok_pat})((?:\s*\))*)\s*(?:\*/\s*)?(?=\|)", code):
+        if m.group(1).count("(") > m.group(3).count(")"):
+            tokens.add(m.group(2))
+    for op in re.finditer(r"\b(?:union|join|lookup)\b", code):
+        pos = op.end()
+        flags = re.match(r"(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*", code[pos:])
+        pos += flags.end()
+        target = re.match(rf"(?:\s*\()*\s*({tok_pat})", code[pos:])
+        if target:
+            tokens.add(target.group(1))
+    for op in re.finditer(r"\b(?:find|search)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*\s+in\s*\(([^)]*)\)", code, re.IGNORECASE):
+        for tok in re.findall(tok_pat, op.group(1)):
+            tokens.add(tok)
+    return {tok for tok in tokens if re.search(r"[A-Za-z0-9_]", tok)}
+
+
+def opaque_functions(query: str, *, include_bare: bool = True) -> set[str]:
+    """Conservative callable and bare saved-function scanner across all expressions."""
+    code = _stripped_code(query)
+    quoted_calls, quoted_bare = _quoted_calls_and_table_sources(query)
+    code_no_flags = re.sub(
+        r"\b(?:union|join|lookup)\b(?:\s+([A-Za-z_][\w.]*)\s*=\s*([\w.*-]+))+",
+        lambda m: re.sub(r"\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+", " ", m.group(0)),
+        code,
+    )
+    code_no_flags = re.sub(
+        r"\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*\s*(?=[({])",
+        "partition ",
+        code_no_flags,
+        flags=re.IGNORECASE,
+    )
+    calls = set(re.findall(r"(?<![.\w])([A-Za-z_]\w*)\s*\(", code_no_flags))
+    calls.update(re.findall(r"\binvoke\s+([A-Za-z_]\w*)", code_no_flags))
+    calls.update(name for name, is_call in _union_operands(code) if is_call)
+    calls.update(quoted_calls)
+    local_funcs = set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=\s*(?:view\s*)?\(", code))
+    local_vars = set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=", code))
+    result = calls - _BUILTINS - _STATEMENT_PREFIXES - local_funcs - local_vars
+    result |= _parameter_source_or_call_tokens(query)
+    if include_bare:
+        bare = _bare_source_identifiers(code) | (quoted_bare - _BUILTINS - _STATEMENT_PREFIXES - local_vars)
+        known_tables = set(migrator.mapping_catalog.load_mapping_catalog()["tables"])
+        result |= (bare - known_tables - local_vars)
+    return result
+
+
 def convert_workbook(source: dict, resolutions: dict | None = None,
-                     tables: list[str] | None = None) -> dict:
+                     tables: list[str] | None = None,
+                     allowed_workspace_functions=()) -> dict:
     """Return an intact review draft and report. Never resolves or executes live.
 
     resolutions maps original query pointers to {querySha256, tables, evidence}.
@@ -238,18 +573,27 @@ def convert_workbook(source: dict, resolutions: dict | None = None,
                   "Explicit workspace/app/resource/cluster/database function cannot be "
                   "replaced by blank AH selection. Keep this panel and review its sources.")
             continue
-        source_calls = set(re.findall(
-            r"(?:^|;)\s*([A-Za-z_]\w*)\s*\(|\binvoke\s+([A-Za-z_]\w*)", code))
-        opaque = {name for pair in source_calls for name in pair if name} - {
-            "datatable", "range", "print",
-        }
-        if opaque:
+        evidence = (resolutions or {}).get(path)
+        reviewed_tables = (evidence.get("tables") if isinstance(evidence, dict)
+                           and isinstance(evidence.get("tables"), list) else tables) or ()
+        explicit_calls = opaque_functions(raw, include_bare=False)
+        opaque = opaque_functions(raw) - (
+            set(reviewed_tables) - explicit_calls - set(allowed_workspace_functions)
+            - (set(evidence.get("workspaceFunctions", ()))
+               if isinstance(evidence, dict) and isinstance(evidence.get("workspaceFunctions"), list)
+               else set())
+        )
+        function_names = evidence.get("workspaceFunctions", []) if isinstance(evidence, dict) else []
+        if (not isinstance(function_names, list)
+                or any(not isinstance(name, str) for name in function_names)
+                or len(set(function_names)) != len(function_names)
+                or set(function_names) != opaque
+                or not opaque <= set(allowed_workspace_functions)):
             entry["status"] = "blocked"
             issue(path, "saved-function",
                   f"Source function(s) {', '.join(sorted(opaque))} need a reviewed AH "
-                  "definition and source evidence. Inline and validate; do not fabricate tables.")
+                  "workspace definition, exact aliases and separate underlying table evidence.")
             continue
-        evidence = (resolutions or {}).get(path)
         resolved = tables
         entry["resolutionEvidence"] = "caller-reviewed tables" if tables is not None else None
         if evidence is not None:
@@ -264,9 +608,18 @@ def convert_workbook(source: dict, resolutions: dict | None = None,
                 continue
             resolved = evidence["tables"]
             entry["resolutionEvidence"] = evidence["evidence"]
+        if opaque:
+            entry["workspaceFunctions"] = sorted(opaque)
+            if not resolved or opaque & set(resolved):
+                entry["status"] = "blocked"
+                issue(path, "function-underlying-tables",
+                      "Supply underlying source tables separately from workspace function aliases.")
+                continue
         contract = migrator.convert(raw, tables=resolved, source_id=path,
                                     artifact_type="workbook", resolve=False)
         entry["conversion"] = contract
+        if "Watchlist" in contract["resolvedTables"]:
+            entry["referenceInputs"] = ["Watchlist"]
         entry["status"] = contract["status"]
         if contract["status"] == "blocked" or resolved is None:
             issue(path, "mapping-or-resolution",
@@ -278,6 +631,11 @@ def convert_workbook(source: dict, resolutions: dict | None = None,
             issue(path, "query-review",
                   "; ".join(x["reason"] for x in contract["unsupported"])
                   or "Shared migrator requires source/mapping review; conversion is not deterministic.")
+        if opaque and contract["convertedKql"] != raw:
+            entry["status"] = "blocked"
+            issue(path, "function-query-rewrite",
+                  "Shared conversion would modify a preserved function query; review a source change separately.")
+            continue
         node["query"] = contract["convertedKql"]
         node["queryType"] = AH
         converted_nodes.add(id(node))
@@ -285,6 +643,10 @@ def convert_workbook(source: dict, resolutions: dict | None = None,
             gates.add("ah-query-backed-parameters")
         # The mapping catalog's resolve-to-self does not establish blank-selection visibility.
         gates.add("blank-ah-selection-table-visibility")
+        if opaque:
+            gates.add("sentinel-workspace-function-availability-and-branch-coverage")
+        if re.search(r"\bexternaldata\s*[\[(]", code):
+            gates.add("external-source-binding-and-availability")
         if references(raw) - references(node["query"]):
             raise AssertionError(f"Parameter templates lost at {path}")
 

@@ -827,6 +827,47 @@ def _verify_workbook_package(
         if len(install_rows) != 1 or len(registration_rows) != 1:
             raise RuntimeError("Defender workbook identities are missing or duplicated")
         install, registration = install_rows[0], registration_rows[0]
+        function_records = authored["contentProvenance"].get("requiredWorkspaceFunctions", [])
+        from .workbook_functions import validate_functions, function_definition, function_parameters
+        from .workbooks import _root
+        if function_records:
+            validate_functions(_root(solution), function_records)
+        parser_dependencies = []
+        for record in function_records:
+            saved = [resource for resource in resources if
+                     resource.get("type", "").lower() == "microsoft.operationalinsights/workspaces/savedsearches"
+                     and resource.get("properties", {}).get("functionAlias") == record["functionAlias"]]
+            if len(saved) != 1:
+                raise RuntimeError("Required workspace function must have exactly one emitted savedSearch")
+            resource = saved[0]
+            _, definition = function_definition(_root(solution), record["sourcePath"])
+            emitted_query = resource.get("properties", {}).get("query")
+            source_query = definition["FunctionQuery"]
+            if ("condition" in resource or "copy" in resource
+                    or not isinstance(emitted_query, str)
+                    or emitted_query not in (source_query, f"{source_query}\n")
+                    or resource.get("properties", {}).get("functionParameters", "") != function_parameters(definition)):
+                raise RuntimeError("Required workspace function must be unconditional and match current source")
+            name = resource.get("name")
+            if not isinstance(name, str) or not name:
+                raise RuntimeError("Required savedSearch has no exact resource identity")
+            if name.startswith("["):
+                if name.startswith("[[") or not name.endswith("]"):
+                    raise RuntimeError("Invalid required savedSearch ARM identity")
+                argument = name[1:-1]
+            else:
+                if len(name.split("/")) != 2 or not all(name.split("/")):
+                    raise RuntimeError("Required savedSearch identity must include workspace and resource name")
+                argument = "'" + name.replace("'", "''") + "'"
+            dependency = f"[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', {argument})]"
+            if dependency not in parser_dependencies:
+                parser_dependencies.append(dependency)
+        expected_install_dependencies = [
+            "[extensionResourceId(resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspace')), 'Microsoft.SecurityInsights/contentPackages', variables('_solutionId'))]",
+            *parser_dependencies,
+        ]
+        if install.get("dependsOn") != expected_install_dependencies:
+            raise RuntimeError("Workbook installation must depend on exact mandatory workspace functions")
         inner = install.get("properties", {}).get("template") or {}
         quartet = {"packageId": package_id, "packageVersion": version,
                    "contentId": content_id, "contentVersion": version}
@@ -850,7 +891,7 @@ def _verify_workbook_package(
         full_provenance = {**quartet, **{
             key: authored["contentProvenance"][key]
             for key in ("requiredWorkloads", "requiredDataConnectors")
-        }}
+        }, "requiredWorkspaceFunctions": function_records}
         expected_name = (
             "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',"
             f"concat(parameters('workspace'),'-dwb-',uniqueString('{content_id}')))]"

@@ -112,8 +112,8 @@ separate.
 `convert_workbooks`, `validate_workbooks`, and `selected_workbook_files`.
 Conversion is offline. Reviewed resolution records bind each original query
 JSON pointer to its exact raw query hash, complete source tables, and evidence.
-Unknown dependencies, saved functions, unsupported providers, stale resolution,
-and unresolved review findings remain blockers. The converter records all
+Unknown dependencies, unreviewed saved functions, unsupported providers, stale
+resolution, and unresolved review findings remain blockers. The converter records all
 source items in `workbooks-manifest.json`, separate from detection `manifest.json`.
 Queries removed as proven scope-only helpers remain in provenance.
 
@@ -125,6 +125,77 @@ Deployment copies omit authored `xdrMetadata` and carry exactly the four resolve
 package/content identity and version keys. Full registration also retains
 `requiredWorkloads` and `requiredDataConnectors`. Layout and ARM-looking literals
 are preserved; literal escaping applies only to package copies.
+
+### Workbook gap review and workspace functions
+
+Create a read-only proposal with
+`workbook-dependency-plan --solution <path> --run-id <run-id>`.
+The JSON plan carries `planSha256`, complete source/query inventory, connector
+alternatives, and function candidates. Optional `--results <metadata-file>
+--workspace-id <approved-workspace-id>` imports approved lab evidence; planning
+and import never execute queries or authenticate.
+
+Apply explicit decisions with `workbook-review --solution <path> --run-id <run-id>
+--plan <plan-file> --decisions <decision-file> --plan-sha256 <hash> --actor <reviewer>
+--reference <review-reference> --output-dir <new-run-local-directory>`.
+The review emits supported conversion configuration and a review receipt, not
+source workbook or parser edits. Use the emitted configuration with `convert`.
+`convert --overwrite-workbooks` replaces only unchanged, hash-bound managed
+workbook drafts; it never authorizes overwriting existing detections. The
+ordinary `--overwrite` option remains a separate, explicit content decision.
+
+Present dependency gaps before asking for acceptance: show the workbook,
+query/picker JSON pointer, exact query hash, proposed data types, evidence,
+workload mappings, connector alternatives, and remaining technical failures.
+Offer static/manual review or explicitly approved lab discovery in either
+Authoring or Qualification. Static scanner proposals are not accepted evidence.
+Lab metadata identifies underlying inputs, not output columns or installed
+connectors. Parameterized queries need explicit bindings before execution;
+never send unresolved workbook placeholders or silently choose a time range.
+
+The reviewer can accept, change, or defer each proposal. Preserve separate
+per-query records even when identical proposals are accepted as a batch.
+Changed query templates or prerequisite definitions invalidate prior reviews.
+Deferral leaves a gap unresolved; acceptance cannot waive query errors,
+unsupported providers, incomplete source evidence, or runtime/UI gates.
+
+Where reviewed connector alternatives satisfy the same requirement, prefer
+the modern connector over a deprecated route. Cite authoritative recommendation
+or lifecycle evidence; do not infer deprecation from a connector's name, require
+both alternatives by default, or claim that a selected connector is installed.
+
+[Sentinel workspace functions are supported in Advanced Hunting and workbooks](https://learn.microsoft.com/defender-xdr/advanced-hunting-custom-functions#custom-functions-imported-from-microsoft-sentinel-log-analytics),
+but not in Custom Detection rules. Preserve reviewed function invocations
+instead of requiring inlining solely because the source is a workspace function.
+Authored `contentProvenance.requiredWorkspaceFunctions` records bind each
+`functionAlias` to its packaged `sourcePath` and exact `sourceSha256`.
+Function aliases are not table names: underlying source data types require
+separate evidence. The connected workspace, access, nested dependencies,
+external data, and exact parameterized execution remain runtime concerns.
+`_GetWatchlist` is a supported Sentinel built-in available in AH, not a custom
+parser to install or an unsupported-function gap. Preserve its calls and
+review underlying data inputs separately; only actual execution/data failures
+are findings.
+`Watchlist` is platform reference data, not connector-fed telemetry. Retain it
+in raw source-lineage evidence when present, but do not propose a workload or
+connector telemetry requirement for it or ask the user to install a connector.
+This exemption does not hide unrelated unknown data types or actual query errors.
+
+Distinguish required functions from reviewed optional vendor branches. A missing
+optional fuzzy-union branch can leave the query usable but its coverage incomplete.
+Keep warnings visible; unavailable branches are not verified zero-event results.
+Offer keep, remove, or defer. A removal request requires an explicit parser-change
+preview and fresh review/validation; it must not silently delete shared parser
+resources, unrelated branches, or panels. Catalog joins may reintroduce removed
+products and need coordinated changes.
+
+V3.1 installs required workspace parsers unconditionally and orders workbook
+installation after their actual `Microsoft.OperationalInsights/workspaces/savedSearches`
+resources in the same enclosing ARM template. Parser content-template registration
+alone is not installation. Missing, stale, ambiguous, or conditional required
+resources block packaging. Full workbook registration retains function prerequisites;
+the installed notebook retains only the identity/version quartet. ARM ordering
+does not establish AH propagation, query correctness, or provider/UI acceptance.
 
 **Provider contract unverified:** generated templates and successful local tests
 are candidate evidence, not accepted installation or publication evidence.

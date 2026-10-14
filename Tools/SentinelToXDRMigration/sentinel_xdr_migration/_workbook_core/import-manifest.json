@@ -32,7 +32,7 @@
     },
     {
       "component": "data/xdr-workbook.schema.json",
-      "sha256": "77753a0631af6d15432a2078c052145f9ca1a6c19245391c6751407926d25f2d"
+      "sha256": "32735770ee130a61cf0841adecf72a72c32ad10d808c425583642fbbcd7b6c2e"
     },
     {
       "component": "dataframes.py",
@@ -75,7 +75,7 @@
     },
     {
       "component": "workbook.py",
-      "sha256": "4f223391a205e9aa2bf25fa620aa35e284e3f49bdec67228394a33623cf2b817",
+      "sha256": "283f707c82ac18ed686056177fdce4418c355a219ade1925b8cf87720b5ba4ae",
       "originalSha256": "eb931b23333994a56e94d3c8975c7663db258b9b8032b0ff171b9e456e1b3942"
     },
     {
@@ -99,6 +99,10 @@
     "Removed CLI, live resolver/schema, automatic seed and packaging/UI routes",
     "Errors preserved without silent catalog/schema fallback",
     "Resolution evidence binds original raw wrapper/template strings",
-    "Catalog commentary neutralized; conversion mappings unchanged"
+    "Catalog commentary neutralized; conversion mappings unchanged",
+    "Hash-reviewed Sentinel workspace functions preserved in workbooks with distinct source tables and runtime gates",
+    "_GetWatchlist recognized as built-in; Watchlist lineage recorded separately from telemetry prerequisites",
+    "Authored schema permits exact workspace-function prerequisites and per-query platform reference inputs",
+    "Externaldata is a source operator; union branch discovery remains explicitly heuristic and nonexhaustive"
   ]
 }

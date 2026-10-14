@@ -65,15 +65,26 @@
             }
           }
         },
+        "requiredWorkspaceFunctions": {"type": "array", "items": {"$ref": "#/$defs/workspaceFunction"}},
         "dependencyReviewRequired": {"const": false}
       },
       "additionalProperties": false
     }
   },
   "$defs": {
+    "workspaceFunction": {
+      "type": "object",
+      "required": ["functionAlias", "sourcePath", "sourceSha256"],
+      "properties": {
+        "functionAlias": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+        "sourcePath": {"type": "string", "pattern": "^(Parsers|Workspace Functions)/(?!/|\\.{1,2}/)(?!.*(?:/\\.{1,2}/|//))[^\\\\]+\\.yaml$"},
+        "sourceSha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
     "guid": {"type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "dataTypes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "dataTypes": {"type": "array", "items": {"type": "string", "minLength": 1, "not": {"const": "Watchlist"}}},
     "query": {
       "type": "object",
       "required": ["sourcePath", "outputPath", "sourceSha256", "targetSha256", "status"],
@@ -82,7 +93,9 @@
         "outputPath": {"type": ["string", "null"]},
         "sourceSha256": {"$ref": "#/$defs/sha256"},
         "targetSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
-        "status": {"enum": ["converted", "removed-scope-helper"]}
+        "status": {"enum": ["converted", "removed-scope-helper"]},
+        "workspaceFunctions": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}},
+        "referenceInputs": {"type": "array", "uniqueItems": true, "items": {"const": "Watchlist"}}
       },
       "allOf": [{
         "if": {"properties": {"status": {"const": "removed-scope-helper"}}},

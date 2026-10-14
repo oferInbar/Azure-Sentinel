@@ -33,6 +33,21 @@ selected solution release; the Notebook format version is unchanged.
 
 Installation and stored installation templates carry exactly the resolved
 package/content identity quartet. Full registration also retains prerequisites.
+Reviewed workspace functions are declared in `requiredWorkspaceFunctions` with
+`functionAlias`, solution-relative `sourcePath`, and current `sourceSha256`.
+Required parser installation is mandatory: the workbook's outer installation
+deployment must depend on the actual unconditional
+`Microsoft.OperationalInsights/workspaces/savedSearches` resources emitted in
+the same enclosing template. Do not substitute parser catalog registration for
+installation, invent dependencies on external resources, or allow selection
+flags to skip required parsers. Missing/stale/ambiguous prerequisites block
+packaging before template mutation. Parser overwrites are expected for this route.
+Keep workspace-function prerequisites in full registration; installed content
+provenance remains the quartet. ARM ordering does not prove AH visibility or
+query/runtime acceptance.
+Do not classify `_GetWatchlist` as an installable parser or `Watchlist` as
+connector-fed telemetry. Raw reference lineage is separate from required
+workload/connector data types.
 Do not rewrite source workbooks, remove panels, silently resolve blockers, or
 treat conversion findings as permission to change toolkit implementation.
 

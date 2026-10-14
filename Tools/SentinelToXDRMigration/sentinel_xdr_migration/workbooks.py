@@ -19,7 +19,7 @@ from jsonschema import Draft202012Validator
 
 from . import __version__
 from .artifacts import report_directory as resolve_report_directory
-from .dependencies import dependency_validation_errors, workload_records
+from .dependencies import dependency_validation_errors, workload_records, telemetry_data_types
 from ._workbook_core import workbook, mapping_catalog
 
 MANIFEST = "workbooks-manifest.json"
@@ -181,13 +181,13 @@ def _content_release(value: str | None) -> str | None:
 def _dependencies(queries: list[dict], configured: dict | None, reviewed_sources=()) -> dict:
     targets, source_targets = set(), {}
     catalog = mapping_catalog.load_mapping_catalog()["tables"]
-    for table in reviewed_sources:
+    for table in telemetry_data_types(reviewed_sources):
         source_targets[table] = catalog.get(table, {}).get("ahTable") or table
     for query in queries:
         contract = query.get("conversion")
         if not contract or query["status"] == "removed-scope-helper":
             continue
-        for table in contract["resolvedTables"]:
+        for table in telemetry_data_types(contract["resolvedTables"]):
             target = catalog.get(table, {}).get("ahTable") or table
             source_targets[table] = target
             targets.add(target)
@@ -222,6 +222,8 @@ def _dependencies(queries: list[dict], configured: dict | None, reviewed_sources
         reasons.append("Unknown output workload: " + ", ".join(unknown))
     if any(r.get("workload") == "sentinel" for r in records) and connectors is None:
         reasons.append("Explicit source-associated Sentinel connector prerequisites required.")
+    if settings.get("dependencyReviewRequired") is True:
+        reasons.append("Reviewer deferred dependencies; explicit current review is required.")
     provenance = {"requiredWorkloads": records, "requiredDataConnectors": output_connectors,
                   "dependencyReviewRequired": bool(reasons)}
     errors = dependency_validation_errors({"contentProvenance": {
@@ -237,6 +239,8 @@ def _write(path: Path, content: bytes, previous: bytes | None) -> None:
     if previous is None:
         with path.open("xb") as handle:
             handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
     else:
         staged = path.with_name(f".{path.name}.{uuid4().hex}.staged")
         try:
@@ -269,6 +273,13 @@ def convert_workbooks(solution, *, config=None, report_directory=None, overwrite
     sources = {row["path"] for row in inventory}
     if set(resolutions) - sources or set(dependencies) - sources:
         raise ValueError("Workbook configuration references missing source content.")
+    from .workbook_functions import validate_functions
+    function_dependencies = {}
+    for relative, configured in dependencies.items():
+        if not isinstance(configured, dict):
+            raise ValueError("Workbook dependencies must be an object.")
+        function_dependencies[relative] = validate_functions(
+            root, configured.get("requiredWorkspaceFunctions", []))
     version = _release(_solution_data(root), settings)
     output_dir = _path(root, "XDR Workbooks")
     _files(root, "XDR Workbooks")
@@ -298,8 +309,15 @@ def convert_workbooks(solution, *, config=None, report_directory=None, overwrite
             raise ValueError("Per-workbook resolutions must be an object.")
         if set(query_resolutions) - {q["path"] for q in row["queries"]}:
             raise ValueError("Workbook resolution references a missing query pointer.")
-        converted = workbook.convert_workbook(source, resolutions=query_resolutions)
+        functions = function_dependencies.get(row["path"], [])
+        converted = workbook.convert_workbook(
+            source, resolutions=query_resolutions,
+            allowed_workspace_functions=[r["functionAlias"] for r in functions])
         target, report = converted["workbook"], converted["report"]
+        used_functions = {name for q in report["queries"] for name in q.get("workspaceFunctions", [])}
+        if used_functions != {r["functionAlias"] for r in functions}:
+            report["issues"].append({"code": "workspace-function-coverage",
+                                    "message": "Workspace prerequisites must match exact query aliases."})
         output_surfaces = {q["path"]: q for q in workbook.query_surfaces(target)}
         originals = {q["path"]: q["querySha256"] for q in row["queries"]}
         for query in report["queries"]:
@@ -336,6 +354,8 @@ def convert_workbooks(solution, *, config=None, report_directory=None, overwrite
             **{key: dependency[key] for key in (
                 "requiredWorkloads", "requiredDataConnectors", "dependencyReviewRequired")},
         }
+        if functions:
+            target["contentProvenance"]["requiredWorkspaceFunctions"] = functions
         relative = "XDR Workbooks/" + row["path"].removeprefix("Workbooks/")
         output = _path(root, relative)
         content = (json.dumps(target, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
@@ -411,6 +431,14 @@ def validate_workbooks(solution, *, selected_only=False) -> dict:
         provenance = document.get("contentProvenance", {})
         source = provenance.get("source", {})
         conversion = provenance.get("conversion", {})
+        from .workbook_functions import validate_functions
+        function_records = provenance.get("requiredWorkspaceFunctions", [])
+        try:
+            validated_functions = validate_functions(root, function_records)
+        except (ValueError, TypeError) as exc:
+            errors.append(str(exc))
+            validated_functions = []
+        approved_aliases = {record["functionAlias"] for record in validated_functions}
         identity, instance = _guid(metadata.get("contentId")), _guid(metadata.get("instanceId"))
         if not identity or not instance or identity == instance:
             errors.append("Canonical and instance identities must be distinct GUIDs.")
@@ -443,12 +471,15 @@ def validate_workbooks(solution, *, selected_only=False) -> dict:
         else:
             recorded_source, recorded_output = set(), set()
             original_queries = {q["path"]: q["querySha256"] for q in row["queries"]} if row else {}
+            original_surfaces = {}
             removed_prefixes = []
             if row:
                 original = _document(_path(root, row["path"]))
+                original_surfaces = {q["path"]: q for q in workbook.query_surfaces(original)}
                 parameters, removed, _ = workbook._scope_parameters(original)
                 removed_prefixes = [pointer + "/" for pointer, parameter in parameters
                                     if parameter["name"] in removed]
+            used_aliases = set()
             for query in queries:
                 source_pointer, output_pointer = query.get("sourcePath"), query.get("outputPath")
                 if source_pointer in recorded_source or query.get("sourceSha256") != original_queries.get(source_pointer):
@@ -463,20 +494,78 @@ def validate_workbooks(solution, *, selected_only=False) -> dict:
                 if query.get("status") != "converted":
                     errors.append("Query conversion remains blocked or review-required.")
                 output_query = output_queries.get(output_pointer)
-                if output_pointer in recorded_output or not output_query or query.get("targetSha256") != workbook.query_hash(output_query["node"]["query"]):
-                    errors.append("Output query provenance is missing, duplicate or stale.")
-                if output_query and output_query["queryType"] != workbook.AH:
-                    errors.append("Converted query must use Advanced Hunting.")
+                source_query = original_surfaces.get(source_pointer)
+                try:
+                    raw_source = workbook._raw_query(
+                        source_query["node"]["query"], source_query["queryType"]) if source_query else ""
+                    raw_target = workbook._raw_query(
+                        output_query["node"]["query"], output_query["queryType"]) if output_query else ""
+                    source_aliases = workbook.opaque_functions(raw_source) if source_query else set()
+                    target_aliases = workbook.opaque_functions(raw_target) if output_query else set()
+                    explicit_calls = (
+                        (workbook.opaque_functions(raw_source, include_bare=False) if source_query else set())
+                        | (workbook.opaque_functions(raw_target, include_bare=False) if output_query else set())
+                    )
+                except ValueError as exc:
+                    errors.append(str(exc))
+                    source_aliases, target_aliases, explicit_calls = set(), set(), set()
                 contract = query.get("conversion")
                 if not isinstance(contract, dict):
                     errors.append("Shared-converter query contract must be an object.")
                     contract = {}
+                resolved_tables = (set(contract.get("resolvedTables", []))
+                                   if isinstance(contract.get("resolvedTables"), list) else set())
+                aliases = query.get("workspaceFunctions", [])
+                alias_set = (set(aliases) if isinstance(aliases, list)
+                             and all(isinstance(a, str) for a in aliases) else set())
+                non_function_tables = resolved_tables - explicit_calls - approved_aliases - alias_set
+                source_aliases -= non_function_tables
+                target_aliases -= non_function_tables
+                if (not isinstance(aliases, list) or any(not isinstance(a, str) for a in aliases)
+                        or len(aliases) != len(set(aliases))
+                        or set(aliases) != source_aliases or set(aliases) != target_aliases
+                        or not source_aliases <= approved_aliases):
+                    errors.append("Workspace function aliases must exactly match current source, target and prerequisites.")
+                used_aliases.update(source_aliases)
+                if output_pointer in recorded_output or not output_query or query.get("targetSha256") != workbook.query_hash(output_query["node"]["query"]):
+                    errors.append("Output query provenance is missing, duplicate or stale.")
+                if output_query and output_query["queryType"] != workbook.AH:
+                    errors.append("Converted query must use Advanced Hunting.")
                 if (not query.get("resolutionEvidence") or contract.get("status") != "converted"
                         or contract.get("sourceId") != source_pointer
                         or not output_query
                         or contract.get("convertedKql") != output_query["node"]["query"]):
                     errors.append("Current reviewed shared-converter query evidence is required.")
+                if source_query:
+                    try:
+                        replay = workbook.migrator.convert(
+                            workbook._raw_query(source_query["node"]["query"], source_query["queryType"]),
+                            tables=contract.get("resolvedTables"), source_id=source_pointer,
+                            artifact_type="workbook", resolve=False)
+                        if replay != contract:
+                            errors.append("Shared query contract does not match current deterministic conversion.")
+                    except ValueError as exc:
+                        errors.append(str(exc))
+                references = sorted(set(contract.get("resolvedTables", [])) & {"Watchlist"})
+                if query.get("referenceInputs", []) != references:
+                    errors.append("Platform reference inputs must match reviewed raw source lineage.")
+                catalog = mapping_catalog.load_mapping_catalog()["tables"]
+                expected_types = {catalog.get(table, {}).get("ahTable") or table
+                                  for table in telemetry_data_types(contract.get("resolvedTables", []))}
+                declared_types = {table for record in provenance["requiredWorkloads"] for table in record["dataTypes"]}
+                if not expected_types <= declared_types:
+                    errors.append("Workload prerequisites do not cover reviewed telemetry source tables.")
+                if source_aliases and (
+                    not contract.get("resolvedTables")
+                    or source_aliases & set(contract.get("resolvedTables", []))
+                    or not source_query or not output_query
+                    or workbook._raw_query(source_query["node"]["query"], source_query["queryType"])
+                    != output_query["node"]["query"]
+                ):
+                    errors.append("Preserved function calls require distinct underlying table evidence and unchanged KQL.")
                 recorded_output.add(output_pointer)
+            if used_aliases != approved_aliases:
+                errors.append("Workspace function prerequisites must exactly cover query aliases.")
             if recorded_source != set(original_queries) or recorded_output != set(output_queries):
                 errors.append("Query provenance does not cover complete original/output inventory.")
         results.append({"path": path.relative_to(root).as_posix(),

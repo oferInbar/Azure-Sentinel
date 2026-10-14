@@ -8,7 +8,7 @@ Both entry points live in the V3 directory:
   and remains the CI entry point.
 
 Both entry points use `common\commonFunctions.ps1` for the core packaging
-implementation. Only V3.1 enables Defender XDR Custom Detection injection.
+implementation. Only V3.1 enables Defender XDR Custom Detection and Defender Workbook injection.
 
 They are alternative entry points, not two required packaging steps. Use V3
 for a legacy Sentinel-only package and V3.1 when the solution contains XDR
@@ -65,12 +65,15 @@ For a solution carrying the five corresponding families:
 | `DeployWorkbook` | `true` | Sentinel Workbook and WorkbookTemplate content |
 | `DeployDataConnector` | `true` | DataConnector, ResourceDataConnector/ResourcesDataConnector, DataType, connector metadata and catalog resources |
 | `DeployCustomDetection` | `false` | Both Custom Detection installation and Content Hub registration |
+| `DeployDefenderWorkbook` | `false` | Both Defender Workbook installation and Content Hub registration |
 
 `common/contentDeploymentParameters.json` is the shared vocabulary used by
 generation, UI, Python artifact checks, and tests. HuntingQuery, InvestigationQuery,
 Parser, Watchlist/WatchlistTemplate, Notebook, AutomationRule and SummaryRule have
 their own `Deploy<Kind>` controls **when emitted**, not speculative empty controls.
-No DefenderWorkbook emitter/control is added. Classification uses content kinds,
+Required workspace parsers declared by selected Defender Workbooks remain
+unconditional prerequisites, independent of optional content-family selections.
+Classification uses content kinds,
 resource types and explicit emitter ownership, not display names, counts or
 query text. Unclassified content fails with its resource name/type/kind.
 
@@ -110,6 +113,31 @@ installation (plus shared infrastructure/attribution when present), not an
 uninstall operation. There is no new all-off runtime check. A selection can
 leave prerequisites unmet: the booleans do not rewrite dependency semantics,
 guarantee Content Hub acceptance, or provision missing external dependencies.
+
+### Defender Workbook parser prerequisites
+
+Authored workbooks declare reviewed function prerequisites in
+`contentProvenance.requiredWorkspaceFunctions`: each record contains the exact
+`functionAlias`, packaged solution-relative `sourcePath`, and current
+`sourceSha256`. V3.1 resolves these records to the actual top-level
+`Microsoft.OperationalInsights/workspaces/savedSearches` resources, not parser
+content templates. The outer Defender Workbook installation deployment adds
+`dependsOn` edges to those resources, preserving its content-package dependency.
+Required parser installation is mandatory and supports normal same-resource
+updates. Missing, duplicate, conditional, or stale prerequisites are errors,
+not dependencies on nonexistent resources or permission to skip a parser.
+
+`_GetWatchlist` is a supported built-in, not an installable parser prerequisite.
+Its `Watchlist` input is platform reference data: preserve raw lineage, but
+reject it in connector-fed telemetry data types in required workload/connector
+records.
+
+Full workbook registration carries reviewed function prerequisites. Installed
+notebook provenance remains exactly the package/content identity/version
+quartet. Deployment ordering does not verify connected-workspace access, AH
+propagation, nested optional vendor coverage, query correctness, or the preview
+workbook provider contract. Reviewed Sentinel workspace functions can be used
+in AH and workbooks; this does not make them supported in Custom Detection rules.
 
 **Compatibility:** `E5Flavor` and `RegisterE5Content` are no longer generated.
 Update external parameter files to use only controls declared by that package;
