@@ -59,6 +59,7 @@ from .target_config import resolve_qualification_target
 from .workflow import (
     STAGES,
     WORKFLOW_PROFILES,
+    build_consolidated_review_packet,
     complete_workflow_stage,
     initialize_workflow,
     next_workflow_stage,
@@ -169,6 +170,37 @@ def main(argv: list[str] | None = None) -> int:
         "workbook-review", help="Apply complete hash-bound accept/change/defer decisions to run-local config and receipt.")
     for option in ("solution", "plan", "decisions", "plan-sha256", "actor", "reference", "output-dir"):
         workbook_review.add_argument("--" + option, required=True)
+    for review_cmd in ("review-packet", "consolidated-review-plan"):
+        review_packet_parser = subparsers.add_parser(
+            review_cmd,
+            help=(
+                "Build one consolidated, hash-bound review packet covering outstanding "
+                "detection and workbook review items."
+            ),
+        )
+        review_packet_parser.add_argument("--solution", required=True)
+        review_packet_parser.add_argument(
+            "--results",
+            help="Exact-query-bound successful LA metadata results for detection dependencies.",
+        )
+        review_packet_parser.add_argument(
+            "--workbook-results",
+            help="Exact-query-bound successful LA metadata results for workbook dependencies.",
+        )
+        review_packet_parser.add_argument(
+            "--workspace-id",
+            help="Explicitly approved lab workspace customer ID.",
+        )
+        review_packet_parser.add_argument(
+            "--rule",
+            action="append",
+            dest="rule_selectors",
+            help="Optional rule ID, filename, or stem filter; repeat to select multiple.",
+        )
+        review_packet_parser.add_argument(
+            "--output",
+            help="Optional path to write the consolidated review packet JSON.",
+        )
     migration = subparsers.add_parser("migrate-reports", help="Plan a non-destructive copy of legacy reports into solution Logs.")
     migration.add_argument("--solution", required=True)
     migration.add_argument("--apply", action="store_true", help="Copy after reviewing the dry-run; originals are preserved.")
@@ -665,7 +697,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Authorize one exact ReleaseNotes-only refresh without incrementing the package version.",
     )
     notes_refresh.add_argument("--solution", required=True)
-    notes_refresh.add_argument("--release-date", required=True)
+    notes_refresh.add_argument(
+        "--release-date",
+        default=None,
+        help="Release date in DD-MM-YYYY format (defaults to today's date in DD-MM-YYYY).",
+    )
     notes_refresh.add_argument("--change-history", required=True)
     notes_refresh.add_argument(
         "--expected-package-input-sha256",
@@ -1058,7 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "solution", None) and args.command not in isolated_permission_commands:
             selection = select_run(args.solution, args.run_id)
         # Read-only status and migration planning must not initialize or change artifacts.
-        if args.command not in {"migrate-reports", "workflow-status", "workflow-next", "workflow-init", "workflow-runs", "workflow-verify-same-version-content-rebuild", "export-evidence", "preflight-deployment", "plan-deployment", "review-deployment-plan", "plan-runtime-query-consent", "confirm-primary-lab-setting", "review-runtime-query-consent", "revoke-lab-runtime-query-consent", "check-runtime-query-consent", "coordinator-enroll", "coordinator-status", "coordinator-reconcile", "coordinator-event", "coordinator-claim", "coordinator-heartbeat", "coordinator-ack", *isolated_permission_commands} and not (
+        if args.command not in {"migrate-reports", "workflow-status", "workflow-next", "workflow-init", "workflow-runs", "workflow-verify-same-version-content-rebuild", "export-evidence", "preflight-deployment", "plan-deployment", "review-deployment-plan", "plan-runtime-query-consent", "confirm-primary-lab-setting", "review-runtime-query-consent", "revoke-lab-runtime-query-consent", "check-runtime-query-consent", "coordinator-enroll", "coordinator-status", "coordinator-reconcile", "coordinator-event", "coordinator-claim", "coordinator-heartbeat", "coordinator-ack", "review-packet", "consolidated-review-plan", *isolated_permission_commands} and not (
             args.command == "convert" and args.rule_id
         ):
             configure_logging(getattr(args, "solution", None))
@@ -1429,6 +1465,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.solution, plan_path=args.plan, decisions_path=args.decisions,
                 expected_plan_sha256=args.plan_sha256, actor=args.actor, reference=args.reference,
                 output_directory=args.output_dir)
+        elif args.command in {"review-packet", "consolidated-review-plan"}:
+            result = build_consolidated_review_packet(
+                args.solution,
+                detection_results_path=args.results,
+                workbook_results_path=args.workbook_results,
+                workspace_id=args.workspace_id,
+                rule_selectors=args.rule_selectors,
+            )
+            if args.output:
+                output_path = Path(args.output).expanduser().resolve()
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(
+                    json.dumps(result, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
         elif args.command == "inspect":
             from .workbook_workflow import inspect_content
             result = inspect_content(args.solution)

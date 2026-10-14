@@ -24,6 +24,103 @@ def _messages(values: list[str], empty: str) -> str:
     return "<ul>" + "".join(f"<li>{escape(value)}</li>" for value in values) + "</ul>"
 
 
+def summarize_report_blockers(
+    summary: dict[str, Any],
+    *,
+    kind: str = "transformation",
+) -> dict[str, Any]:
+    existing = summary.get("nextStepRecommendation") or summary.get("nextBlockerReview")
+    if isinstance(existing, dict) and existing.get("summary"):
+        return existing
+
+    blockers: list[dict[str, str]] = []
+    if kind == "runtime":
+        whitelisted = {
+            str(item.get("detection") or "")
+            for item in summary.get("sourceWhitelist") or []
+            if isinstance(item, dict) and item.get("applied") is True
+        }
+        for result in summary.get("results") or []:
+            if not isinstance(result, dict):
+                continue
+            detection = str(result.get("detection") or "")
+            status = str(result.get("status") or "")
+            if status in {"failed", "blocked"} and detection not in whitelisted:
+                reason = str(result.get("error") or status)
+                blockers.append(
+                    {
+                        "id": detection,
+                        "label": detection or "runtime-validation",
+                        "category": "runtimeValidation",
+                        "reason": reason,
+                    }
+                )
+    else:
+        for result in summary.get("results") or []:
+            if not isinstance(result, dict):
+                continue
+            status = str(result.get("status") or "")
+            errors = list(result.get("errors") or [])
+            reviews = list(result.get("reviewReasons") or [])
+            review_required = bool(result.get("reviewRequired"))
+            if status == "conflict" or errors or review_required or status == "needsReview":
+                label = str(
+                    result.get("displayName")
+                    or Path(str(result.get("source") or result.get("output") or "rule")).stem
+                )
+                reason = (
+                    str(errors[0])
+                    if errors
+                    else str(reviews[0])
+                    if reviews
+                    else f"status={status}"
+                )
+                blockers.append(
+                    {
+                        "id": str(result.get("ruleId") or result.get("outputRelativePath") or label),
+                        "label": label,
+                        "category": "technicalFailure" if errors or status == "conflict" else "conversionReview",
+                        "reason": reason,
+                    }
+                )
+
+    top_blockers = blockers[:3]
+    labels = [item["label"] for item in top_blockers]
+    if len(labels) == 1:
+        text = f"Next migration step: review blocker {labels[0]}."
+    elif len(labels) >= 2:
+        text = f"Next migration step: review blockers {labels[0]} and {labels[1]}."
+    else:
+        text = "Next migration step: no remaining blockers in this report."
+    return {
+        "status": "blocked" if blockers else "ready",
+        "blockerCount": len(blockers),
+        "topBlockers": top_blockers,
+        "blockerLabels": labels,
+        "summary": text,
+        "message": text,
+    }
+
+
+def _render_next_step_banner(recommendation: dict[str, Any]) -> str:
+    summary_text = str(recommendation.get("summary") or recommendation.get("message") or "")
+    top_blockers = recommendation.get("topBlockers") or []
+    blocker_items = "".join(
+        f'<li><strong>{escape(str(item.get("label") or item.get("id") or ""))}</strong>: '
+        f'{escape(str(item.get("reason") or item.get("category") or ""))}</li>'
+        for item in top_blockers
+        if isinstance(item, dict)
+    )
+    details_html = f"<ul>{blocker_items}</ul>" if blocker_items else ""
+    return (
+        '<section class="card next-step-banner">'
+        f"<strong>{escape(summary_text)}</strong>"
+        f"{details_html}"
+        "</section>"
+    )
+
+
+
 def render_transformation_report(summary: dict[str, Any]) -> str:
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     scope = summary.get("scope") or {}
@@ -59,6 +156,9 @@ def render_transformation_report(summary: dict[str, Any]) -> str:
             """
         )
 
+    recommendation_banner = _render_next_step_banner(
+        summarize_report_blockers(summary, kind="transformation")
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -73,6 +173,7 @@ def render_transformation_report(summary: dict[str, Any]) -> str:
   <h1>Sentinel to XDR transformation report</h1>
   <div class="muted">{escape(str(summary["solution"]))} - Generated {generated_at}</div>
   <p>{escape(scope_notice)}</p>
+  {recommendation_banner}
   <section class="cards">
     <div class="card">Rules attempted<strong>{summary["total"]}</strong></div>
     <div class="card">Converted<strong>{summary["converted"]}</strong></div>
@@ -146,6 +247,9 @@ def render_runtime_validation_report(summary: dict[str, Any]) -> str:
             """
         )
 
+    recommendation_banner = _render_next_step_banner(
+        summarize_report_blockers(summary, kind="runtime")
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -159,6 +263,7 @@ def render_runtime_validation_report(summary: dict[str, Any]) -> str:
 <main>
   <h1>{escape(str(summary["platform"]))} runtime validation</h1>
   <div class="muted">{escape(str(summary["solution"]))} - Provider: {escape(str(summary["provider"]))} - Generated {generated_at}</div>
+  {recommendation_banner}
   <section class="cards">
     <div class="card">Rules tested<strong>{summary["total"]}</strong></div>
     <div class="card">Passed<strong>{summary["valid"]}</strong></div>

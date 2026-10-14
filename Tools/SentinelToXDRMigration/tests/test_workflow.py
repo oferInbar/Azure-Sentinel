@@ -4000,6 +4000,234 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(export.call_args.kwargs["authoring_contract"]["inventory"]["complete"])
         self.assertEqual({"exported": True}, json.loads(stdout.getvalue()))
 
+    def test_workflow_status_and_reports_surface_next_step_blocker_recommendations(self) -> None:
+        from sentinel_xdr_migration.report import (
+            render_runtime_validation_report,
+            render_transformation_report,
+            summarize_report_blockers,
+        )
+
+        source_path = self._create_source_rules()[0]
+        source = yaml.safe_load(source_path.read_text())
+        source["query"] = (
+            "DeviceEvents | where TimeGenerated > ago(1h) "
+            "| project TimeGenerated, DeviceName, IPAddress"
+        )
+        source["entityMappings"] = [
+            {
+                "entityType": "Host",
+                "fieldMappings": [
+                    {"identifier": "FullName", "columnName": "DeviceName"},
+                ],
+            },
+            {
+                "entityType": "IP",
+                "fieldMappings": [
+                    {"identifier": "Address", "columnName": "IPAddress"},
+                ],
+            },
+        ]
+        source_path.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+            yolo=True,
+            campaign_id="next-step-campaign",
+        )
+        with using_run(self.solution, initialized["runId"]):
+            run_yolo_authoring(self.solution)
+            status = workflow_status(self.solution)
+            next_stage = next_workflow_stage(self.solution)
+
+        self.assertIn("nextStepRecommendation", status)
+        self.assertIn("nextBlockerReview", status)
+        self.assertEqual(status["nextStepRecommendation"], status["nextBlockerReview"])
+        self.assertEqual(
+            status["nextStepRecommendation"]["summary"],
+            next_stage["nextStepRecommendation"]["summary"],
+        )
+        rec = status["nextStepRecommendation"]
+        self.assertGreaterEqual(rec["blockerCount"], 1)
+        self.assertTrue(rec["topBlockers"])
+        self.assertIn("Next migration step: review blocker", rec["summary"])
+        self.assertTrue(
+            any(b["category"] == "detectionReview" for b in rec["topBlockers"])
+        )
+
+        # Verify report.py blocker summary and HTML rendering
+        manifest = {
+            "solution": str(self.solution),
+            "total": 2,
+            "converted": 1,
+            "needsReview": 1,
+            "reviewRequired": 1,
+            "conflicts": 1,
+            "results": [
+                {
+                    "ruleId": str(source["id"]),
+                    "displayName": source["name"],
+                    "status": "needsReview",
+                    "reviewRequired": True,
+                    "source": "Analytic Rules/Nested/Rule0.yaml",
+                    "output": "XDR Detections/Nested/Rule0.yaml",
+                    "reviewReasons": ["Multi-entity alert grouping assumption requires review"],
+                    "warnings": [],
+                    "errors": [],
+                },
+                {
+                    "ruleId": "rule-2",
+                    "displayName": "Second Rule",
+                    "status": "conflict",
+                    "reviewRequired": False,
+                    "source": "Analytic Rules/Nested/Rule1.yaml",
+                    "output": "XDR Detections/Nested/Rule1.yaml",
+                    "reviewReasons": [],
+                    "warnings": [],
+                    "errors": ["Missing required property"],
+                },
+            ],
+        }
+        report_summary = summarize_report_blockers(manifest, kind="transformation")
+        self.assertEqual(2, report_summary["blockerCount"])
+        self.assertIn("Next migration step: review blockers", report_summary["summary"])
+        html = render_transformation_report(manifest)
+        self.assertIn("next-step-banner", html)
+        self.assertIn("Next migration step: review blockers", html)
+
+        runtime_html = render_runtime_validation_report({
+            "solution": str(self.solution),
+            "platform": "Microsoft Graph Security Hunting API",
+            "provider": "graph",
+            "total": 1,
+            "valid": 0,
+            "invalid": 1,
+            "passed": 0,
+            "failed": 1,
+            "blocked": 0,
+            "results": [
+                {
+                    "detection": "XDR Detections/Nested/Rule0.yaml",
+                    "status": "failed",
+                    "error": "Semantic error in query",
+                }
+            ],
+        })
+        self.assertIn("next-step-banner", runtime_html)
+        self.assertIn("Next migration step: review blocker", runtime_html)
+
+    def test_consolidated_review_packet_inventories_detections_and_workbooks_and_cli(self) -> None:
+        from sentinel_xdr_migration.workflow import build_consolidated_review_packet
+
+        self._ensure_solution_release()
+        source_path = self._create_source_rules()[0]
+        source = yaml.safe_load(source_path.read_text())
+        source["description"] = "A" * 620 + " truncated description tail."
+        source["queryFrequency"] = "5m"
+        source["queryPeriod"] = "2d"
+        source["query"] = (
+            "CustomUnsupportedTable_CL | where TimeGenerated > ago(1h) "
+            "| project TimeGenerated, DeviceName, IPAddress"
+        )
+        source["entityMappings"] = [
+            {
+                "entityType": "Host",
+                "fieldMappings": [
+                    {"identifier": "FullName", "columnName": "DeviceName"},
+                ],
+            },
+            {
+                "entityType": "IP",
+                "fieldMappings": [
+                    {"identifier": "Address", "columnName": "IPAddress"},
+                ],
+            },
+        ]
+        source_path.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+
+        # Add a workbook with an unsupported query table so workbookQueryGaps are populated
+        workbooks_dir = self.solution / "Workbooks"
+        workbooks_dir.mkdir(parents=True, exist_ok=True)
+        (workbooks_dir / "SampleWorkbook.json").write_text(
+            json.dumps({
+                "version": "Notebook/1.0",
+                "items": [
+                    {
+                        "type": 3,
+                        "content": {
+                            "version": "KqlItem/1.0",
+                            "query": "CustomWorkbookTable_CL | take 10",
+                            "size": 0,
+                            "queryType": 0,
+                            "resourceType": "microsoft.operationalinsights/workspaces",
+                        },
+                        "name": "query - 0",
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+            yolo=True,
+            campaign_id="review-packet-campaign",
+        )
+        # Write a migration-config.yaml with a prior rule override decision inside the run directory
+        with using_run(self.solution, initialized["runId"]):
+            run_yolo_authoring(self.solution)
+            config_path = artifact_path(self.solution, "migration-config.yaml")
+            config_path.write_text(
+                yaml.safe_dump({
+                    "ruleOverrides": {
+                        str(source["id"]): {
+                            "description": "Reviewed concise description.",
+                        }
+                    }
+                }),
+                encoding="utf-8",
+            )
+            packet = build_consolidated_review_packet(self.solution)
+
+        self.assertEqual("1.0.0", packet["schemaVersion"])
+        self.assertEqual("consolidated-review-packet", packet["kind"])
+        self.assertEqual(64, len(packet["packetSha256"]))
+        self.assertGreaterEqual(packet["summary"]["totalItems"], 1)
+        self.assertTrue(packet["categories"]["timing"])
+        self.assertTrue(packet["categories"]["entityMappings"])
+        self.assertTrue(packet["categories"]["truncatedDescriptions"])
+        self.assertTrue(packet["categories"]["dependencyGaps"])
+        self.assertTrue(packet["categories"]["workbookQueryGaps"])
+        self.assertTrue(packet["groupedFindings"])
+        self.assertIn("nextStepRecommendation", packet)
+        self.assertIn("Next migration step: review blocker", packet["nextStepRecommendation"]["summary"])
+
+        # Verify preserved prior decision on the truncated description item
+        trunc_item = packet["categories"]["truncatedDescriptions"][0]
+        self.assertEqual("decided", trunc_item["decisionState"])
+        self.assertEqual(
+            "Reviewed concise description.",
+            trunc_item["priorDecision"]["description"],
+        )
+
+        # Verify CLI review-packet and consolidated-review-plan subcommands
+        output_file = self.solution / "review-packet-out.json"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            rc = cli_module.main([
+                "review-packet",
+                "--solution", str(self.solution),
+                "--run-id", initialized["runId"],
+                "--output", str(output_file),
+            ])
+        self.assertEqual(0, rc, stderr.getvalue())
+        cli_packet = json.loads(stdout.getvalue())
+        self.assertEqual(packet["packetSha256"], cli_packet["packetSha256"])
+        self.assertTrue(output_file.is_file())
+        written_packet = json.loads(output_file.read_text(encoding="utf-8"))
+        self.assertEqual(packet["packetSha256"], written_packet["packetSha256"])
+
 
 if __name__ == "__main__":
     unittest.main()

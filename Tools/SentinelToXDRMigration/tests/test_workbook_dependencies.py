@@ -211,6 +211,22 @@ def test_function_prerequisite_failures_block_before_candidate_writes(solution, 
     with pytest.raises(ValueError):
         convert(solution, settings)
     assert not authored(solution).exists()
+
+
+def test_standard_builtin_asim_parsers_do_not_require_workspace_function_prerequisites(solution):
+    write_query(
+        solution,
+        "_ASim_NetworkSession | union _Im_Dns(starttime=ago(1d)) | count",
+    )
+    plan = dependencies.plan_workbook_dependencies(solution)
+    row = plan["queries"][0]
+    assert row["workspaceFunctions"] == []
+    assert row["functionPrerequisites"] == []
+    assert not any(
+        "Unresolved workspace functions" in reason
+        for reason in row["proposal"]["reviewReasons"]
+    )
+
     assert not (solution / "Logs").exists()
 
 

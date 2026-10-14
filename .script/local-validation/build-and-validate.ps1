@@ -264,7 +264,7 @@ foreach ($component in ([System.IO.Path]::GetRelativePath($toolkitRoot, $evidenc
     }
 }
 $evidenceRelative = [System.IO.Path]::GetRelativePath($toolkitRoot, $evidenceParent).Replace('\', '/')
-$null = & git -C $toolkitRoot check-ignore --no-index --quiet -- $evidenceRelative 2>$null
+$null = & git -C $toolkitRoot check-ignore --no-index --quiet -- ($evidenceRelative.TrimEnd('/') + '/') 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "❌ EvidenceDirectory is not ignored by the toolkit checkout: '$evidenceRelative'." -ForegroundColor Red
     exit 2
@@ -609,6 +609,7 @@ if (-not $SkipValidation) {
                     $vPassed = @($vResults | Where-Object { $_.passed -and -not $_.skipped })
                     $vFailed = @($vResults | Where-Object { -not $_.passed -and -not $_.skipped })
                     $vSkipped = @($vResults | Where-Object { $_.skipped })
+                    $skipReasonText = ($vSkipped | Where-Object { $_.skipReason } | Select-Object -ExpandProperty skipReason -Unique) -join "; "
 
                     if ($vFailed.Count -gt 0) {
                         Write-Host "  ❌ $vName  ($($vFailed.Count) failed, $($vPassed.Count) passed, $($vSkipped.Count) skipped)" -ForegroundColor Red
@@ -617,6 +618,9 @@ if (-not $SkipValidation) {
                             if ($f.error) { Write-Host "           $($f.error)" -ForegroundColor Red }
                         }
                     }
+                    elseif ($vPassed.Count -eq 0 -and $vSkipped.Count -gt 0) {
+                        Write-Host "  ⏭  $vName  ($($vSkipped.Count) skipped$(if ($skipReasonText) { " — $skipReasonText" }))" -ForegroundColor Yellow
+                    }
                     else {
                         Write-Host "  ✅ $vName  ($($vPassed.Count) passed, $($vSkipped.Count) skipped)" -ForegroundColor Green
                     }
@@ -624,7 +628,6 @@ if (-not $SkipValidation) {
                     # Add report entry per validator
                     $status = if ($vFailed.Count -gt 0) { "failed" } elseif ($vPassed.Count -eq 0 -and $vSkipped.Count -gt 0) { "skipped" } else { "passed" }
                     $errors = @($vFailed | ForEach-Object { "$($_.filePath): $($_.error)" })
-                    $skipReasons = @($vSkipped | Where-Object { $_.skipReason } | Select-Object -First 1 -ExpandProperty skipReason)
                     $null = $reportEntries.Add(@{
                         Step        = 2
                         Name        = $vName
@@ -633,7 +636,7 @@ if (-not $SkipValidation) {
                         Failed      = $vFailed.Count
                         Skipped     = $vSkipped.Count
                         Errors      = $errors
-                        SkipReason  = if ($skipReasons) { $skipReasons } else { $null }
+                        SkipReason  = if ($skipReasonText) { $skipReasonText } else { $null }
                     })
                 }
 
@@ -697,6 +700,20 @@ if (-not $SkipValidation) {
         $dotnetAvailable = $false
     }
 
+    function Get-SolutionContentFiles {
+        param([string]$SolPath, [string[]]$SubDirs, [string[]]$Extensions)
+        $files = @()
+        foreach ($sub in $SubDirs) {
+            $dir = Join-Path $SolPath $sub
+            if (Test-Path $dir) {
+                foreach ($ext in $Extensions) {
+                    $files += Get-ChildItem $dir -Filter $ext -Recurse -File
+                }
+            }
+        }
+        return $files
+    }
+
     if (-not $dotnetAvailable) {
         Write-Host "⏭  .NET SDK not found — skipping Detection Schema, Non-ASCII, and KQL validators." -ForegroundColor Yellow
         Write-Host "   Install .NET SDK to enable these checks: https://dotnet.microsoft.com/download" -ForegroundColor Yellow
@@ -726,20 +743,6 @@ if (-not $SkipValidation) {
         # Detection Schema exposes only the basename in its display name, so duplicate or
         # filter-sensitive names are skipped. KQL and Non-ASCII expose the full path and are
         # filtered by its encoded value to avoid matching same-named files elsewhere.
-
-        function Get-SolutionContentFiles {
-            param([string]$SolPath, [string[]]$SubDirs, [string[]]$Extensions)
-            $files = @()
-            foreach ($sub in $SubDirs) {
-                $dir = Join-Path $SolPath $sub
-                if (Test-Path $dir) {
-                    foreach ($ext in $Extensions) {
-                        $files += Get-ChildItem $dir -Filter $ext -Recurse -File
-                    }
-                }
-            }
-            return $files
-        }
 
         function Build-DotnetTestFilter {
             param([System.IO.FileInfo[]]$Files, [switch]$UseEncodedPath)
@@ -889,11 +892,18 @@ if (-not $SkipValidation) {
                 }
             }
             else {
-                Write-Host "  ⏭  Detection Schema validation skipped — no Analytic Rules found in $SolutionName." -ForegroundColor Yellow
+                $xdrDetCheckFiles = Get-SolutionContentFiles -SolPath $solutionPath -SubDirs @("XDR Detections") -Extensions @("*.yaml", "*.yml")
+                $noArReason = if ($xdrDetCheckFiles.Count -gt 0) {
+                    "No legacy Sentinel Analytic Rules found (.NET Detection Schema only supports Sentinel Analytic Rules; XDR Detections are validated by XDR Detection validator)"
+                }
+                else {
+                    "No Analytic Rules found"
+                }
+                Write-Host "  ⏭  Detection Schema validation skipped — $noArReason." -ForegroundColor Yellow
                 $null = $reportEntries.Add(@{
                     Step = 3; Name = "Detection Schema"; Status = "skipped"
                     Passed = 0; Failed = 0; Skipped = 0; FileCount = 0
-                    Duration = [TimeSpan]::Zero; SkipReason = "No Analytic Rules found"
+                    Duration = [TimeSpan]::Zero; SkipReason = $noArReason
                 })
             }
         }
@@ -1114,11 +1124,18 @@ if (-not $SkipValidation) {
                 }
             }
             else {
-                Write-Host "  ⏭  KQL validation skipped — no content files (Analytic Rules, Hunting Queries, Parsers, Data Connectors) found in $SolutionName." -ForegroundColor Yellow
+                $xdrKqlCheckFiles = Get-SolutionContentFiles -SolPath $solutionPath -SubDirs @("XDR Detections", "XDR Workbooks") -Extensions @("*.yaml", "*.yml", "*.json")
+                $noKqlReason = if ($xdrKqlCheckFiles.Count -gt 0) {
+                    "No legacy Sentinel KQL files found (.NET KQL validator does not support XDR Detections or XDR Workbooks)"
+                }
+                else {
+                    "No content files found"
+                }
+                Write-Host "  ⏭  KQL validation skipped — $noKqlReason in $SolutionName." -ForegroundColor Yellow
                 $null = $reportEntries.Add(@{
                     Step = 3; Name = "KQL"; Status = "skipped"
                     Passed = 0; Failed = 0; Skipped = 0; FileCount = 0
-                    Duration = [TimeSpan]::Zero; SkipReason = "No content files found"
+                    Duration = [TimeSpan]::Zero; SkipReason = $noKqlReason
                 })
             }
         }
@@ -1140,6 +1157,18 @@ if (-not $SkipValidation) {
             })
         }
 
+        Write-Host ""
+    }
+
+    $xdrLiveKqlFiles = Get-SolutionContentFiles -SolPath $solutionPath -SubDirs @("XDR Detections", "XDR Workbooks") -Extensions @("*.yaml", "*.yml", "*.json")
+    if ($xdrLiveKqlFiles.Count -gt 0) {
+        $xdrLiveSkipReason = "Live Advanced Hunting / Defender Workbook KQL validation requires an approved live workspace/tenant and is skipped in offline local validation"
+        Write-Host "  ⏭  XDR KQL (Live / Advanced Hunting) skipped — $xdrLiveSkipReason ($($xdrLiveKqlFiles.Count) XDR file(s))." -ForegroundColor Yellow
+        $null = $reportEntries.Add(@{
+            Step = 3; Name = "XDR KQL (Live / Advanced Hunting)"; Status = "skipped"
+            Passed = 0; Failed = 0; Skipped = $xdrLiveKqlFiles.Count; FileCount = $xdrLiveKqlFiles.Count
+            Duration = [TimeSpan]::Zero; SkipReason = $xdrLiveSkipReason
+        })
         Write-Host ""
     }
 
@@ -1812,9 +1841,12 @@ function Write-BuildReport {
             if ($e.Skipped -and $e.Skipped -gt 0) { $detailParts += "$($e.Skipped) skipped" }
             if ($e.Duration -and $e.Duration.TotalSeconds -gt 0) { $detailParts += (Format-Duration $e.Duration) }
             if ($e.FileCount -and $e.FileCount -gt 0) { $detailParts += "$($e.FileCount) files" }
-            if ($e.SkipReason) { $detailParts += $e.SkipReason }
+            if ($e.SkipReason) {
+                $cleanSkip = ($e.SkipReason -replace '\|', '\|' -replace '[\r\n]+', ' ').Trim()
+                $detailParts += $cleanSkip
+            }
             if ($e.OutputLog) { $detailParts += "full output: $($e.OutputLog)" }
-            $detail = if ($detailParts.Count -gt 0) { $detailParts -join ", " } else { "-" }
+            $detail = if ($detailParts.Count -gt 0) { (($detailParts -join ", ") -replace '[\r\n]+', ' ').Trim() } else { "-" }
             Add-Line "| $stepLabel | $($e.Name) | $status | $detail |"
 
             if ($e.Status -eq "failed" -and $e.Errors) {
@@ -1838,6 +1870,15 @@ function Write-BuildReport {
     Add-Line ""
     Add-Line "Total: $totalValidators validators | $totalPassed passed | $totalFailed failed | $totalSkipped skipped"
     Add-Line ""
+    $skippedValidators = @($allValidators | Where-Object { $_.Status -eq "skipped" })
+    if ($skippedValidators.Count -gt 0) {
+        Add-Line "⚠️ Skipped / Unsupported Checks ($($skippedValidators.Count)):"
+        foreach ($sv in $skippedValidators) {
+            $svReason = if ($sv.SkipReason) { ($sv.SkipReason -replace '[\r\n]+', ' ').Trim() } else { "Skipped" }
+            Add-Line "- $($sv.Name): $svReason"
+        }
+        Add-Line ""
+    }
     if ($Success -and $ArmValidationMethod -eq "lab-deployment") {
         Add-Line "**CANDIDATE GENERATED — NOT ACCEPTED**"
         Add-Line "All reported static checks completed; approved deployment and workbook contract readback remain pending."

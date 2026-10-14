@@ -404,6 +404,17 @@ def union_source_names(query: str) -> set[str]:
     return {name for name, _ in _union_operands(code)} - locals
 
 
+_STANDARD_BUILTIN_ASIM_PARSER_RE = re.compile(
+    r"^_(?:asim|im)_(?!test$)[a-z0-9_]+$",
+    re.IGNORECASE,
+)
+
+
+def is_standard_builtin_asim_parser(name: str) -> bool:
+    """Return True for standard built-in ASIM parsers (_ASim_* and _Im_*)."""
+    return bool(isinstance(name, str) and _STANDARD_BUILTIN_ASIM_PARSER_RE.match(name.strip()))
+
+
 def _bare_source_identifiers(code: str) -> set[str]:
     code_no_flags = re.sub(
         r"\b(?:union|join|lookup)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)+",
@@ -440,7 +451,10 @@ def _bare_source_identifiers(code: str) -> set[str]:
             bare.add(ident)
     bare.update(name for name, is_call in _union_operands(code) if not is_call)
     local_vars = set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=", code))
-    return bare - _BUILTINS - _STATEMENT_PREFIXES - local_vars
+    return {
+        name for name in (bare - _BUILTINS - _STATEMENT_PREFIXES - local_vars)
+        if not is_standard_builtin_asim_parser(name)
+    }
 
 
 def _parameter_source_or_call_tokens(query: str) -> set[str]:
@@ -513,7 +527,7 @@ def opaque_functions(query: str, *, include_bare: bool = True) -> set[str]:
         bare = _bare_source_identifiers(code) | (quoted_bare - _BUILTINS - _STATEMENT_PREFIXES - local_vars)
         known_tables = set(migrator.mapping_catalog.load_mapping_catalog()["tables"])
         result |= (bare - known_tables - local_vars)
-    return result
+    return {name for name in result if not is_standard_builtin_asim_parser(name)}
 
 
 def convert_workbook(source: dict, resolutions: dict | None = None,

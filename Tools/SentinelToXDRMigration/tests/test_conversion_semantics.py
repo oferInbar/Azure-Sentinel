@@ -460,6 +460,34 @@ class InformationContractTests(unittest.TestCase):
             for message in conversion["informational"]
         ))
 
+    def test_hourly_1h_1h_rule_defaults_to_native_4h_lookback_without_review(self):
+        query = "DeviceEvents | summarize Count=count() by DeviceName, HostName, DnsDomain"
+        document = self.document(
+            query=query,
+            queryFrequency="1h",
+            queryPeriod="1h",
+            entityMappings=[entity("Host", HostName="HostName")],
+        )
+        conversion = document["contentProvenance"]["conversion"]
+        target_query = document["properties"]["queryCondition"]["queryText"]
+        self.assertEqual(target_query, query)
+        self.assertEqual(conversion["status"], "converted")
+        self.assertFalse(conversion["reviewRequired"])
+        self.assertEqual(conversion["reviewReasons"], [])
+        window = conversion["eventTimeWindow"]
+        self.assertEqual(window["status"], "default-native-lookback")
+        self.assertEqual(window["originalSentinelLookbackSeconds"], 3600)
+        self.assertEqual(window["effectiveEventWindowSeconds"], 14400)
+        self.assertEqual(window["xdrServiceWindowSeconds"], 14400)
+        self.assertEqual(window["targetFrequency"], "PT1H")
+        self.assertEqual(window["effectiveLookback"], "PT4H")
+        self.assertFalse(window["filterInjected"])
+        self.assertTrue(window["hasAggregation"])
+        self.assertFalse(window["parityClaimed"])
+        self.assertEqual(len(window["sourceDocumentSha256"]), 64)
+        self.assertEqual(len(window["targetQuerySha256"]), 64)
+        self.assertEqual([], validate_document(document))
+
     def test_unsafe_event_window_shape_remains_needs_review(self):
         query = "DeviceEvents | join kind=inner (DeviceInfo) on DeviceId"
         document = self.document(query=query, queryFrequency="1h", queryPeriod="2h")

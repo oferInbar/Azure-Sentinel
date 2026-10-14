@@ -100,6 +100,8 @@ node .script/local-validation/validate.js --path Solutions/MySolution --json
 | `documents-link` | Documents Link | All | All | No locale codes in documentation URLs |
 | `solution` | Solution | `.json` | `Solutions/` | Domains/verticals, support, branding, ID |
 | `id-change` | ID Change | `.yaml`, `.yml`, `.json` | `Detections/`, `Solutions/` | Template IDs must not change |
+| `xdr-detection` | XDR Detection | `.yaml`, `.yml`, `.json` | `Solutions/<Solution>/XDR Detections/`, `Data/`, `Package/` | `xdr-detection.schema.json`, `contentProvenance`, `requiredWorkloads`, `requiredDataConnectors`, source rule SHA-256 freshness, `Data/*.json` selection, and packaged `CustomDetection` resources |
+| `xdr-workbook` | XDR Workbook | `.json` | `Solutions/<Solution>/XDR Workbooks/`, `Data/`, `Package/` | `xdr-workbook.schema.json`, `contentProvenance`, `requiredWorkloads`, `requiredDataConnectors`, `requiredWorkspaceFunctions`, query contracts, and packaged `DefenderWorkbook-*` resource & `dependsOn` integrity |
 | `kql` | KQL Validation | — | — | KQL syntax and best practices (.NET, scoped to solution) |
 | `detection-schema` | Detection Template Schema | — | — | Detection YAML structure (.NET, scoped to solution) |
 | `non-ascii` | Non-ASCII | — | — | Non-ASCII character detection (.NET; scoped by the build runner) |

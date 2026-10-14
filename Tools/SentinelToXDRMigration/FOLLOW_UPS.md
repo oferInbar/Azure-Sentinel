@@ -15,34 +15,44 @@ External ARM-TTK/Azure validation-service limitations, when encountered,
 should be reported separately from toolkit code defects and do not by
 themselves establish a toolkit fix is required.
 
+## Recently completed in V1 PREVIEW
+
+- **Make workbook `dependsOn` reference canonical parser IDs during packaging.**
+  Bound reviewed workbook function prerequisites to actual
+  `Microsoft.OperationalInsights/workspaces/savedSearches` resources in the
+  same enclosing ARM template using canonical `[variables('parserObject<N>')._parserId<N>]`
+  references (with literal `resourceId(...)` fallback), enforced unconditional
+  parser installation, and verified exact resource mapping in packaging regressions.
+- **Default hourly Sentinel rules to the native XDR lookback.** For supported
+  rules with a one-hour Sentinel frequency and lookback, retained the hourly
+  Custom Detection frequency (`PT1H`) and accepted the native four-hour
+  ingestion-based lookback (`PT4H`) by default without pausing for timing-only
+  approval, recording `eventTimeWindow` provenance and exact source/target
+  hashes while keeping `parityClaimed: false`.
+- **Map eligible Sentinel `kind: NRT` rules to Continuous (`NRT`) Custom Detections.**
+  Mapped eligible single-table `kind: NRT` rules to `kind: CustomDetection`
+  with `schedule.frequency: "NRT"`, surfacing incompatible multi-table, join,
+  union, or aggregate NRT queries for explicit review.
+- **Accept standard `_`-prefixed built-in ASIM parsers (`_ASim_*` and `_Im_*`).**
+  Recognized built-in unifying ASIM parsers starting with `_` as supported in
+  both Custom Detections and Defender Workbooks.
+- **Inherit the solution release version for updated content & preserve lexical
+  YAML version text.** Assigned generated/updated detections the solution
+  release version in `[3.1.0, 4.0.0)` while preserving exact lexical
+  `contentProvenance.source.version` strings and validating content hash
+  identities.
+- **Collect review feedback in one consolidated batch & guide users to the next
+  migration blocker review.** Added `review-packet` / `consolidated-review-plan`
+  CLI helpers and `nextStepRecommendation` / `nextBlockerReview` status and
+  report summaries.
+- **Set release-note dates predictably.** Defaulted release-note dates to
+  today's date in `DD-MM-YYYY` format unless overridden.
+- **Validate XDR Detections and Defender Workbooks in `.script/local-validation/`.**
+  Added `validate-xdr-content.py` and `xdr-detection` / `xdr-workbook`
+  validators to `build-and-validate.ps1` with explicit `SKIP` visibility.
+
 ## Candidate follow-ups
 
-- **Make workbook depends on parsers during packaging.** Approved toolkit
-  implementation work: bind reviewed workbook function prerequisites to actual
-  `Microsoft.OperationalInsights/workspaces/savedSearches` resources in the
-  same enclosing ARM template and add workbook-installer `dependsOn` edges.
-  Required parser installation is mandatory; same-resource parser overwrites
-  are expected. Keep this tracked until packaging regressions confirm exact
-  resource mapping, prerequisite freshness, and unconditional installation.
-- **Validate entity identity bindings.** Reject filename-only bindings and
-  synthetic text hashes where a genuine content SHA-1/SHA-256 is required;
-  define and test the supported identity contract.
-- **Preserve YAML version text.** Keep lexical values such as `1.0` intact
-  through parsing, conversion, and serialization rather than silently
-  normalizing them.
-- **Inherit the solution release version for updated content.** Assign modified
-  analytic rules, hunting queries, and other versioned content the version of
-  the solution release containing the update. Leave unchanged content versions
-  intact and keep source provenance consistent with the actual source version.
-- **Default hourly Sentinel rules to the native XDR lookback.** For supported
-  rules with a one-hour Sentinel frequency and lookback, retain the hourly
-  Custom Detection frequency (`PT1H`) and accept the native four-hour
-  ingestion-based lookback without pausing for timing-only approval. Four
-  hours is the lookback, not the execution frequency. Preserve the query
-  without adding a time filter, and save the source/target timing, exact
-  source-document and target-query hashes, applied default, and timing or
-  aggregation differences as evidence. Do not claim parity or clear unrelated
-  mapping, dependency, KQL, validation, packaging, or environment-write gates.
 - **Reconcile Qualification readiness.** Review existing authorization and
   access checks, then separately assess deployment and ingestion permission
   readiness before proposing new implementation.
@@ -61,32 +71,10 @@ themselves establish a toolkit fix is required.
   existing single-owner watchdog, avoid repetitive notices, and do not create
   a second workflow executor. Review the cadence and design separately before
   implementing an agent or enabling a schedule.
-- **Collect review feedback in one consolidated batch.** Prefer one solution-wide
-  review packet and one feedback request over serial per-rule or per-workbook
-  approval prompts. Inventory all outstanding detection, workbook, dependency,
-  timing, entity, version, and content findings before asking. Group repeated
-  findings, retain exact affected identities, query pointers and hashes, and
-  offer accept/change/defer with per-item exceptions. Preserve previous current
-  decisions and record all new decisions as evidence before applying them
-  through the supported deterministic commands. Keep technical failures and
-  deferred items visible; batch approval does not establish runtime correctness
-  or parity, or authorize packaging or environment writes. This is the preferred
-  review experience, not a claim that a native unified batch-review CLI exists.
-- **Guide users to the next migration blocker review.** End migration status
-  updates with a focused next-step recommendation, such as "Next migration step
-  can be reviewing blockers A and B." Identify the next blockers and recommended
-  review actions rather than overwhelm users with the full issue list, so they
-  can stay focused on progressing through the migration.
-- **Make sure validation scripts handle XDR Detections and Defender Workbooks
-  correctly.** Verify that the official solution validation runner checks both
-  content families, reports applicable schema and provenance failures, and keeps
-  skipped or unsupported checks visible rather than treating them as passes.
 - **Forward explicit approval safely.** Route chat approval to the accountable
   owner while preserving the exact approved operation, scope, and bindings.
 - **Clarify execution ownership.** Use appropriate delegation with one owner
   and no duplicate executors for the same operation.
-- **Set release-note dates predictably.** Default to today's date unless the
-  user explicitly supplies an override.
 - **Change the validation tools to verify ARM templates through lab deployment.**
   Make deployment of the generated `mainTemplate` to an explicitly approved
   non-production lab the default ARM validation route for both Authoring and

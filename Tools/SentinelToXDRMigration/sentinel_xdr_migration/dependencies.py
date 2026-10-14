@@ -101,6 +101,22 @@ def workload_records(tables: list[str]) -> tuple[list[dict[str, Any]], list[str]
     ], sorted(unknown)
 
 
+STANDARD_BUILTIN_ASIM_PARSER_RE = re.compile(
+    r"\b(_(?:asim|im)_(?!test\b)[A-Za-z0-9_]+)\b",
+    re.IGNORECASE,
+)
+
+
+def extract_builtin_asim_parsers(query: str) -> list[str]:
+    from ._workbook_core import rewrite
+    code = "".join(text if kind == "code" else " " * len(text)
+                   for kind, text in rewrite._segments(query or ""))
+    found: set[str] = set()
+    for match in STANDARD_BUILTIN_ASIM_PARSER_RE.finditer(code):
+        found.add(match.group(1))
+    return sorted(found)
+
+
 def dependency_plan(
     source_query: str,
     *,
@@ -116,6 +132,14 @@ def dependency_plan(
                    for kind, text in rewrite._segments(source_query))
     if re.search(r"\b_GetWatchlist\s*\(", code):
         source_types.add("Watchlist")
+    builtin_asim_parsers = extract_builtin_asim_parsers(source_query)
+    if not source_types and builtin_asim_parsers and isinstance(connectors, list):
+        for record in connectors:
+            if isinstance(record, dict) and isinstance(record.get("dataTypes"), list):
+                source_types.update(
+                    table.strip() for table in record["dataTypes"]
+                    if isinstance(table, str) and table.strip()
+                )
     references = sorted(source_types & PLATFORM_REFERENCE_INPUTS)
     resolution["dataTypes"] = telemetry_data_types(source_types)
     mappings = table_mappings or {}
@@ -125,7 +149,7 @@ def dependency_plan(
     target_tables = telemetry_data_types(target_table_names)
     workloads, unknown = workload_records(target_tables)
     reasons = []
-    if not source_types:
+    if not source_types and not (builtin_asim_parsers and isinstance(connectors, list)):
         reasons.append("No source inputs resolved; provide source evidence and any telemetry connector prerequisites.")
     if unknown:
         reasons.append(f"Provide workload mappings for: {', '.join(unknown)}.")
@@ -151,6 +175,7 @@ def dependency_plan(
         "reviewReasons": reasons,
         "runtimeParityVerified": False,
         **({"sourceDataTypes": sorted(source_types), "referenceInputs": references} if references else {}),
+        **({"builtinAsimParsers": builtin_asim_parsers} if builtin_asim_parsers else {}),
     }
 
 
@@ -220,7 +245,7 @@ def live_dependency_check(
     ]
     if unknown:
         errors.append(f"Provide workload mappings for: {', '.join(unknown)}.")
-    if not plan["dataTypes"] and not plan.get("referenceInputs"):
+    if not plan["dataTypes"] and not plan.get("referenceInputs") and not plan.get("builtinAsimParsers"):
         errors.append("No data types resolved; provide the data types and required connectors.")
     connector_records = (document.get("contentProvenance") or {}).get("requiredDataConnectors") or []
     connector_pairs = {
