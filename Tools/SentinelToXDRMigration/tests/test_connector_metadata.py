@@ -152,9 +152,32 @@ class PackagedConnectorMetadataTests(unittest.TestCase):
     write_metadata = identity.PackagedIdentityTests.write_metadata
     fixture = identity.PackagedIdentityTests.fixture
 
-    def test_authoring_metadata_does_not_leak_into_install_or_registration(self):
+    def test_packager_rejects_missing_unknown_or_unreviewed_dependencies(self):
+        entry, path, document = self.fixture()
+        for mutation in ("missing", "unknown", "unreviewed"):
+            candidate = copy.deepcopy(document)
+            if mutation == "missing":
+                del candidate["contentProvenance"]["requiredWorkloads"]
+            elif mutation == "unknown":
+                candidate["contentProvenance"]["requiredWorkloads"] = [
+                    {"workload": "defender", "dataTypes": ["DeviceEvents"]},
+                ]
+            else:
+                candidate["contentProvenance"]["dependencyReviewRequired"] = True
+            path.write_text("---\n" + json.dumps(candidate))
+            result = self.package(entry, False)
+            self.assertNotEqual(0, result.returncode, mutation)
+            self.assertTrue(any(word in result.stdout + result.stderr for word in (
+                "contentProvenance.requiredWorkloads", "workload 'defender'", "unresolved dependency",
+            )), result.stdout + result.stderr)
+
+    def test_dependency_records_are_kept_in_registration_not_install(self):
         entry, path, document = self.fixture()
         document["requiredDataConnectors"] = CONNECTORS
+        document["contentProvenance"]["requiredDataConnectors"] = CONNECTORS
+        document["contentProvenance"]["requiredWorkloads"] = [
+            {"workload": "mde", "dataTypes": ["DeviceEvents"]},
+        ]
         path.write_text("---\n" + json.dumps(document))
         before = path.read_bytes()
         result = self.package(entry, False)
@@ -164,9 +187,19 @@ class PackagedConnectorMetadataTests(unittest.TestCase):
                        and r.get("condition") == "[parameters('DeployCustomDetection')]")
         registration = next(r for r in template["resources"]
                             if r.get("properties", {}).get("contentKind") == "CustomDetection")
-        for wrapper in (install, registration):
-            self.assertNotIn("requiredDataConnectors", json.dumps(wrapper))
-            self.assertNotIn("OtherConnector", json.dumps(wrapper))
+        deployed = install["properties"]["template"]["resources"]["detectionRule"]["properties"]["contentProvenance"]
+        stored = registration["properties"]["mainTemplate"]["resources"]["detectionRule"]["properties"]["contentProvenance"]
+        full = registration["properties"]["contentProvenance"]
+        self.assertEqual({
+            "packageId": "testpublisher.test-sentinel", "packageVersion": "3.2.0",
+            "contentId": registration["properties"]["contentId"], "contentVersion": "3.1.0",
+        }, deployed)
+        self.assertEqual(deployed, stored)
+        self.assertEqual(deployed, {key: full[key] for key in deployed})
+        self.assertEqual(CONNECTORS, full["requiredDataConnectors"])
+        self.assertEqual(document["contentProvenance"]["requiredWorkloads"], full["requiredWorkloads"])
+        self.assertNotIn("requiredDataConnectors", json.dumps(install))
+        self.assertNotIn("OtherConnector", json.dumps(install))
         self.assertEqual(before, path.read_bytes())
         self.assertEqual(CONNECTORS, yaml.safe_load(path.read_text())["requiredDataConnectors"])
 

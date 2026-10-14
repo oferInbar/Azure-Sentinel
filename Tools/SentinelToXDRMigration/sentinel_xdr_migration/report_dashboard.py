@@ -2236,6 +2236,38 @@ def _deployment_planning_html(report: dict[str, Any]) -> str:
         + hash_details
         + '</section>'
     )
+def _workbooks_html(report: dict[str, Any]) -> str:
+    workbooks = report.get("workbooks")
+    if not isinstance(workbooks, dict):
+        return ""
+    excluded = {row["path"]: row["reason"] for row in workbooks.get("excluded") or []}
+    rows = []
+    for source in workbooks.get("sources") or []:
+        reasons = [excluded[source["path"]]] if source["path"] in excluded else []
+        reasons.extend(
+            item.get("message", item.get("code", "Recorded finding")) if isinstance(item, dict) else str(item)
+            for item in source.get("issues") or []
+        )
+        rows.append("<tr>" + "".join(
+            f"<td>{_text(value)}</td>" for value in (
+                source["path"], "Selected" if source["selected"] else "Excluded",
+                source["status"], "; ".join(reasons),
+            )
+        ) + "</tr>")
+    return (
+        '<section class="panel" aria-labelledby="workbooks-heading"><h2 id="workbooks-heading">Defender workbooks</h2>'
+        f'<p>{_text(workbooks.get("inventoryCount"))} frozen sources · {_text(workbooks.get("selectedCount"))} selected. '
+        'Workbook panels do not count toward detection coverage.</p>'
+        f'<p>ARM method: {_text(workbooks.get("armValidationMethod"))}. '
+        f'Installation/registration contract: {_text(workbooks.get("contractSupport"))}. '
+        'Query/UI Qualification is independent of ARM acceptance and detection alert parity.</p>'
+        + "".join(f"<p>{_text(issue)}</p>" for issue in workbooks.get("issues") or [])
+        + '<div class="table-wrap"><table><thead><tr><th>Original workbook</th><th>Selection</th>'
+        '<th>Conversion</th><th>Recorded reasons</th></tr></thead><tbody>'
+        + "".join(rows) + "</tbody></table></div></section>"
+    )
+
+
 def render_dashboard(report: dict[str, Any]) -> str:
     workflow = report.get("workflow") or {}
     candidates = review_candidates(report)
@@ -2409,6 +2441,7 @@ def render_dashboard(report: dict[str, Any]) -> str:
         + _deployment_planning_html(report)
         + _findings_chart_html(report["rules"])
         + _run_html(report)
+        + _workbooks_html(report)
         + '<section class="panel" aria-labelledby="overview"><h2 id="overview">Current artifact overview</h2>'
         f'<div class="metrics"><span>{len(prepared)} rules</span><span>{_text(summary.get("converted"))} automated conversions</span>'
         f'<span>{_text(summary.get("needsReview"))} converter review flags</span><span>{structural} local structural passes</span>'

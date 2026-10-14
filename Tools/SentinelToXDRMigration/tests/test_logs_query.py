@@ -475,6 +475,11 @@ class SentinelSdkProviderTests(unittest.TestCase):
                 yaml.safe_dump({
                     "kind": "CustomDetection",
                     "contentProvenance": {
+                        "requiredWorkloads": [{
+                            "workload": "mde" if relative == "Rule.yaml" else "sentinel",
+                            "dataTypes": ["DeviceEvents" if relative == "Rule.yaml" else "SecurityEvent"],
+                        }],
+                        "requiredDataConnectors": [],
                         "source": {
                             "path": f"Analytic Rules/{relative}",
                             "querySha256": hashlib.sha256(query.encode()).hexdigest(),

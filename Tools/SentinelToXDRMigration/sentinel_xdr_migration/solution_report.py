@@ -1432,11 +1432,23 @@ def build_solution_report(
     *,
     ingestion_reports: list[str | Path] | None = None,
 ) -> dict[str, Any]:
-    root, analytic, output = solution_paths(solution)
+    from . import workbook_workflow
+    root = Path(solution).expanduser().resolve()
+    workflow = _read_json(existing_artifact_path(root, "workflow-state.json"))
+    workbook_context = workflow.get("context")
+    has_workbook_state = "workbooks" in workflow or (
+        isinstance(workbook_context, dict) and "workbookCapabilityVersion" in workbook_context
+    )
+    current_workflow = workbook_workflow.current_state(root) if has_workbook_state else None
+    workbook_only = bool(current_workflow and workbook_workflow.enabled(current_workflow)
+                         and not workbook_workflow.has_analytic_rules(root))
+    if workbook_only:
+        analytic, output = root / "Analytic Rules", root / "XDR Detections"
+    else:
+        root, analytic, output = solution_paths(solution)
     reports = report_directory(root, create=True)
     manifest = _read_json(existing_artifact_path(root, "manifest.json"))
-    workflow = _read_json(existing_artifact_path(root, "workflow-state.json"))
-    runtime_consent = runtime_query_consent_status(root)
+    runtime_consent = {"status": "notApplicable"} if workbook_only else runtime_query_consent_status(root)
     manifest_by_source = {}
     for item in manifest.get("results") or []:
         reference = str(item.get("sourceRelativePath") or item.get("source") or "").replace("\\", "/")
@@ -1488,7 +1500,7 @@ def build_solution_report(
     ]
 
     rules: list[dict[str, Any]] = []
-    for source_path in analytic_rule_files(root):
+    for source_path in ([] if workbook_only else analytic_rule_files(root)):
         source = yaml.safe_load(source_path.read_text(encoding="utf-8-sig")) or {}
         conversion = manifest_by_source.get(source_path.relative_to(root).as_posix()) or {}
         detection_name = source_path.relative_to(analytic).as_posix()
@@ -1979,6 +1991,8 @@ def build_solution_report(
                 ],
             }
     json_path = reports / JSON_NAME
+    if current_workflow and workbook_workflow.enabled(current_workflow):
+        report["workbooks"] = workbook_workflow.summary(root, current_workflow)
     html_path = reports / HTML_NAME
     report["jsonReport"] = str(json_path)
     report["htmlReport"] = str(html_path)

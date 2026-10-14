@@ -8,7 +8,7 @@ Both entry points live in the V3 directory:
   and remains the CI entry point.
 
 Both entry points use `common\commonFunctions.ps1` for the core packaging
-implementation. Only V3.1 enables Defender XDR Custom Detection injection.
+implementation. Only V3.1 enables Defender XDR Custom Detection and Defender Workbook injection.
 
 They are alternative entry points, not two required packaging steps. Use V3
 for a legacy Sentinel-only package and V3.1 when the solution contains XDR
@@ -65,12 +65,15 @@ For a solution carrying the five corresponding families:
 | `DeployWorkbook` | `true` | Sentinel Workbook and WorkbookTemplate content |
 | `DeployDataConnector` | `true` | DataConnector, ResourceDataConnector/ResourcesDataConnector, DataType, connector metadata and catalog resources |
 | `DeployCustomDetection` | `false` | Both Custom Detection installation and Content Hub registration |
+| `DeployDefenderWorkbook` | `false` | Both Defender Workbook installation and Content Hub registration |
 
 `common/contentDeploymentParameters.json` is the shared vocabulary used by
 generation, UI, Python artifact checks, and tests. HuntingQuery, InvestigationQuery,
 Parser, Watchlist/WatchlistTemplate, Notebook, AutomationRule and SummaryRule have
 their own `Deploy<Kind>` controls **when emitted**, not speculative empty controls.
-No DefenderWorkbook emitter/control is added. Classification uses content kinds,
+Required workspace parsers declared by selected Defender Workbooks remain
+unconditional prerequisites, independent of optional content-family selections.
+Classification uses content kinds,
 resource types and explicit emitter ownership, not display names, counts or
 query text. Unclassified content fails with its resource name/type/kind.
 
@@ -111,6 +114,31 @@ uninstall operation. There is no new all-off runtime check. A selection can
 leave prerequisites unmet: the booleans do not rewrite dependency semantics,
 guarantee Content Hub acceptance, or provision missing external dependencies.
 
+### Defender Workbook parser prerequisites
+
+Authored workbooks declare reviewed function prerequisites in
+`contentProvenance.requiredWorkspaceFunctions`: each record contains the exact
+`functionAlias`, packaged solution-relative `sourcePath`, and current
+`sourceSha256`. V3.1 resolves these records to the actual top-level
+`Microsoft.OperationalInsights/workspaces/savedSearches` resources, not parser
+content templates. The outer Defender Workbook installation deployment adds
+`dependsOn` edges to those resources, preserving its content-package dependency.
+Required parser installation is mandatory and supports normal same-resource
+updates. Missing, duplicate, conditional, or stale prerequisites are errors,
+not dependencies on nonexistent resources or permission to skip a parser.
+
+`_GetWatchlist` is a supported built-in, not an installable parser prerequisite.
+Its `Watchlist` input is platform reference data: preserve raw lineage, but
+reject it in connector-fed telemetry data types in required workload/connector
+records.
+
+Full workbook registration carries reviewed function prerequisites. Installed
+notebook provenance remains exactly the package/content identity/version
+quartet. Deployment ordering does not verify connected-workspace access, AH
+propagation, nested optional vendor coverage, query correctness, or the preview
+workbook provider contract. Reviewed Sentinel workspace functions can be used
+in AH and workbooks; this does not make them supported in Custom Detection rules.
+
 **Compatibility:** `E5Flavor` and `RegisterE5Content` are no longer generated.
 Update external parameter files to use only controls declared by that package;
 omitting a declared parameter uses its default, whereas explicit `false` skips
@@ -128,6 +156,27 @@ warnings and `customDetectionRegistrationSupport: "unverified"` for XDR packages
 Live provider support for CustomDetection registration is **unverified**.
 Template emission and offline tests do not establish deployment/Marketplace
 acceptance. Any subsequent environment write requires separate approval.
+
+### Custom Detection content provenance
+
+Authored YAML must contain `contentProvenance.requiredWorkloads` records with
+`workload` and `dataTypes`, and `requiredDataConnectors` records with `connectorId`
+and `dataTypes`. Supported workload values are `mde`, `mdo`, `mdi`, `mda`, `mdc`,
+`entraid`, `purview`, `appgovernance`, `sentinel`, `mtp`. Malformed/missing arrays,
+unknown workloads and explicitly unresolved dependency review block packaging.
+The legacy `conversion.requiredWorkloads` strings are not used as dependency
+records.
+
+The packager resolves `packageId` and `packageVersion` from the current solution,
+and `contentId`/`contentVersion` from the canonical packaged detection ID and
+authored XDR version. It stamps the same four-key `contentProvenance` on the
+installation resource and the registration's stored installation resource.
+Resolved literals are used in inner-scope templates, not references to outer
+variables. Registration properties contain that quartet plus the YAML
+`requiredWorkloads` and `requiredDataConnectors` arrays. Dependencies are never
+placed on the deployed Graph object. Authored YAML and source rules are not
+mutated. These emitted contract fields remain subject to live provider
+verification; offline tests are not registration/deployment acceptance.
 
 ### First authored tactic in V3.1 ARM payloads
 
@@ -196,13 +245,17 @@ V3.1 applies these hard guards in local, catalog, and positional pipeline modes:
 
 | Release version | Accepted range |
 |---|---|
-| Effective solution/package version, even without XDR content | `>= 3.1.0` and `< 4.0.0` |
+| Effective solution/package version, even without XDR content | `>= 3.2.0` and `< 4.0.0` |
 | Effective XDR Custom Detection content version | `>= 3.1.0` and `< 4.0.0` |
 | Every other packaged content-item release version | `< 4.0.0`; existing `1.x`/`2.x` versions remain valid |
 
 The guard reports the content type/path, effective version, and required range.
 It never promotes versions automatically. Explicit local bumps are evaluated
-before output: for example, `major` from `3.1.0` selects `4.0.0` and is rejected.
+before output: for example, `major` from `3.2.0` selects `4.0.0` and is rejected.
+An older source solution may reach the supported range through an explicitly
+approved target or bump: `minor` from `3.1.x` selects `3.2.0`, whereas a `patch`
+that remains in `3.1.x` is rejected. This solution floor does not change
+independent content, Notebook, schema, API or provider version checks.
 All version checks run before generated JSON/ZIP files are overwritten. Local
 bump persistence is deferred until version validation and package generation
 succeed; rejected versions leave the source versions and existing outputs intact.

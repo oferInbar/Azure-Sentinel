@@ -1,7 +1,8 @@
 # Sentinel to Defender XDR migration workflow
 
 This is the canonical, agent-neutral workflow for authoring and migrating
-Microsoft Sentinel solution content to Defender XDR Custom Detections. Agent
+Microsoft Sentinel solution content to Defender XDR Custom Detections and
+Defender Workbooks. Agent
 adapters must reference this document rather than redefine the process.
 
 Deterministic behavior belongs to:
@@ -68,8 +69,141 @@ disabled-by-default, and exact-scope authorization gates remain in force.
 
 `Discovery -> Conversion -> Validation -> Packaging -> Report`
 
-This is the ISV publishing workflow. It does not require a tenant, workspace,
-deployment, mock ingestion, or alert-parity test.
+Legacy offline Authoring does not require a tenant, workspace, deployment, mock
+ingestion, or alert-parity test. New capability-version-1 CLI runs use the
+candidate ARM lifecycle below; their default lab route requires an approved
+target and independently verified deployment evidence before package acceptance.
+
+### Versioned workbook and candidate ARM lifecycle
+
+New CLI runs persist `workbookCapabilityVersion=1` and default to
+`armValidationMethod=lab-deployment`, in either explicitly selected profile.
+Authoring may explicitly choose `--arm-validation-method arm-ttk`. Existing
+runs never silently acquire workbook scope or change their validation method;
+direct library initialization retains legacy defaults unless capability 1 is
+explicitly requested.
+
+The order is:
+
+`Discovery -> Conversion -> content/static Validation -> V3.1 candidate ->
+remaining official checks -> selected ARM validation -> accepted Packaging`
+
+Keep frozen recursive workbook inventory and explicit selections separate from
+detection coverage. Workbook-only solutions need no invented Analytic Rules,
+rule IDs, runtime manifests, ingestion or alert parity. Exclusions remain
+visible, and explicit empty `XDR Workbooks` selections stay empty.
+
+A candidate is not accepted packaging or a successful release. Preserve its
+artifacts and consumed version action for same-version retries. Use the official
+`build-and-validate.ps1` receipt bound to the current candidate. Lab validation
+replaces only ARM-TTK; remaining applicable official checks are mandatory.
+For selected Defender Workbooks, both methods additionally require independent
+installation, registration/provenance readback and repeat-install/update
+contract evidence. ARM-TTK alone cannot establish that contract.
+
+Versioned lab consent binds the selected run/lab, deployment operation and
+allowed content/resource types. Hash/count changes within that scope require
+fresh evidence, not automatically broader approval. Changed labs, operations
+or type sets require renewed approval. Revocation blocks dispatch. The executor
+also requires explicit immediate confirmation and verified access, disabled
+content and ownership; consent never grants permissions or authorizes ingestion,
+activation or cleanup. This is not a reinterpretation of legacy consent.
+
+**Defender workbook dispatch remains blocked:** the evidence-based preflight
+adapter checks target, authenticated ARM principal, effective control-plane
+access, applicable role/deny assignments, disabled content and exact identities,
+but the MicrosoftSecurity extension authentication/write contract is unverified.
+Unknown evidence blocks dispatch. Do not replace this blocker with asserted
+readiness flags, infer support from a mock, reuse an unrelated Graph/AH token
+as the extension identity, or treat local tests as provider acceptance.
+
+#### Candidate ARM metadata preflight
+
+After the current candidate deployment plan exists, display the exact read plan
+with `workflow-arm-preflight-plan`. Obtain separate affirmative metadata-read
+approval through `workflow-arm-preflight-review`, bound to the displayed
+`--preflight-plan-sha256` and recorded actor/reference. Execute the current plan
+through `workflow-arm-preflight-execute`; withdraw approval through
+`workflow-arm-preflight-revoke`. All commands require the explicit run ID.
+
+Read consent binds the run, target and exact operation scope independently of
+candidate/template hashes. Managed same-ID body/version changes require a fresh
+plan and evidence, not automatically renewed approval of unchanged reads.
+Changed IDs, URLs, operations or targets require renewed read approval.
+Deployment consent and immediate write confirmation remain separate gates.
+
+The production reader uses existing cached authentication in the pinned Azure
+CLI profile, makes only planned metadata GETs, and correlates successful ARM
+observations with that same authenticated bearer. Token claims or a local
+account alone do not prove effective access. It never signs in, grants
+permissions or attempts Graph extension reads with unverified credentials.
+Read consent explicitly permits scoped ARM token acquisition/refresh through
+the existing cached identity, not new credentials or Graph/AH token access.
+Receipts preserve blocked/unknown findings and prior attempts; execution
+rechecks current consent and candidate freshness. No preflight operation
+authorizes installation, activation, ingestion, cleanup or browser execution.
+
+New workbook-only Qualification runs record `validationMode=workbook-content`
+before packaging, with query/UI checks not run. They require current independent
+query and UI evidence before final Report. Mixed solutions retain all detection
+runtime prerequisites before candidate generation; workbook UI proof remains
+post-installation. A passed ARM candidate contract can supply workbook-only
+Deployment evidence; do not run a detection-only deployer or invent detections.
+
+### Toolkit-owner policy: managed same-ID updates
+
+Toolkit-managed Defender Workbooks and XDR Custom Detections use stable-ID
+upserts. Deploying approved content to the same ID intentionally replaces the
+existing managed content; this is expected update behavior, including in labs.
+Do not block an intended same-ID update merely because the remote content,
+version or hash differs from the candidate or a previous deployment.
+
+The intended workbook consumption model is read-only managed content.
+Personalization uses a separate copy with its own identity; toolkit updates
+must not discover or overwrite those copies. This policy defines the product
+contract, not proof that the preview provider or portal currently enforces
+read-only behavior.
+
+Preflight must bind the selected target and intended resource identities,
+verify effective access, and reject wrong returned IDs, ambiguous identity
+mappings or operations outside the approved scope. A managed same-ID update
+does not itself require an additional overwrite decision or previous-content
+hash match. It still requires current candidate/review evidence, applicable
+deployment consent and immediate write confirmation. Lab overwrite approval
+does not authorize production, other identities, activation, deletion or
+permission grants; XDR detections remain deployed disabled.
+
+Keep exact post-write provenance/readback and package acceptance checks.
+This managed cloud-update policy does not relax local source-file protection,
+edited generated-file overwrite safeguards, or the QA prohibition on Save/Edit.
+
+### Workbook Qualification and browser QA
+
+`workbook-query-plan/review/execute` bind the exact reviewed fixture harness
+family to the locked Qualification target. Linux Machines has 202 queries
+across independent Sentinel and Advanced Hunting providers. Exact result
+assertions, including schema, cells, multiplicity and ordering, are mandatory.
+This fixture route does not authorize ingestion or prove live-panel telemetry.
+
+`workbook-ui-plan/review/execute` use a reviewed, hash-bound browser configuration,
+an existing private session and independently observed tenant, canonical content
+and installed instance IDs. Require all seven check kinds: pickers, dependent
+refresh, filters, drill-down, reload, layout and conditional visibility.
+Selectors, expected values, request URLs, navigation and timeouts require review;
+no guessed production DOM bindings or automatic sign-in. Save/Edit and cleanup
+are prohibited. Browser/network checks are not a browser-wide no-write sandbox.
+
+The optional `browser` extra provides Playwright. UI assertions compare reviewed
+expectations, not automatically fetched API results. Query evidence, browser
+evidence and full ARM/Content Hub acceptance remain separate. Existing
+`workbook-ui-import` accepts explicitly reviewed external captures; it does not
+launch a browser. Live browser execution needs separate exact-scope approval.
+
+Public Graph beta metadata exposes `security/workbooks` and the security
+workbook `name`/open `content` model. It does not establish write permissions,
+create/update ID semantics or provider acceptance. Retain the ARM candidate
+route until those are verified; a future direct-API smoke test cannot replace
+full V3.1 package acceptance.
 
 #### Optional explicitly approved Advanced Hunting read validation
 
@@ -91,6 +225,75 @@ mandatory. Missing, declined, stale, or incomplete consent/authentication
 blocks dispatch. This route cannot satisfy Qualification's source/runtime,
 target, consent, dispatch, completeness, schema, packaging, deployment, or
 parity gates; source SDK validation remains Qualification-only.
+
+#### Dependency provenance validation
+
+Conversion is always offline. Each XDR YAML requires
+`contentProvenance.requiredWorkloads` and `requiredDataConnectors` record arrays.
+Structural validation checks the workload vocabulary and record shape;
+unresolved `dependencyReviewRequired` records block validation.
+The legacy `conversion.requiredWorkloads` labels are not deployment dependencies.
+
+The `sentinel-xdr-dependency-helper` skill may help users fill and review these
+records from a Log Analytics lab in either profile. This optional validation
+capability requires fresh explicit read-only approval for the exact original
+queries and selected tenant/subscription/workspace. It does not reinterpret
+Authoring Advanced Hunting consent, select Qualification, or broaden SDK,
+deployment, authentication, ingestion, or parity authorization.
+Prefer an advertised official Triage capability supporting input metadata;
+otherwise use the approved REST read route. Request
+`Prefer: include-dataSources=true`. The offline `dependency-plan` importer
+checks exact current query hashes and workspace binding before comparing YAML.
+Use API input metadata for 1-10 distinct tables, otherwise a recorded
+conservative scanner fallback after a successful query. Failures and partial
+results remain failures. Unknown tables/connectors require user input.
+
+Keep dependency arrays in authored provenance; do not add the deployment
+package/content identity quartet to YAML. V3.1 packaging and actual Graph
+deployment resolve that quartet from package metadata and canonical content
+identity/version. Only full Content Hub registration includes dependencies.
+Preserve disabled status, source content and classification.
+
+#### Workbook dependency review
+
+For a workbook gap, show each query/picker pointer and exact hash, source evidence,
+proposed data types, workload/connector mappings, and unresolved technical issues.
+Offer static/manual review or separately approved bounded lab metadata discovery
+in either profile. Acceptance, changes, and deferrals are explicit and hash-bound;
+batch acceptance must retain individual query records. Static suggestions are not
+automatically reviewed facts. Query errors, partial failures, stale evidence,
+unknown functions, and unsupported providers remain blockers after acceptance.
+Parameterized lab queries need approved concrete bindings, not unresolved workbook
+tokens or an invented time range. Source metadata is not output-schema lineage or
+proof that a connector is installed.
+
+When reviewed connector alternatives are equivalent for the declared requirement,
+recommend the modern connector over a deprecated route, citing recommendation or
+lifecycle evidence. Do not require both merely because both appear in the solution.
+
+Preserve explicitly reviewed Sentinel workspace function invocations for workbooks
+and AH queries; this support does not apply to Custom Detections. Standard
+built-in ASIM parsers starting with `_` (such as `_ASim_*` and `_Im_*`) are
+accepted by Defender XDR Advanced Hunting and can be used in both Custom
+Detections and Defender Workbooks; do not reject them as unsupported
+workspace-saved functions. Bind required
+functions to packaged definition paths, aliases, and current file hashes in
+`contentProvenance.requiredWorkspaceFunctions`. Resolve underlying tables separately.
+Treat `_GetWatchlist` as a supported built-in, not a missing workspace parser,
+an installation prerequisite, or an AH function-support blocker.
+Keep `Watchlist` platform-reference inputs in raw lineage, but omit them from
+telemetry data types in required workload/connector records. They are not fed
+by a data connector and must not cause connector-discovery prompts.
+During V3.1 packaging, required parser installation is unconditional and the outer
+workbook installer depends on the actual saved-search resources in the enclosing
+template. Content registration is not installation; deployment order is not AH
+visibility or runtime acceptance evidence.
+
+Reviewed optional vendor branches may be absent with visible warnings and incomplete
+coverage. Offer keep/remove/defer; removal requires a scoped parser-change preview,
+explicit approval, current definition evidence and fresh validation. Never silently
+remove shared parser resources or treat missing branches as confirmed no telemetry.
+Accepting a removal request does not itself establish that the function was edited.
 
 #### Optional resumable full-inventory authoring
 
@@ -180,21 +383,21 @@ does not waive technical or entity-review gates: unresolved `reviewRequired`
 flags continue to block packaging.
 
 An author may select a canonical target version instead of a patch/minor/major
-bump. The target must satisfy `>=3.1.0` and `<4.0.0` and need not be consecutive
+bump. The target must satisfy `>=3.2.0` and `<4.0.0` and need not be consecutive
 with the current version. For example, an initial release may go directly from
-`3.0.7` to `3.1.2`:
+`3.0.7` to `3.2.1`:
 
 ```powershell
 sentinel-xdr-migration workflow-init `
   --solution "Solutions\<solution>" `
   --workflow-profile authoring `
   --version-bump none `
-  --target-version 3.1.2
+  --target-version 3.2.1
 
 sentinel-xdr-migration package-v3-1 `
   --solution "Solutions\<solution>" `
   --version-bump none `
-  --target-version 3.1.2
+  --target-version 3.2.1
 ```
 
 For changed package inputs, plan the exact target against the current input
@@ -206,6 +409,11 @@ it is permitted only for the matching post-write input identity. A target
 cannot be combined with a non-`none` bump. The persisted target/action and
 release plan retain the same review, freshness, campaign, and one-time
 consumption protections as bump actions.
+
+The resulting solution release must be `>=3.2.0` and `<4.0.0` for V3.1
+packaging, including no-bump rebuilds and pipeline-calculated versions.
+An older source version is not silently promoted; select a supported target or
+bump explicitly. Independent content-version checks remain unchanged.
 
 For offline Authoring only, if the successful package is already at the
 approved version but its release-note row is missing, use
@@ -1123,8 +1331,10 @@ full inventory. If initialization selected `version-bump=none` but a first
 versioned release is required, inspect the current package-input SHA-256 and
 explicitly plan one `patch`, `minor`, or `major` action against that exact hash
 before invoking V3.1. Do not reuse stale selection, skip review gates, or
-consume a second version action. Qualification still requires its exact
-runtime-bound selection and all Qualification gates before packaging.
+consume a second version action. Detection-bearing Qualification still requires
+its exact runtime-bound selection before packaging. The versioned workbook
+route described above requires workbook query/UI evidence after installation,
+before final Qualification completion.
 
 ### Advance deployment-scope planning and consent
 

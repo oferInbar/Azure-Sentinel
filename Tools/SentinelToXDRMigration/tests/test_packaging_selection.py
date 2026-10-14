@@ -8,10 +8,12 @@ import os
 import sys
 import tempfile
 import unittest
+import yaml
 from pathlib import Path
 from unittest import mock
 
 from sentinel_xdr_migration.artifacts import report_directory, using_run, write_json_artifact
+from sentinel_xdr_migration.dependencies import dependency_identity
 from sentinel_xdr_migration.packaging_selection import (
     PLAN_NAME,
     _build_package_selection_plan,
@@ -143,6 +145,10 @@ class PackagingSelectionTests(unittest.TestCase):
                 }
                 if provider == "graph":
                     item["schema"] = [{"name": "Column", "type": "string"}]
+                else:
+                    item["dependencyProvenanceSha256"] = dependency_identity(
+                        yaml.safe_load(detection_paths[name].read_text())
+                    )
                 result.append(item)
             return result
 

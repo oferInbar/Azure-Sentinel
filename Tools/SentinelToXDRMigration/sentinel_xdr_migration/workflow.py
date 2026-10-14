@@ -56,6 +56,7 @@ from .packaging import (
     package_input_identity,
     package_solution_v3_1,
     solution_data_version,
+    validate_v31_effective_version,
     validate_v31_target_version,
     version_bump_was_consumed,
 )
@@ -64,6 +65,7 @@ from .packaging_selection import (
     verify_applied_package_selection,
 )
 from .source_runtime_waiver import SOURCE_PROVIDERS, missing_schema_whitelist_match
+from . import workbook_workflow
 
 STATE_FILE_NAME = "workflow-state.json"
 SCHEMA_VERSION = "1.2.0"
@@ -1248,6 +1250,13 @@ def refresh_yolo_authoring(solution: str | Path) -> dict[str, Any]:
         if path != state_path:
             raise ValueError("workflow state selection changed while acquiring its writer lock")
         with using_run(root, state["runId"]):
+            if state["context"].get("workbookFullInventory"):
+                workbook_workflow.verify_inventory(root, state)
+                workbook_workflow.validate_evidence(root, state)
+                return {"runId": state["runId"], "status": state["workflowStatus"],
+                        "workbookSummary": workbook_workflow.summary(root, state),
+                        "updated": False, "workflowStatus": state["workflowStatus"],
+                        "next": _next_stage_name(state)}
             state = _recover_yolo_state(root, path, state)
             if state["authoring"]["status"] == "conflicted":
                 raise ValueError("conflicted YOLO runs cannot be refreshed")
@@ -1562,6 +1571,10 @@ def _validate_offline_authoring_gates(
         )
 
     root = solution.expanduser().resolve()
+    if workbook_workflow.enabled(state):
+        workbook_workflow.validate_evidence(root, state)
+        if not workbook_workflow.has_analytic_rules(root):
+            return
     inventory = _source_inventory(root)
     conversion_artifacts = state["stages"]["conversion"].get("artifacts") or {}
     expected_manifest_hash = conversion_artifacts.get("manifestSha256")
@@ -2055,9 +2068,64 @@ def _complete_runtime_pending_stage(
     return _load(solution)[1]
 
 
+def run_workbook_only_authoring(solution: str | Path) -> dict[str, Any]:
+    """Account workbook-only full-inventory passes without inventing rule coverage."""
+    root = Path(solution).expanduser().resolve()
+    with _state_writer_lock(root) as path:
+        state = _load(root)[1]
+        if not workbook_workflow.enabled(state) or not state["context"].get("workbookFullInventory"):
+            raise ValueError("workbook-only full-inventory execution requires a new explicit YOLO run")
+        workbook_workflow.verify_inventory(root, state)
+        budget = state.get("budget")
+        if not budget or budget.get("status") == "stopped":
+            raise ValueError("workbook full-inventory execution requires an active campaign budget")
+        for name, dimension, action in (
+            ("discovery", "workflowDiscovery", workbook_workflow.inspect_content),
+            ("conversion", "conversionPass", workbook_workflow.convert_content),
+            ("validation", "workflowValidation", workbook_workflow.validate_content),
+        ):
+            state = _load(root)[1]
+            if state["stages"][name]["status"] == "passed":
+                continue
+            _start_workflow_stage_unlocked(root, name, path)
+            try:
+                with measured_operation(root, budget["campaignId"],
+                                        inventory_sha256=budget["inventorySha256"],
+                                        run_id=state["runId"], dimension=dimension):
+                    result = action(root)
+                if name == "conversion" and result.get("workbooks", {}).get("selectedBlocked"):
+                    raise ValueError("workbook conversion contains unresolved review or technical blockers")
+                if (
+                    name == "validation"
+                    and state["context"]["workflowProfile"] == "qualification"
+                    and state["context"].get("workbookQualificationAfterArm") is not True
+                ):
+                    _complete_workflow_stage_unlocked(root, name, path, status="blocked",
+                        message="Workbook query/UI Qualification evidence is still required; no detection ingestion/parity is requested.")
+                    break
+                _complete_workflow_stage_unlocked(root, name, path, status="passed",
+                    artifacts=({"runtimeStatus": "not-run", "validationMode":
+                                "workbook-content" if state["context"]["workflowProfile"] == "qualification"
+                                else "offline-authoring"}
+                               if name == "validation" else {}))
+            except BudgetError as exc:
+                _stop_budget_run(path, _load(root)[1], name, str(exc))
+                break
+            except (OSError, ValueError, RuntimeError) as exc:
+                _complete_workflow_stage_unlocked(root, name, path, status="failed", message=str(exc))
+                break
+        state = _load(root)[1]
+        return {"runId": state["runId"], "status": state["workflowStatus"],
+                "workbookSummary": workbook_workflow.summary(root, state),
+                "next": _next_stage_name(state)}
+
+
 def run_yolo_authoring(solution: str | Path) -> dict[str, Any]:
     """Run existing local discovery/conversion/validation once under the frozen YOLO contract."""
     root = Path(solution).expanduser().resolve()
+    initial = _load(root)[1]
+    if initial["context"].get("workbookFullInventory") is True:
+        return run_workbook_only_authoring(root)
     with _state_writer_lock(root) as state_path:
         loaded_path, state = _load(root)
         if loaded_path != state_path:
@@ -2166,7 +2234,10 @@ def run_yolo_authoring(solution: str | Path) -> dict[str, Any]:
                         dimension="workflowDiscovery",
                     ):
                         discovery_dispatched = True
-                        inspection = inspect_solution(root)
+                        inspection = (
+                            workbook_workflow.inspect_content(root)
+                            if workbook_workflow.enabled(state) else inspect_solution(root)
+                        )
                 except BudgetError as exc:
                     if discovery_dispatched:
                         raise
@@ -2218,7 +2289,10 @@ def run_yolo_authoring(solution: str | Path) -> dict[str, Any]:
                         dimension="conversionPass",
                     ):
                         conversion_dispatched = True
-                        conversion = convert_solution(root)
+                        conversion = (
+                            workbook_workflow.convert_content(root)
+                            if workbook_workflow.enabled(state) else convert_solution(root)
+                        )
                     _verify_source_inventory(root, record)
                     manifest = _read_full_conversion_manifest(
                         root, state_path.parent, inventory
@@ -2525,6 +2599,8 @@ def initialize_workflow(
     yolo: bool | None = None,
     campaign_id: str | None = None,
     new_run: bool = False,
+    workbook_capability_version: int | None = None,
+    arm_validation_method: str | None = None,
 ) -> dict[str, Any]:
     root = Path(solution).expanduser().resolve()
     if not root.is_dir():
@@ -2535,12 +2611,26 @@ def initialize_workflow(
         validate_v31_target_version(target_version)
         if version_bump not in (None, "none"):
             raise ValueError("target version cannot be combined with a version bump")
+    if target_version is not None or (
+        version_bump is not None and solution_data_version(root) is not None
+    ):
+        validate_v31_effective_version(
+            solution_data_version(root), version_bump or "none", target_version,
+        )
     if workflow_profile is None:
         raise ValueError(
             "workflow profile selection is required: choose authoring or qualification"
         )
     if workflow_profile not in WORKFLOW_PROFILES:
         raise ValueError("workflow profile must be authoring or qualification")
+    if workbook_capability_version not in (None, 1):
+        raise ValueError("unsupported workbook capability version")
+    if arm_validation_method not in (None, *workbook_workflow.ARM_VALIDATION_METHODS):
+        raise ValueError("ARM validation method must be arm-ttk or lab-deployment")
+    if arm_validation_method and workbook_capability_version != 1:
+        raise ValueError("an explicit ARM method requires workbook capability version 1")
+    if workflow_profile == "qualification" and arm_validation_method == "arm-ttk":
+        raise ValueError("the workbook-capable Qualification route requires lab-deployment")
     explicit_campaign_id = campaign_id
     if campaign_id is not None:
         from .budget import _safe_campaign_id
@@ -2589,7 +2679,9 @@ def initialize_workflow(
         _preflight_campaign_binding(
             root,
             campaign_id,
-            yolo=yolo is True,
+            yolo=yolo is True and not (
+                workbook_capability_version == 1 and not workbook_workflow.has_analytic_rules(root)
+            ),
         )
         run = create_run(root)
         with using_run(root, run.name):
@@ -2599,12 +2691,14 @@ def initialize_workflow(
                 workspace_customer_id=workspace_customer_id, version_bump=version_bump,
                 target_version=target_version,
                 workflow_profile=workflow_profile, yolo=yolo, campaign_id=campaign_id,
+                workbook_capability_version=workbook_capability_version,
+                arm_validation_method=arm_validation_method,
             )
     existing_path = existing_artifact_path(root, STATE_FILE_NAME)
     if existing_path.exists():
         with _run_writer_lock(existing_path.parent):
             path, state = _load(root)
-            if yolo is True and "authoring" not in state:
+            if yolo is True and "authoring" not in state and not state["context"].get("workbookFullInventory"):
                 raise ValueError(
                     "YOLO cannot be enabled on an existing legacy run; initialize a new run explicitly"
                 )
@@ -2614,6 +2708,11 @@ def initialize_workflow(
                     "--campaign-id to link it conservatively"
                 )
             context = state["context"]
+            if workbook_capability_version is not None and context.get("workbookCapabilityVersion") != workbook_capability_version:
+                raise ValueError("workbook capability cannot change on resumption; initialize a new run")
+            if arm_validation_method is not None and context.get("armValidationMethod") != arm_validation_method:
+                raise ValueError("ARM validation method cannot change on resumption; initialize a new run")
+            workbook_workflow.verify_inventory(root, state)
             if target_version is not None and context.get("versionBump") not in (None, "none"):
                 raise ValueError(
                     "target version cannot be combined with the workflow's selected version bump"
@@ -2706,13 +2805,14 @@ def initialize_workflow(
                 "next": _next_stage_name(state),
             }
 
-    frozen_inventory = _source_inventory(root) if yolo is True else None
+    workbook_only = workbook_capability_version == 1 and not workbook_workflow.has_analytic_rules(root)
+    frozen_inventory = _source_inventory(root) if yolo is True and not workbook_only else None
     if frozen_inventory is not None and not campaign_id:
         raise ValueError("new YOLO workflows require an explicit --campaign-id")
     preflight_inventory = _preflight_campaign_binding(
         root,
         campaign_id,
-        yolo=yolo is True,
+        yolo=yolo is True and not workbook_only,
         inventory=frozen_inventory,
     )
     if yolo is True and requested_run_id(root) is None:
@@ -2729,6 +2829,8 @@ def initialize_workflow(
                 workflow_profile=workflow_profile,
                 yolo=True,
                 campaign_id=campaign_id,
+                workbook_capability_version=workbook_capability_version,
+                arm_validation_method=arm_validation_method,
             )
 
     now = _utc_now()
@@ -2753,6 +2855,16 @@ def initialize_workflow(
     }
     state["context"]["workflowProfile"] = workflow_profile
     state["context"]["profileSelectionConfirmed"] = True
+    if workbook_capability_version == 1:
+        state["context"]["workbookCapabilityVersion"] = 1
+        state["context"]["armValidationMethod"] = arm_validation_method or "lab-deployment"
+        state["workbooks"] = workbook_workflow.freeze_inventory(root)
+        if yolo and workbook_only:
+            state["context"]["workbookFullInventory"] = True
+        if workbook_only and workflow_profile == "qualification":
+            state["context"]["workbookQualificationAfterArm"] = True
+            for name in ("mockIngestion", "alertParity"):
+                state["stages"][name] = _stage_result(name, required=False)
     if frozen_inventory is not None:
         record, _ = _persist_contract_snapshot(
             path.parent,
@@ -2826,6 +2938,8 @@ def _validate_packaging_evidence(
     state: dict[str, Any],
     artifacts: dict[str, str],
     solution: str | Path,
+    *,
+    allow_candidate: bool = False,
 ) -> None:
     if artifacts.get("packager") != "V3.1":
         raise ValueError("passed packaging stage requires packager=V3.1; rebuild old packages")
@@ -2910,7 +3024,9 @@ def _validate_packaging_evidence(
     if packaging:
         attempt = packaging.get("currentAttempt") or {}
         if (
-            attempt.get("status") != "passed"
+            attempt.get("status") not in (
+                {"passed", "blocked"} if allow_candidate and workbook_workflow.enabled(state) else {"passed"}
+            )
             or report.get("packageAttemptId") != attempt.get("attemptId")
             or report.get("workflowRunId") != state.get("runId")
             or report.get("requestedVersionBump") != attempt.get("requestedVersionBump")
@@ -2933,6 +3049,10 @@ def _validate_packaging_evidence(
         report_digest = hashlib.sha256(report_path.read_bytes()).hexdigest()
         if report_digest != attempt.get("packageReportSha256"):
             raise ValueError("V3.1 package report hash does not match the current workflow attempt")
+    if workbook_workflow.enabled(state) and not allow_candidate and (
+        state["context"]["armValidationMethod"] == "lab-deployment" or report.get("xdrWorkbookCount", 0)
+    ):
+        workbook_workflow.require_accepted(solution, state)
 
 
 def _yolo_package_readiness(
@@ -4537,6 +4657,7 @@ def plan_new_package_release(
         raise ValueError("expected package input identity must be a lowercase SHA-256")
 
     root = Path(solution).expanduser().resolve()
+    validate_v31_effective_version(solution_data_version(root), version_bump, target_version)
     with _state_writer_lock(root) as path:
         loaded_path, state = _load(root)
         if loaded_path != path:
@@ -4744,6 +4865,9 @@ def package_workflow_v3_1(
         if requested_version_bump != "none":
             raise ValueError("target version cannot be combined with a version bump")
     root = Path(solution).expanduser().resolve()
+    validate_v31_effective_version(
+        solution_data_version(root), requested_version_bump, requested_target_version,
+    )
     with _state_writer_lock(root) as path:
         loaded_path, state = _load(root)
         if loaded_path != path:
@@ -4752,6 +4876,9 @@ def package_workflow_v3_1(
             raise ValueError("workflow packaging requires an explicitly selected run")
         if state["context"].get("profileSelectionConfirmed") is not True:
             raise ValueError("workflow packaging requires explicit profile selection")
+        workbook_workflow.verify_inventory(root, state)
+        if workbook_workflow.enabled(state):
+            workbook_workflow.validate_evidence(root, state)
         selection_evidence = verify_applied_package_selection(
             root, str(state["runId"]),
         )
@@ -5172,6 +5299,9 @@ def package_workflow_v3_1(
                         selection_plan=(
                             current_selection["plan"] if current_selection else None
                         ),
+                        **({
+                            "arm_validation_method": state["context"]["armValidationMethod"],
+                        } if workbook_workflow.enabled(state) else {}),
                     )
                 except BaseException:
                     version_after_failure = solution_data_version(root)
@@ -5320,6 +5450,24 @@ def package_workflow_v3_1(
                     "selectionPlanSha256": selection_evidence["plan"]["planSha256"],
                     "selectionOutcome": report.get("selectionOutcome"),
                 })
+            if workbook_workflow.enabled(state) and (
+                state["context"]["armValidationMethod"] == "lab-deployment"
+                or report.get("xdrWorkbookCount", 0) > 0
+            ):
+                if report.get("packageAccepted") is not False or report.get("packageLifecycleStatus") != "candidate-generated":
+                    raise ValueError("versioned candidate package receipt must remain explicitly unaccepted")
+                stage.update({
+                    "status": "blocked", "completedAt": _utc_now(),
+                    "message": "Candidate generated; official static validation, selected ARM method and independent workbook contract evidence remain required.",
+                    "artifacts": {**artifacts, "packageLifecycleStatus": "candidate-generated"},
+                    "evidence": [result["packageReport"]],
+                })
+                current_attempt["status"] = "blocked"
+                package_state["lastConsumedAction"]["packageSucceeded"] = False
+                state["workflowStatus"] = "blocked"
+                _write_unlocked(path, state)
+                return {**result, "status": "blocked", "runId": state["runId"],
+                        "workflowStatus": "blocked", "next": "workflow-arm-candidate"}
             stage.update({
                 "status": "passed",
                 "completedAt": _utc_now(),
@@ -5558,6 +5706,7 @@ def workflow_status(solution: str | Path) -> dict[str, Any]:
             }
     return {
         **state,
+        "workbookSummary": workbook_workflow.summary(solution, state),
         "packageFreshness": freshness,
         "runtimeAssessment": {
             "runtimeStatus": (
@@ -5695,6 +5844,13 @@ def invalidate_runtime_completion(
 
 
 def _dependencies(state: dict[str, Any], stage: str) -> tuple[str, ...]:
+    if (
+        workbook_workflow.enabled(state)
+        and state["context"]["workflowProfile"] == "qualification"
+        and state["stages"]["alertParity"]["status"] == "notRequired"
+        and stage == "report"
+    ):
+        return ("deployment",)
     if state["context"]["workflowProfile"] == "authoring":
         return AUTHORING_DEPENDENCIES.get(stage, ())
     return QUALIFICATION_DEPENDENCIES[stage]
@@ -5873,7 +6029,30 @@ def _complete_workflow_stage_unlocked(
     if current["status"] != "running":
         raise ValueError(f"workflow stage is not running: {stage}")
     final_artifacts = dict(artifacts or {})
-    if stage == "validation" and status == "passed":
+    if status == "passed" and workbook_workflow.enabled(state):
+        workbook_workflow.verify_inventory(solution, state)
+        if stage == "conversion":
+            final_artifacts.update(workbook_workflow.bind_conversion(solution, state))
+        if stage in {"validation", "packaging", "report"}:
+            workbook_workflow.validate_evidence(solution, state)
+        if stage == "report" and state["context"]["workflowProfile"] == "qualification":
+            from .workbook_qualification import require_current_qualification
+            require_current_qualification(solution, state)
+    if (
+        stage == "validation" and status == "passed"
+        and workbook_workflow.enabled(state)
+        and not workbook_workflow.has_analytic_rules(solution)
+        and state["context"]["workflowProfile"] == "qualification"
+    ):
+        if state["context"].get("workbookQualificationAfterArm") is True:
+            final_artifacts["validationMode"] = "workbook-content"
+            final_artifacts["workbookQueryStatus"] = "not-run"
+            final_artifacts["workbookUiStatus"] = "not-run"
+        else:
+            from .workbook_qualification import require_current_qualification
+            require_current_qualification(solution, state)
+            final_artifacts["validationMode"] = "workbook-qualification"
+    elif stage == "validation" and status == "passed":
         runtime_status = final_artifacts.get("runtimeStatus")
         from .runtime import current_runtime_evidence
 
@@ -5979,6 +6158,17 @@ def _complete_workflow_stage_unlocked(
         and state.get("packaging")
     ):
         _verify_current_package_state(Path(solution).expanduser().resolve(), state)
+    if (
+        status == "passed" and stage == "deployment"
+        and state["context"].get("workbookQualificationAfterArm") is True
+    ):
+        workbook_workflow.require_accepted(solution, state)
+        final_artifacts["deploymentMode"] = "candidate-arm-lab-validation"
+        final_artifacts.update({
+            key: value
+            for key, value in state["stages"]["packaging"]["artifacts"].items()
+            if key in {"armCandidate", "workbookContractPlan", "workbookContractEvidence", "workbookContractResult"}
+        })
     current.update(
         {
             "status": status,

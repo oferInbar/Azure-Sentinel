@@ -14,8 +14,9 @@ from .converter import (
     runtime_validation_plan,
     validate_solution,
 )
-from .artifacts import migrate_reports, select_run, reset_run_selection, list_runs
+from .artifacts import migrate_reports, select_run, reset_run_selection, list_runs, existing_artifact_path
 from .evidence import export_evidence
+from .dependencies import plan_solution_dependencies
 from .budget import (
     DEFAULT_POLICY,
     budget_summary,
@@ -152,6 +153,22 @@ def main(argv: list[str] | None = None) -> int:
         description="Convert Microsoft Sentinel analytic rules into XDR Custom Detection YAML."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    dependency_parser = subparsers.add_parser(
+        "dependency-plan",
+        help="Propose YAML dependencies offline, or verify them from approved lab metadata.",
+    )
+    dependency_parser.add_argument("--solution", required=True)
+    dependency_parser.add_argument("--results", help="Exact-query-bound successful LA metadata results.")
+    dependency_parser.add_argument("--workspace-id", help="Explicitly approved lab workspace customer ID.")
+    workbook_dependencies = subparsers.add_parser(
+        "workbook-dependency-plan", help="Propose offline workbook gaps; import separately approved exact-query lab metadata.")
+    workbook_dependencies.add_argument("--solution", required=True)
+    workbook_dependencies.add_argument("--results")
+    workbook_dependencies.add_argument("--workspace-id")
+    workbook_review = subparsers.add_parser(
+        "workbook-review", help="Apply complete hash-bound accept/change/defer decisions to run-local config and receipt.")
+    for option in ("solution", "plan", "decisions", "plan-sha256", "actor", "reference", "output-dir"):
+        workbook_review.add_argument("--" + option, required=True)
     migration = subparsers.add_parser("migrate-reports", help="Plan a non-destructive copy of legacy reports into solution Logs.")
     migration.add_argument("--solution", required=True)
     migration.add_argument("--apply", action="store_true", help="Copy after reviewing the dry-run; originals are preserved.")
@@ -174,6 +191,8 @@ def main(argv: list[str] | None = None) -> int:
         subparser.add_argument("--solution", required=True)
         if command == "convert":
             subparser.add_argument("--overwrite", action="store_true")
+            subparser.add_argument("--overwrite-workbooks", action="store_true",
+                                   help="Replace only unchanged hash-bound managed workbook drafts; never overwrite detections.")
             subparser.add_argument("--config")
             subparser.add_argument(
                 "--rule-id", action="append",
@@ -606,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     package_v3_1.add_argument(
         "--target-version",
-        help="Explicit canonical V3.1 solution version (>=3.1.0 and <4.0.0); use with --version-bump none.",
+        help="Explicit canonical V3.1 solution version (>=3.2.0 and <4.0.0); use with --version-bump none.",
     )
     package_v3_1.add_argument(
         "--legacy-baseline-evidence",
@@ -634,7 +653,7 @@ def main(argv: list[str] | None = None) -> int:
     package_release.add_argument("--version-bump", choices=["patch", "minor", "major"])
     package_release.add_argument(
         "--target-version",
-        help="Explicit canonical V3.1 solution version (>=3.1.0 and <4.0.0), instead of a version bump.",
+        help="Explicit canonical V3.1 solution version (>=3.2.0 and <4.0.0), instead of a version bump.",
     )
     package_release.add_argument(
         "--expected-package-input-sha256",
@@ -713,6 +732,10 @@ def main(argv: list[str] | None = None) -> int:
     workflow_init.add_argument("--workspace-resource-id")
     workflow_init.add_argument("--workspace-customer-id")
     workflow_init.add_argument(
+        "--arm-validation-method", choices=["lab-deployment", "arm-ttk"],
+        help="New runs default to lab-deployment; resumption never changes the selected method.",
+    )
+    workflow_init.add_argument(
         "--confirm-configured-target",
         action="store_true",
         help="Confirm the tenant/workspace shown by doctor for a new Qualification run.",
@@ -723,7 +746,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     workflow_init.add_argument(
         "--target-version",
-        help="Persist an explicit canonical V3.1 solution version (>=3.1.0 and <4.0.0); use with --version-bump none.",
+        help="Persist an explicit canonical V3.1 solution version (>=3.2.0 and <4.0.0); use with --version-bump none.",
     )
     workflow_init.add_argument(
         "--workflow-profile",
@@ -755,6 +778,43 @@ def main(argv: list[str] | None = None) -> int:
         help="Show the persisted end-to-end migration workflow state.",
     )
     workflow_status_parser.add_argument("--solution", required=True)
+    workbook_commands = {}
+    for command in (
+        "workflow-arm-candidate", "workflow-arm-plan", "workflow-arm-review-scope",
+        "workflow-arm-withdraw-scope", "workflow-arm-execute", "workflow-arm-reconcile",
+        "workflow-arm-import",
+        "workflow-arm-preflight-plan", "workflow-arm-preflight-review",
+        "workflow-arm-preflight-revoke", "workflow-arm-preflight-execute",
+        "workflow-workbook-contract-plan", "workflow-workbook-contract-import",
+    ):
+        workbook_commands[command] = subparsers.add_parser(command)
+        workbook_commands[command].add_argument("--solution", required=True)
+    workbook_commands["workflow-arm-candidate"].add_argument("--validation-receipt")
+    workbook_commands["workflow-arm-candidate"].add_argument("--toolkit-root")
+    for command in ("workflow-arm-plan", "workflow-workbook-contract-plan"):
+        workbook_commands[command].add_argument("--target", required=True, help="Local JSON with exact lab identity and optional workspaceLocation.")
+        workbook_commands[command].add_argument("--selected-flags", required=True, help="JSON object selecting every declared Deploy flag independently.")
+    for command in ("workflow-arm-review-scope", "workflow-arm-withdraw-scope", "workflow-arm-execute", "workflow-arm-reconcile", "workflow-arm-import"):
+        workbook_commands[command].add_argument("--actor", required=True)
+        workbook_commands[command].add_argument("--reference", required=True)
+    workbook_commands["workflow-arm-review-scope"].add_argument("--decision", required=True, choices=["approved", "declined"])
+    for command in ("workflow-arm-review-scope", "workflow-arm-execute"):
+        workbook_commands[command].add_argument("--plan-sha256", required=True)
+    workbook_commands["workflow-arm-execute"].add_argument("--confirmation", required=True)
+    for command in ("workflow-arm-preflight-review", "workflow-arm-preflight-revoke"):
+        workbook_commands[command].add_argument("--actor", required=True)
+        workbook_commands[command].add_argument("--reference", required=True)
+    for command in ("workflow-arm-preflight-review", "workflow-arm-preflight-execute"):
+        workbook_commands[command].add_argument("--preflight-plan-sha256", required=True)
+    workbook_commands["workflow-arm-preflight-review"].add_argument(
+        "--decision", required=True, choices=["approved", "declined"],
+    )
+    workbook_commands["workflow-arm-preflight-execute"].add_argument("--state-dir")
+    for command in ("workflow-arm-reconcile", "workflow-arm-import"):
+        workbook_commands[command].add_argument("--attempt", required=True)
+        workbook_commands[command].add_argument("--observation", required=True)
+    workbook_commands["workflow-workbook-contract-import"].add_argument("--evidence", required=True)
+    workbook_commands["workflow-workbook-contract-import"].add_argument("--contract-only", action="store_true")
     workflow_status_parser.add_argument(
         "--source-provider",
         choices=sorted(SOURCE_PROVIDERS),
@@ -932,6 +992,10 @@ def main(argv: list[str] | None = None) -> int:
 
     runs_parser = subparsers.add_parser("workflow-runs", help="List run IDs without selecting or modifying state.")
     runs_parser.add_argument("--solution", required=True)
+    from .workbook_qualification_cli import (
+        register_workbook_qualification_commands, dispatch_workbook_qualification,
+    )
+    qualification_commands = register_workbook_qualification_commands(subparsers)
     for subparser in subparsers.choices.values():
         if any(action.dest == "solution" for action in subparser._actions):
             subparser.add_argument("--run-id", help="Select an existing run; required when multiple runs exist.")
@@ -976,6 +1040,10 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.choices["workflow-init"].add_argument(
         "--new-run", action="store_true", help="Create an isolated new workflow instead of resuming."
     )
+    for command in (*workbook_commands, *qualification_commands):
+        for action in subparsers.choices[command]._actions:
+            if action.dest == "run_id":
+                action.required = True
     args = parser.parse_args(argv)
     if args.command == "convert" and args.rule_id and len(args.rule_id) != 1:
         parser.error("--rule-id accepts exactly one GUID; repeated selectors are not supported")
@@ -984,6 +1052,8 @@ def main(argv: list[str] | None = None) -> int:
         isolated_permission_commands = {
             "plan-delegated-app-permission-update",
             "verify-delegated-app-permission-update",
+            "workbook-dependency-plan",
+            "workbook-review",
         }
         if getattr(args, "solution", None) and args.command not in isolated_permission_commands:
             selection = select_run(args.solution, args.run_id)
@@ -992,7 +1062,9 @@ def main(argv: list[str] | None = None) -> int:
             args.command == "convert" and args.rule_id
         ):
             configure_logging(getattr(args, "solution", None))
-        if args.command == "coordinator-enroll":
+        if args.command in qualification_commands:
+            result = dispatch_workbook_qualification(args)
+        elif args.command == "coordinator-enroll":
             result = coordinator_enroll(
                 args.solution,
                 owner=args.owner,
@@ -1343,17 +1415,35 @@ def main(argv: list[str] | None = None) -> int:
                 args.solution,
                 legacy_baseline_evidence=args.legacy_baseline_evidence,
             )
+        elif args.command == "dependency-plan":
+            result = plan_solution_dependencies(
+                args.solution, results_path=args.results, workspace_id=args.workspace_id,
+            )
+        elif args.command == "workbook-dependency-plan":
+            from .workbook_dependencies import plan_workbook_dependencies
+            result = plan_workbook_dependencies(
+                args.solution, results_path=args.results, workspace_id=args.workspace_id)
+        elif args.command == "workbook-review":
+            from .workbook_dependencies import review_workbook_dependencies
+            result = review_workbook_dependencies(
+                args.solution, plan_path=args.plan, decisions_path=args.decisions,
+                expected_plan_sha256=args.plan_sha256, actor=args.actor, reference=args.reference,
+                output_directory=args.output_dir)
         elif args.command == "inspect":
-            result = inspect_solution(args.solution)
+            from .workbook_workflow import inspect_content
+            result = inspect_content(args.solution)
         elif args.command == "convert":
-            result = convert_solution(
+            from .workbook_workflow import convert_content
+            result = convert_content(
                 args.solution, overwrite=args.overwrite, config_path=args.config,
+                overwrite_workbooks=args.overwrite_workbooks,
                 rule_id=args.rule_id[0] if args.rule_id else None,
             )
             if args.rule_id:
                 configure_logging(args.solution)
         elif args.command == "validate":
-            result = validate_solution(args.solution)
+            from .workbook_workflow import validate_content
+            result = validate_content(args.solution)
         elif args.command == "validate-advanced-hunting":
             try:
                 state = workflow_status(args.solution)
@@ -1424,6 +1514,47 @@ def main(argv: list[str] | None = None) -> int:
                 provider_gap_evidence=args.provider_gap_evidence,
                 source_provider=args.source_provider,
             )
+        elif args.command in workbook_commands:
+            from . import workbook_workflow as workbooks
+            if args.command.startswith("workflow-arm-preflight-"):
+                from . import workbook_preflight_workflow as preflight
+
+                if args.command == "workflow-arm-preflight-plan":
+                    result = preflight.create_plan(args.solution)
+                elif args.command == "workflow-arm-preflight-review":
+                    result = preflight.review(
+                        args.solution, expected_sha256=args.preflight_plan_sha256,
+                        actor=args.actor, reference=args.reference, approved=args.decision == "approved",
+                    )
+                elif args.command == "workflow-arm-preflight-revoke":
+                    result = preflight.revoke(args.solution, actor=args.actor, reference=args.reference)
+                else:
+                    result = preflight.execute(
+                        args.solution, expected_sha256=args.preflight_plan_sha256,
+                        state_dir=args.state_dir,
+                    )
+            elif args.command == "workflow-arm-candidate":
+                result = workbooks.create_candidate(args.solution, validation_receipt=args.validation_receipt,
+                                                    toolkit_root=args.toolkit_root)
+            elif args.command in {"workflow-arm-plan", "workflow-workbook-contract-plan"}:
+                result = workbooks.plan_candidate(args.solution,
+                    target=json.loads(Path(args.target).read_text(encoding="utf-8-sig")),
+                    selected_flags=json.loads(Path(args.selected_flags).read_text(encoding="utf-8-sig")),
+                    contract_only=args.command == "workflow-workbook-contract-plan")
+            elif args.command == "workflow-arm-review-scope":
+                result = workbooks.review_scope(args.solution, actor=args.actor, reference=args.reference,
+                    approved=args.decision == "approved", expected_plan_sha256=args.plan_sha256)
+            elif args.command == "workflow-arm-withdraw-scope":
+                result = workbooks.withdraw_scope(args.solution, actor=args.actor, reference=args.reference)
+            elif args.command == "workflow-arm-execute":
+                result = workbooks.execute_candidate(args.solution, expected_plan_sha256=args.plan_sha256,
+                    actor=args.actor, reference=args.reference, confirmation=args.confirmation)
+            elif args.command in {"workflow-arm-reconcile", "workflow-arm-import"}:
+                action = workbooks.reconcile_attempt if args.command == "workflow-arm-reconcile" else workbooks.import_arm_only
+                result = action(args.solution, attempt=args.attempt,
+                    observation=args.observation, actor=args.actor, reference=args.reference)
+            else:
+                result = workbooks.import_contract(args.solution, evidence=args.evidence, contract_only=args.contract_only)
         elif args.command == "workflow-init":
             if args.new_run and args.run_id:
                 raise ValueError("--new-run and --run-id cannot be combined")
@@ -1477,6 +1608,11 @@ def main(argv: list[str] | None = None) -> int:
                 yolo=True if args.yolo else None,
                 campaign_id=args.campaign_id,
                 new_run=args.new_run,
+                workbook_capability_version=(
+                    1 if args.new_run or not existing_artifact_path(args.solution, "workflow-state.json").exists()
+                    or args.arm_validation_method is not None else None
+                ),
+                arm_validation_method=args.arm_validation_method,
             )
         elif args.command == "workflow-budget":
             result = budget_summary(args.solution, args.campaign_id)
@@ -1614,7 +1750,19 @@ def main(argv: list[str] | None = None) -> int:
         and result.get("status") != "applied"
     ):
         return 1
-    if args.command == "convert" and (result["needsReview"] or result["conflicts"]):
+    if args.command == "convert" and (
+        result["needsReview"] or result["conflicts"] or result.get("workbooks", {}).get("selectedBlocked", 0)
+    ):
+        return 1
+    if args.command == "package-v3-1" and result.get("status") == "blocked":
+        return 1
+    if args.command in {"workflow-arm-execute", "workflow-workbook-contract-import"} and result.get("accepted") is not True:
+        return 1
+    if args.command == "workflow-arm-preflight-execute" and result.get("status") != "ready":
+        return 1
+    if args.command == "dependency-plan" and args.results and any(
+        item["validation"]["status"] != "passed" for item in result["results"]
+    ):
         return 1
     if (
         args.command == "workflow-complete-stage"

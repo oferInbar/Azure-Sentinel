@@ -5,8 +5,8 @@ description: Package a complete Microsoft Sentinel and Defender XDR solution thr
 
 # Package a Sentinel and Defender XDR solution
 
-Use this skill after solution content and any `XDR Detections/*.yaml` files are
-complete and structurally validated.
+Use this skill after solution content, any `XDR Detections/*.yaml`, and selected
+`XDR Workbooks/*.json` files are complete and structurally validated.
 
 The XDR Solution Manager workflow always runs V3.1. Legacy V3 remains available outside
 this workflow for legacy Sentinel-only packaging and intentionally ignores XDR
@@ -19,6 +19,44 @@ Detections are declared, it also supports hybrid installation:
 - `DeployCustomDetection=true` (default false) installs Custom Detections and their
   Content Hub registrations independently. Both selections may be true.
 - Custom Detections are always packaged disabled.
+- `DeployDefenderWorkbook=true` (default false) installs Defender Workbooks and
+  their registrations independently of Sentinel `DeployWorkbook`.
+
+## Defender Workbook candidate boundary
+
+Use the explicit solution Data `XDR Workbooks` selection. An empty array emits no
+Defender Workbook resources or deployment flag; never scan to repopulate it.
+Each selected file retains a complete `Notebook/1.0`, distinct canonical content
+and installation GUIDs, exact raw source-file and query provenance, resolved
+prerequisites, and explicit false review markers. Content versions inherit the
+selected solution release; the Notebook format version is unchanged.
+
+Installation and stored installation templates carry exactly the resolved
+package/content identity quartet. Full registration also retains prerequisites.
+Reviewed workspace functions are declared in `requiredWorkspaceFunctions` with
+`functionAlias`, solution-relative `sourcePath`, and current `sourceSha256`.
+Required parser installation is mandatory: the workbook's outer installation
+deployment must depend on the actual unconditional
+`Microsoft.OperationalInsights/workspaces/savedSearches` resources emitted in
+the same enclosing template. Do not substitute parser catalog registration for
+installation, invent dependencies on external resources, or allow selection
+flags to skip required parsers. Missing/stale/ambiguous prerequisites block
+packaging before template mutation. Parser overwrites are expected for this route.
+Keep workspace-function prerequisites in full registration; installed content
+provenance remains the quartet. ARM ordering does not prove AH visibility or
+query/runtime acceptance.
+Do not classify `_GetWatchlist` as an installable parser or `Watchlist` as
+connector-fed telemetry. Raw reference lineage is separate from required
+workload/connector data types.
+Do not rewrite source workbooks, remove panels, silently resolve blockers, or
+treat conversion findings as permission to change toolkit implementation.
+
+The installation/registration provider contract is unverified. A generated
+candidate is not accepted packaging. Require independent approved lab
+installation, registration/provenance readback, repeat-install and update
+evidence before claiming contract acceptance. ARM success, ARM-TTK, and local
+tests do not establish workbook UI or query qualification. No packaging command
+implicitly authorizes environment writes.
 
 ## Scope
 
@@ -44,8 +82,9 @@ Use `none` for repeat local validation. Before producing a package intended for
 submission, ask which release increment to apply. Never bump the version more
 than once for the same package attempt.
 
-V3.1 requires effective solution and XDR content release versions in
-`[3.1.0, 4.0.0)`. Other content release versions must be below `4.0.0`; their
+V3.1 requires effective solution release versions in `[3.2.0, 4.0.0)`.
+Independent XDR Custom Detection release versions remain in `[3.1.0, 4.0.0)`.
+Other content release versions must be below `4.0.0`; their
 legacy lower versions remain valid. Out-of-range versions are hard errors, not
 automatic promotions. A major bump from `3.x` is therefore rejected.
 XDR requires its own top-level YAML `version` (`major.minor.patch`); new
@@ -90,8 +129,14 @@ authored detection YAML or provenance. Installation and registration IDs and
 references must use the same normalized identity. Existing deployed identities
 are not migrated or deleted. An optional read-only identity review may help
 diagnose known legacy IDs or collisions, but it is not a mandatory
-pre-deployment existence check. Stop for manual reconciliation if an observed
-ID's ownership or content is uncertain; never overwrite unrelated content.
+pre-deployment existence check. Follow the canonical toolkit-owner managed
+update policy: approved same-ID workbook and XDR detection overwrites are normal,
+including in labs. Do not require a previous remote-content hash match or an
+extra overwrite decision solely because existing content/version differs.
+Stop for wrong or ambiguously mapped identities and out-of-scope resources,
+not for an intended managed same-ID update. Personalized workbook copies use
+separate IDs and are not selected for toolkit updates. Preserve deployment
+consent, disabled detection payloads and exact post-write acceptance checks.
 
 `Include XDR Content Registration` is deprecated: any supplied value warns and
 is ignored. V3.1 emits installation and registration together under

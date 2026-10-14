@@ -29,6 +29,10 @@
     Exact V3.1 packaging report under the selected solution. When supplied, the runner
     requires validation-only mode and emits hash-bound evidence for that package.
 
+.PARAMETER ArmValidationMethod
+    arm-ttk (legacy default) runs ARM-TTK. lab-deployment replaces only ARM-TTK
+    with pending external approved deployment validation; its report is not acceptance.
+
 .PARAMETER VersionBump
     How to increment the version. Options: patch (default), minor, major.
 
@@ -86,7 +90,10 @@ param(
 
     [string]$ReleaseNotes = "",
 
-    [string]$PackageReportPath
+    [string]$PackageReportPath,
+
+    [ValidateSet("arm-ttk", "lab-deployment")]
+    [string]$ArmValidationMethod = "arm-ttk"
 )
 
 # =============================================================================
@@ -94,6 +101,19 @@ param(
 # =============================================================================
 
 $ErrorActionPreference = "Stop"
+if ($ArmValidationMethod -eq "lab-deployment") {
+    if (-not $SkipPackaging -or $SkipValidation -or -not $PackageReportPath) {
+        Write-Host "❌ lab-deployment requires -SkipPackaging, -PackageReportPath and all static validators." -ForegroundColor Red
+        exit 2
+    }
+    $labAllowedSkips = @("kql", "detection-schema", "non-ascii", "arm-ttk")
+    if (@($ValidationSkip -split ',' | Where-Object { $_ -and $_ -notin $labAllowedSkips }).Count -gt 0) {
+        Write-Host "❌ lab-deployment cannot skip other static validators." -ForegroundColor Red
+        exit 2
+    }
+    # These checks run natively below; only ARM-TTK is replaced by the lab route.
+    $ValidationSkip = "kql,detection-schema,non-ascii,arm-ttk"
+}
 
 # The toolkit root is anchored to this script, never to the caller's current directory.
 $toolkitRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../.."))
@@ -1127,7 +1147,16 @@ if (-not $SkipValidation) {
     # ARM-TTK Validator (local — calls run-arm-ttk.ps1, same checks as entrypoint.ps1)
     # -----------------------------------------------------------------
     $packageDir = Join-Path $solutionPath "Package"
-    if (Test-Path $packageDir) {
+    if ($ArmValidationMethod -eq "lab-deployment") {
+        Write-Host "  ⏳ ARM deployment validation pending; candidate is NOT accepted." -ForegroundColor Yellow
+        $null = $reportEntries.Add(@{
+            Step = 3; Name = "ARM-TTK"; Status = "skipped"
+            Passed = 0; Failed = 0; Skipped = 1; FileCount = 0
+            Duration = [TimeSpan]::Zero
+            SkipReason = "Replaced only by pending approved lab deployment validation; not acceptance"
+        })
+    }
+    elseif (Test-Path $packageDir) {
         $armTtkScript = Join-Path $toolkitRoot ".script/local-validation/run-arm-ttk.ps1"
         if (-not (Test-Path $armTtkScript)) {
             Write-Host "  ⏭  ARM-TTK validation skipped — run-arm-ttk.ps1 not found." -ForegroundColor Yellow
@@ -1566,6 +1595,13 @@ if ($PackageReportPath -and $null -ne $validationEvidenceBefore) {
             -PackagingSkipped ([bool]$SkipPackaging) `
             -ValidationSkipped ([bool]$SkipValidation) `
             -EvidenceRunPath $evidenceRunPath
+        $validationBinding.armValidationMethod = $ArmValidationMethod
+        $validationBinding.armValidationStatus = if ($ArmValidationMethod -eq "lab-deployment") { "pending" } else {
+            if (@($reportEntries | Where-Object { $_.Name -eq "ARM-TTK" -and $_.Status -eq "passed" }).Count -eq 1) { "passed" } else { "not-passed" }
+        }
+        $validationBinding.packageLifecycleStatus = if ($ArmValidationMethod -eq "lab-deployment") { "candidate-generated" } else { "validated" }
+        $validationBinding.packageAccepted = $false
+        if ($ArmValidationMethod -eq "lab-deployment") { $validationBinding.workbookCapabilityVersion = 1 }
         $bindingReceipt = Write-ValidationEvidenceBinding `
             -EvidenceRunPath $evidenceRunPath `
             -Binding $validationBinding
@@ -1723,7 +1759,10 @@ function Write-BuildReport {
     Add-Line "Version: $versionStr"
     Add-Line "Date: $dateStr"
     Add-Line "Duration: $durationStr"
-    Add-Line "Result: $(if ($Success) { 'PASSED' } else { 'FAILED' })"
+    Add-Line "ARM validation method: $ArmValidationMethod"
+    Add-Line "ARM validation status: $(if ($ArmValidationMethod -eq 'lab-deployment') { 'pending' } else { 'see validator results' })"
+    Add-Line "Package accepted: false"
+    Add-Line "Result: $(if (-not $Success) { 'FAILED' } elseif ($ArmValidationMethod -eq 'lab-deployment') { 'CANDIDATE_GENERATED' } else { 'PASSED' })"
     if ($Meta.ValidationBindingPath) {
         Add-Line "Validation binding: $($Meta.ValidationBindingPath)"
         Add-Line "Validation binding SHA256: $($Meta.ValidationBindingSha256)"
@@ -1799,7 +1838,11 @@ function Write-BuildReport {
     Add-Line ""
     Add-Line "Total: $totalValidators validators | $totalPassed passed | $totalFailed failed | $totalSkipped skipped"
     Add-Line ""
-    if ($Success) {
+    if ($Success -and $ArmValidationMethod -eq "lab-deployment") {
+        Add-Line "**CANDIDATE GENERATED — NOT ACCEPTED**"
+        Add-Line "All reported static checks completed; approved deployment and workbook contract readback remain pending."
+    }
+    elseif ($Success) {
         Add-Line "**BUILD SUCCESSFUL**"
     }
     else {

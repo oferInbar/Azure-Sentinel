@@ -176,9 +176,15 @@ class ContentDeploymentTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         template = json.loads(result.stdout)["template"]
         self.assertEqual(set(CONTRACT), set(template["parameters"]))
-        self.assertNotIn("DeployDefenderWorkbook", template["parameters"])
+        self.assertIs(False, template["parameters"]["DeployDefenderWorkbook"]["defaultValue"])
+        workbook = next(
+            resource for resource in template["resources"]
+            if resource["name"] == "DefenderWorkbook"
+        )
+        self.assertEqual(
+            "[parameters('DeployDefenderWorkbook')]", workbook["condition"]
+        )
         for resource in (
-            registration("DefenderWorkbook", "unsupported-workbook"),
             registration("FutureKind", "future-kind"),
             {"type": "Microsoft.Resources/deployments", "name": "unowned-deployment", "properties": {}},
         ):
@@ -229,7 +235,7 @@ class ContentDeploymentTests(unittest.TestCase):
                         self.assertEqual("disabled", body["resources"]["detectionRule"]["properties"]["status"])
                         self.assertNotIn("Deploy", json.dumps(body))
                     self.assertIn(attribution.AttributionTests.marker(attribution.TRACKING_ID), template["resources"])
-                    with zipfile.ZipFile(package / "3.1.0.zip") as archive:
+                    with zipfile.ZipFile(package / "3.2.0.zip") as archive:
                         self.assertEqual(template, json.loads(archive.read("mainTemplate.json")))
                         self.assertEqual(ui, json.loads(archive.read("createUiDefinition.json")))
         original["XDR Detections"] = []
@@ -499,6 +505,12 @@ class ContentDeploymentTests(unittest.TestCase):
                     )
                     expected["id"] = f"[if(true(), '{expected['id']}', '{expected['id']}')]"
                     expected["detectionAction"]["alertTemplate"]["tactics"] = [authored[0]]
+                    expected["contentProvenance"] = {
+                        "packageId": "testpublisher.test-sentinel",
+                        "packageVersion": "3.2.0",
+                        "contentId": "xdr-" + document["contentProvenance"]["source"]["id"],
+                        "contentVersion": document["version"],
+                    }
                     for body in bodies:
                         self.assertEqual(expected, body["resources"]["detectionRule"]["properties"])
                     self.assertEqual(original, {p: p.read_bytes() for p in original})

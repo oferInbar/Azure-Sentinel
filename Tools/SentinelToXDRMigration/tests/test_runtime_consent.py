@@ -996,6 +996,8 @@ class RuntimeQueryConsentTests(unittest.TestCase):
                     "kind": "CustomDetection",
                     "id": "xdr-11111111-2222-3333-4444-555555555555",
                     "contentProvenance": {
+                        "requiredWorkloads": [{"workload": "sentinel", "dataTypes": ["SecurityEvent"]}],
+                        "requiredDataConnectors": [],
                         "source": {
                             "path": "Analytic Rules/Rule.yaml",
                             "querySha256": hashlib.sha256(query.encode()).hexdigest(),

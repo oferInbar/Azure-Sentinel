@@ -16,6 +16,7 @@ from sentinel_xdr_migration.artifacts import (
     using_run,
 )
 from sentinel_xdr_migration.report_dashboard import _flow_stage
+from sentinel_xdr_migration.dependencies import dependency_identity
 from sentinel_xdr_migration.runtime import (
     current_runtime_evidence,
     record_runtime_validation,
@@ -154,6 +155,7 @@ class IdentityInfoSourceWhitelistTests(unittest.TestCase):
                     "failureKind": None,
                     "querySha256": _sha256(query),
                     "rowCount": 0,
+                    "dependencyProvenanceSha256": dependency_identity(detection_doc),
                 }
             result["detection"] = name_on_disk
             if source_overrides and index in source_overrides:

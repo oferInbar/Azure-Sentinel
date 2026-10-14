@@ -47,6 +47,8 @@ def document(rule_id: str = RULE_ID) -> dict:
         "resourceType": "Microsoft.Security/detectionRules",
         "apiVersion": "2026-06-01-preview",
         "contentProvenance": {
+            "requiredWorkloads": [{"workload": "mde", "dataTypes": ["DeviceInfo"]}],
+            "requiredDataConnectors": [],
             "source": {
                 "platform": "Microsoft Sentinel",
                 "kind": "AnalyticsRule",
@@ -90,6 +92,19 @@ def document(rule_id: str = RULE_ID) -> dict:
 
 
 class DeploymentTests(unittest.TestCase):
+    def write_package_context(self, root: Path) -> dict:
+        (root / "Data").mkdir()
+        (root / "Data/Solution_Test.json").write_text(json.dumps({
+            "Version": "3.1.0", "Metadata": "SolutionMetadata.json",
+        }))
+        (root / "SolutionMetadata.json").write_text(json.dumps({
+            "publisherId": "testpublisher", "offerId": "test-sentinel",
+        }))
+        return {
+            "packageId": "testpublisher.test-sentinel", "packageVersion": "3.1.0",
+            "contentId": f"xdr-{RULE_ID}", "contentVersion": "3.1.0",
+        }
+
     def test_custom_detection_token_accepts_scope_supersets_but_not_invalid_claims(
         self,
     ) -> None:
@@ -901,6 +916,12 @@ class DeploymentTests(unittest.TestCase):
                 yaml.safe_dump(document()), encoding="utf-8"
             )
 
+            provenance = self.write_package_context(root)
+            request.side_effect = [
+                (404, {"error": {"code": "NotFound"}}),
+                (201, {"id": RULE_ID}),
+                (200, {"id": RULE_ID, "status": "disabled", "contentProvenance": provenance}),
+            ]
             result = deploy_solution(root)
 
         self.assertEqual(result["succeeded"], 1)
@@ -947,6 +968,7 @@ class DeploymentTests(unittest.TestCase):
                 yaml.safe_dump(value), encoding="utf-8"
             )
 
+            self.write_package_context(root)
             result = deploy_solution(root)
 
         self.assertEqual(result["succeeded"], 0)
@@ -981,6 +1003,12 @@ class DeploymentTests(unittest.TestCase):
                 yaml.safe_dump(document()), encoding="utf-8"
             )
 
+            provenance = self.write_package_context(root)
+            request.side_effect = [
+                (200, {"id": RULE_ID}),
+                (200, {"id": RULE_ID}),
+                (200, {"id": RULE_ID, "status": "disabled", "contentProvenance": provenance}),
+            ]
             result = deploy_solution(root)
 
         self.assertEqual(result["succeeded"], 1)
@@ -989,6 +1017,26 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(request.call_args_list[1].args[1].endswith("/xdr-" + RULE_ID))
         update = request.call_args_list[1].args[3]
         self.assertNotIn("id", update)
+
+    def test_deployment_requires_matching_provenance_readback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "XDR Detections"
+            output.mkdir()
+            (output / "rule.yaml").write_text(yaml.safe_dump(document()))
+            self.write_package_context(root)
+            with (
+                mock.patch("sentinel_xdr_migration.deployment.require_locked_target", return_value=TARGET),
+                mock.patch("sentinel_xdr_migration.deployment._deployment_token", return_value="token"),
+                mock.patch("sentinel_xdr_migration.deployment._graph_request", side_effect=[
+                    (404, {}), (201, {}), (200, {"status": "disabled"}),
+                ]),
+            ):
+                result = deploy_solution(root)
+        self.assertEqual(0, result["succeeded"])
+        self.assertFalse(result["results"][0]["contentProvenanceVerified"])
+        self.assertTrue(result["results"][0]["tacticProjectionVerified"])
+        self.assertEqual("DeploymentVerificationFailed", result["results"][0]["error"]["code"])
 
 
 if __name__ == "__main__":

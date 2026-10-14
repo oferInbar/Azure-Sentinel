@@ -105,7 +105,7 @@ function Convert-SolutionDataContentArrays {
     $encodedArrayNames = @(
         'parsers', 'data connectors', 'dataconnectors', 'playbooks', 'workbooks',
         'analytic rules', 'analytics rules', 'hunting queries', 'watchlists',
-        'summary rules', 'summaryrules', 'xdr detections', 'custom detections',
+        'summary rules', 'summaryrules', 'xdr detections', 'custom detections', 'xdr workbooks',
         'savedsearches'
     )
     foreach ($property in $Content.PSObject.Properties) {
@@ -164,7 +164,27 @@ $baseCreateUiDefinitionPath = "$PSScriptRoot/templating/baseCreateUiDefinition.j
 $global:baseMainTemplate = Get-Content -Raw $baseMainTemplatePath | Out-String | ConvertFrom-Json
 $global:baseCreateUiDefinition = Get-Content -Raw $baseCreateUiDefinitionPath | Out-String | ConvertFrom-Json
 . "$PSScriptRoot/customDetections.ps1"
+. "$PSScriptRoot/defenderWorkbooks.ps1"
 . "$PSScriptRoot/contentDeploymentParameters.ps1"
+$script:baseSolutionResourceSelection = (Get-Command Get-SolutionResourceSelection).ScriptBlock
+
+function Get-SolutionResourceSelection {
+    param([psobject]$Resource)
+    if ($Resource.type -eq 'Microsoft.Resources/deployments') {
+        $inner = $Resource.properties.template
+        $workbook = $inner.resources.workbook
+        if ($inner.languageVersion -eq '2.0' -and
+            $inner.imports.MicrosoftSecurity.provider -eq 'MicrosoftSecurity' -and
+            $inner.imports.MicrosoftSecurity.version -eq '1.0.0' -and
+            $workbook.import -eq 'MicrosoftSecurity' -and
+            $workbook.type -eq 'Microsoft.Security/workbooks@2026-06-01-preview' -and
+            @($inner.resources.PSObject.Properties).Count -eq 1) {
+            return 'DeployDefenderWorkbook'
+        }
+    }
+    return (& $script:baseSolutionResourceSelection -Resource $Resource)
+}
+
 . "$PSScriptRoot/customerUsageAttribution.ps1"
 . "$PSScriptRoot/versionPolicy.ps1"
 $v31VersionPolicy = $null
@@ -195,6 +215,7 @@ $ContentKindDict.Add("Playbook", "pl")
 $ContentKindDict.Add("PlaybookTemplate", "plt")
 $ContentKindDict.Add("Workbook", "wb")
 $ContentKindDict.Add("WorkbookTemplate", "wbt")
+$ContentKindDict.Add("DefenderWorkbook", "dwb")
 $ContentKindDict.Add("Watchlist", "wl")
 $ContentKindDict.Add("WatchlistTemplate", "wlt")
 $ContentKindDict.Add("Notebook", "nb")
@@ -601,6 +622,21 @@ function Update-XdrDescriptionCount([int]$Count) {
                 "**XDR Detections:** $Count",
                 $match.Groups['after'].Value.TrimEnd(', ')
             ) | Where-Object { $_ -ne '' }
+            return $match.Groups[1].Value + ($counts -join ', ')
+        }
+    )
+}
+
+function Update-DefenderWorkbookDescriptionCount([int]$Count) {
+    if ($Count -le 0) { return }
+    $pattern = '(\{\{SolutionDescription\}\}\r?\n\r?\n)(?<counts>[^\r\n]*)'
+    $global:baseCreateUiDefinition.parameters.config.basics.description = [regex]::Replace(
+        $global:baseCreateUiDefinition.parameters.config.basics.description,
+        $pattern,
+        [System.Text.RegularExpressions.MatchEvaluator]{
+            param($match)
+            $counts = @($match.Groups['counts'].Value.TrimEnd(', '), "**XDR Workbooks:** $Count") |
+                Where-Object { $_ -ne '' }
             return $match.Groups[1].Value + ($counts -join ', ')
         }
     )
@@ -3227,9 +3263,13 @@ function GeneratePackage(
 ) {
     Assert-V31SolutionVersion -SolutionName $solutionName -Version $contentToImport.Version -CalculatedVersion $calculatedBuildPipelinePackageVersion
     Assert-V31VersionChecksPassed
+    $packageSerializationDepth = $jsonConversionDepth
     if ($IncludeXdrDetections) {
         $xdrDetectionCount = Add-XdrCustomDetectionsToSolution -SolutionName $solutionName -ContentToImport $contentToImport -Template $global:baseMainTemplate
         Update-XdrDescriptionCount -Count $xdrDetectionCount
+        $defenderWorkbookCount = Add-XdrDefenderWorkbooksToSolution -SolutionName $solutionName -ContentToImport $contentToImport -Template $global:baseMainTemplate
+        if ($defenderWorkbookCount -gt 0) { $packageSerializationDepth = 100 }
+        Update-DefenderWorkbookDescriptionCount -Count $defenderWorkbookCount
         Add-SolutionContentDeploymentParameters -Template $global:baseMainTemplate -UiDefinition $global:baseCreateUiDefinition
     }
 
@@ -3288,15 +3328,15 @@ function GeneratePackage(
 
     if ($IncludeXdrDetections) {
         # Persist only after content/version preparation, after metadata filtering and before output.
-        Add-CustomerUsageAttribution -SolutionMetadataPath $SolutionMetadataPath -Template $global:baseMainTemplate -WarnIfMissing ($xdrDetectionCount -gt 0) -SkipAttributionLookup:$SkipAttributionLookup
+        Add-CustomerUsageAttribution -SolutionMetadataPath $SolutionMetadataPath -Template $global:baseMainTemplate -WarnIfMissing ($xdrDetectionCount -gt 0 -or $defenderWorkbookCount -gt 0) -SkipAttributionLookup:$SkipAttributionLookup
     }
 
     try {
-        $baseMainTemplate | ConvertTo-Json -Depth $jsonConversionDepth | Out-File $mainTemplateOutputPath -Encoding utf8
+        $baseMainTemplate | ConvertTo-Json -Depth $packageSerializationDepth | Out-File $mainTemplateOutputPath -Encoding utf8
 
         # create testParameters json file which will be used for test case automation
         $testParametersOutputPath = "$solutionFolder/testParameters.json"
-        $baseMainTemplate.parameters | ConvertTo-Json -Depth $jsonConversionDepth | Out-File $testParametersOutputPath -Encoding utf8
+        $baseMainTemplate.parameters | ConvertTo-Json -Depth $packageSerializationDepth | Out-File $testParametersOutputPath -Encoding utf8
     }
     catch {
         Write-Host "Failed to write output file $mainTemplateOutputPath" -ForegroundColor Red
@@ -3316,7 +3356,7 @@ function GeneratePackage(
             # when there is no content then create ui fails as step is null
             $global:baseCreateUiDefinition.parameters.steps = @(@{}) # [{}]
         }
-        $global:baseCreateUiDefinition | ConvertTo-Json -Depth $jsonConversionDepth | Out-File $createUiDefinitionOutputPath -Encoding utf8
+        $global:baseCreateUiDefinition | ConvertTo-Json -Depth $packageSerializationDepth | Out-File $createUiDefinitionOutputPath -Encoding utf8
     }
     catch {
         Write-Host "Failed to write output file $createUiDefinitionOutputPath" -ForegroundColor Red

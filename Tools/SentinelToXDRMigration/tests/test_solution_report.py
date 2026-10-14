@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 import yaml
 
 from sentinel_xdr_migration.converter import convert_solution
+from sentinel_xdr_migration.dependencies import dependency_identity
 from sentinel_xdr_migration.artifacts import existing_artifact_path, report_directory
 from sentinel_xdr_migration import deployment_planning
 from sentinel_xdr_migration.report_dashboard import _deployment_planning_html
@@ -674,6 +675,9 @@ class SolutionReportTests(unittest.TestCase):
                     "detection": path.name,
                     "status": "passed",
                     "rowCount": 1,
+                    "dependencyProvenanceSha256": dependency_identity(yaml.safe_load(
+                        (root / "XDR Detections" / path.name).read_text(encoding="utf-8")
+                    )),
                     "querySha256": hashlib.sha256(
                         rule["query"].encode("utf-8")
                     ).hexdigest(),
