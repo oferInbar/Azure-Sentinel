@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -164,7 +165,10 @@ class VersionPolicyTests(unittest.TestCase):
                                 self.assertEqual("3.0.0", properties["contentSchemaVersion"])
                         else:
                             result = self.assert_rejected_unchanged(entry, pipeline=pipeline)
-                            self.assertIn("CustomDetection 'XDR Detections/Test.yaml'", result.stdout + result.stderr)
+                            diagnostic = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout + result.stderr)
+                            diagnostic = re.sub(r"\n\s*\|\s*", " ", diagnostic)
+                            self.assertIn("CustomDetection 'XDR Detections/Test.yaml'",
+                                          " ".join(diagnostic.split()))
 
     def test_analytic_versions_keep_legacy_floor(self):
         entry = self.fixture()
