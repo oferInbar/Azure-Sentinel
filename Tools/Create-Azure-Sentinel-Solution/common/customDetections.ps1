@@ -589,6 +589,10 @@ function Add-XdrCustomDetectionsToSolution {
         }
 
         $detectionDocument.properties.status = 'disabled'
+        if ($null -ne $detectionDocument.properties.schedule -and
+            [string]$detectionDocument.properties.schedule.frequency -ceq 'NRT') {
+            $detectionDocument.properties.schedule.frequency = 'PT0S'
+        }
         Set-CustomDetectionParserBindings -DetectionDocument $detectionDocument -ParserNames $parserNames
         $resourceType = "$($detectionDocument.resourceType)@$($detectionDocument.apiVersion)"
         $detectionResource = [pscustomobject]@{

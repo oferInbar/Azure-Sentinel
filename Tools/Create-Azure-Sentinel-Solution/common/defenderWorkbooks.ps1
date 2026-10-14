@@ -707,17 +707,57 @@ function Get-DefenderWorkbookParserDependencies {
             throw "Defender Workbook workspace function '$($record.functionAlias)' savedSearch is conditional or does not match current YAML."
         }
         $name = $resource.name
-        if ($name.StartsWith('[')) {
-            if ($name.StartsWith('[[') -or -not $name.EndsWith(']')) { throw 'Invalid savedSearch ARM name.' }
-            $argument = $name.Substring(1, $name.Length - 2)
-        }
-        else {
-            if ($name.Split('/').Count -ne 2 -or @($name.Split('/') | Where-Object { -not $_ }).Count -gt 0) {
-                throw 'savedSearch name must include the workspace and resource name.'
+        $dependency = $null
+        if ($name -cmatch "\A\[variables\('(parserObject([1-9][0-9]*))'\)\.(?:_?parserName\2|_parserId\2)\]\z") {
+            $parserObjectName = $Matches[1]
+            $parserIndex = $Matches[2]
+            $parserObjectProperty = if ($null -ne $Template.variables) {
+                $Template.variables.PSObject.Properties[$parserObjectName]
+            } else { $null }
+            if ($null -eq $parserObjectProperty -or $parserObjectProperty.Value -isnot [pscustomobject]) {
+                throw 'Invalid savedSearch ARM name.'
             }
-            $argument = "'" + $name.Replace("'", "''") + "'"
+            $parserIdProperty = $parserObjectProperty.Value.PSObject.Properties["_parserId$parserIndex"]
+            if ($null -eq $parserIdProperty -or $parserIdProperty.Value -isnot [string] -or
+                [string]::IsNullOrWhiteSpace($parserIdProperty.Value)) {
+                throw 'Invalid savedSearch ARM name.'
+            }
+            $dependency = "[variables('$parserObjectName')._parserId$parserIndex]"
         }
-        $dependency = "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', $argument)]"
+        elseif ($name -cmatch "\A\[variables\('parserObject") {
+            throw 'Invalid savedSearch ARM name.'
+        }
+        elseif ($null -ne $Template.variables) {
+            foreach ($prop in $Template.variables.PSObject.Properties) {
+                if ($prop.Name -cmatch '\AparserObject([1-9][0-9]*)\z' -and $prop.Value -is [pscustomobject]) {
+                    $idx = $Matches[1]
+                    $idProp = $prop.Value.PSObject.Properties["_parserId$idx"]
+                    $nameProp = $prop.Value.PSObject.Properties["_parserName$idx"]
+                    $altNameProp = $prop.Value.PSObject.Properties["parserName$idx"]
+                    $nameVal = if ($null -ne $nameProp) { $nameProp.Value } else { $null }
+                    $altNameVal = if ($null -ne $altNameProp) { $altNameProp.Value } else { $null }
+                    if ($null -ne $idProp -and $idProp.Value -is [string] -and
+                        -not [string]::IsNullOrWhiteSpace($idProp.Value) -and
+                        ($name -ceq $nameVal -or $name -ceq $altNameVal)) {
+                        $dependency = "[variables('$($prop.Name)')._parserId$idx]"
+                        break
+                    }
+                }
+            }
+        }
+        if ($null -eq $dependency) {
+            if ($name.StartsWith('[')) {
+                if ($name.StartsWith('[[') -or -not $name.EndsWith(']')) { throw 'Invalid savedSearch ARM name.' }
+                $argument = $name.Substring(1, $name.Length - 2)
+            }
+            else {
+                if ($name.Split('/').Count -ne 2 -or @($name.Split('/') | Where-Object { -not $_ }).Count -gt 0) {
+                    throw 'savedSearch name must include the workspace and resource name.'
+                }
+                $argument = "'" + $name.Replace("'", "''") + "'"
+            }
+            $dependency = "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', $argument)]"
+        }
         if ($dependencies.Add($dependency)) { $dependency }
     }
 }

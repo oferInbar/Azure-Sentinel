@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -179,9 +180,20 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
             "workspaceFunctions", [],
         ).append(alias)
         self.data.setdefault("Parsers", []).append(record["sourcePath"])
-        self.template["variables"]["parserObject1"] = {
-            "_parserName1": "[concat(parameters('workspace'),'/','different-arm-name')]",
-        }
+        parser_match = re.fullmatch(
+            r"\[variables\('(parserObject([1-9][0-9]*))'\)\.(_?parserName\2)\]",
+            name,
+        )
+        if parser_match:
+            obj_name, idx, name_prop = parser_match.groups()
+            arm_leaf = "different-arm-name" if idx == "1" else f"{alias}-arm-name"
+            self.template["variables"][obj_name] = {
+                name_prop: f"[concat(parameters('workspace'),'/','{arm_leaf}')]",
+                f"_parserId{idx}": (
+                    "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', "
+                    f"parameters('workspace'), '{arm_leaf}')]"
+                ),
+            }
         resource = {
             "type": "Microsoft.OperationalInsights/workspaces/savedSearches",
             "name": name,
@@ -205,7 +217,7 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
         self.assertEqual([
             "[extensionResourceId(resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspace')), "
             "'Microsoft.SecurityInsights/contentPackages', variables('_solutionId'))]",
-            "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', variables('parserObject1')._parserName1)]",
+            "[variables('parserObject1')._parserId1]",
             "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', 'lab/arm-name-not-alias')]",
         ], install["dependsOn"])
         registration = next(r for r in resources if r["type"].endswith("/contentTemplates"))
@@ -223,6 +235,68 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
             if resource["type"].endswith("/savedSearches"):
                 self.assertNotIn("condition", resource)
                 self.assertEqual("*", resource["properties"]["eTag"])
+
+    def test_syslog_two_parser_objects_emit_canonical_parser_ids_and_pass_python_verifier(self) -> None:
+        from sentinel_xdr_migration import packaging
+
+        for prop_prefix in ("parserName", "_parserName"):
+            with self.subTest(prop_prefix=prop_prefix):
+                self.tearDown()
+                self.setUp()
+                self.notebook["xdrMetadata"]["version"] = self.data["Version"]
+                self.add_function(
+                    "SyslogConnectorsOverallStatus",
+                    name=f"[variables('parserObject1').{prop_prefix}1]",
+                )
+                self.add_function(
+                    "SyslogConnectorsEventVolumebyDeviceProduct",
+                    name=f"[variables('parserObject2').{prop_prefix}2]",
+                )
+                query = (
+                    "union (SyslogConnectorsOverallStatus() | take 1), "
+                    "(SyslogConnectorsEventVolumebyDeviceProduct() | take 1)"
+                )
+                self.notebook["items"][0]["content"]["query"] = query
+                self.notebook["contentProvenance"]["conversion"]["queries"][0]["targetSha256"] = (
+                    hashlib.sha256(query.encode("utf-8")).hexdigest()
+                )
+                self.write()
+                (self.solution / "Data").mkdir(exist_ok=True)
+                (self.solution / "Data/Solution_Sample.json").write_text(
+                    json.dumps({"Name": "Sample", **self.data}), encoding="utf-8"
+                )
+                self.invoke(package=True)
+                package_dir = self.solution / "Package"
+                template = json.loads((package_dir / "mainTemplate.json").read_text(encoding="utf-8-sig"))
+                install = next(r for r in template["resources"] if r["type"] == "Microsoft.Resources/deployments")
+                self.assertEqual([
+                    "[extensionResourceId(resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspace')), "
+                    "'Microsoft.SecurityInsights/contentPackages', variables('_solutionId'))]",
+                    "[variables('parserObject1')._parserId1]",
+                    "[variables('parserObject2')._parserId2]",
+                ], install["dependsOn"])
+                receipt = packaging._verify_workbook_package(
+                    self.solution, [self.target], template, package_dir / "3.2.7.zip"
+                )
+                self.assertEqual(1, receipt["count"])
+                tampered = copy.deepcopy(template)
+                tampered_install = next(
+                    r for r in tampered["resources"] if r["type"] == "Microsoft.Resources/deployments"
+                )
+                tampered_install["dependsOn"][1] = (
+                    f"[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', "
+                    f"variables('parserObject1').{prop_prefix}1)]"
+                )
+                with self.assertRaises(RuntimeError):
+                    packaging._verify_workbook_package(
+                        self.solution, [self.target], tampered, package_dir / "3.2.7.zip"
+                    )
+                missing_id = copy.deepcopy(template)
+                missing_id["variables"]["parserObject2"].pop("_parserId2")
+                with self.assertRaises(RuntimeError):
+                    packaging._verify_workbook_package(
+                        self.solution, [self.target], missing_id, package_dir / "3.2.7.zip"
+                    )
 
     def test_function_dependency_ids_deduplicate_and_contract_references_work(self) -> None:
         self.add_function()
@@ -267,7 +341,7 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
         self.assertEqual("[parameters('DeployParser')]", package["resources"][5]["condition"])
         installation = next(r for r in package["resources"] if r["type"] == "Microsoft.Resources/deployments")
         self.assertIn(
-            "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', variables('parserObject1')._parserName1)]",
+            "[variables('parserObject1')._parserId1]",
             installation["dependsOn"],
         )
         self.assertEqual(original, self.target.read_bytes())

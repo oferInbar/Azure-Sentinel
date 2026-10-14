@@ -851,15 +851,45 @@ def _verify_workbook_package(
             name = resource.get("name")
             if not isinstance(name, str) or not name:
                 raise RuntimeError("Required savedSearch has no exact resource identity")
-            if name.startswith("["):
-                if name.startswith("[[") or not name.endswith("]"):
+            dependency = None
+            parser_match = re.fullmatch(
+                r"\[variables\(\s*'(parserObject([1-9][0-9]*))'\s*\)\.(?:_?parserName\2|_parserId\2)\]",
+                name,
+            )
+            if parser_match:
+                parser_object_name, parser_index = parser_match.groups()
+                parser_object = variables.get(parser_object_name) if isinstance(variables, dict) else None
+                if not isinstance(parser_object, dict):
                     raise RuntimeError("Invalid required savedSearch ARM identity")
-                argument = name[1:-1]
-            else:
-                if len(name.split("/")) != 2 or not all(name.split("/")):
-                    raise RuntimeError("Required savedSearch identity must include workspace and resource name")
-                argument = "'" + name.replace("'", "''") + "'"
-            dependency = f"[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', {argument})]"
+                parser_id = parser_object.get(f"_parserId{parser_index}")
+                if not isinstance(parser_id, str) or not parser_id.strip():
+                    raise RuntimeError("Invalid required savedSearch ARM identity")
+                dependency = f"[variables('{parser_object_name}')._parserId{parser_index}]"
+            elif re.match(r"\A\[variables\(\s*'parserObject", name):
+                raise RuntimeError("Invalid required savedSearch ARM identity")
+            elif isinstance(variables, dict):
+                for var_name, var_value in variables.items():
+                    idx_match = re.fullmatch(r"parserObject([1-9][0-9]*)", str(var_name))
+                    if idx_match and isinstance(var_value, dict):
+                        idx = idx_match.group(1)
+                        parser_id = var_value.get(f"_parserId{idx}")
+                        if (
+                            isinstance(parser_id, str)
+                            and parser_id.strip()
+                            and name in (var_value.get(f"_parserName{idx}"), var_value.get(f"parserName{idx}"))
+                        ):
+                            dependency = f"[variables('{var_name}')._parserId{idx}]"
+                            break
+            if dependency is None:
+                if name.startswith("["):
+                    if name.startswith("[[") or not name.endswith("]"):
+                        raise RuntimeError("Invalid required savedSearch ARM identity")
+                    argument = name[1:-1]
+                else:
+                    if len(name.split("/")) != 2 or not all(name.split("/")):
+                        raise RuntimeError("Required savedSearch identity must include workspace and resource name")
+                    argument = "'" + name.replace("'", "''") + "'"
+                dependency = f"[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', {argument})]"
             if dependency not in parser_dependencies:
                 parser_dependencies.append(dependency)
         expected_install_dependencies = [

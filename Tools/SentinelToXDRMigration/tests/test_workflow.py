@@ -4000,6 +4000,486 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(export.call_args.kwargs["authoring_contract"]["inventory"]["complete"])
         self.assertEqual({"exported": True}, json.loads(stdout.getvalue()))
 
+    def test_workflow_status_and_reports_surface_next_step_blocker_recommendations(self) -> None:
+        from sentinel_xdr_migration.report import (
+            render_runtime_validation_report,
+            render_transformation_report,
+            summarize_report_blockers,
+        )
+
+        source_path = self._create_source_rules()[0]
+        source = yaml.safe_load(source_path.read_text())
+        source["query"] = (
+            "DeviceEvents | where TimeGenerated > ago(1h) "
+            "| project TimeGenerated, DeviceName, IPAddress"
+        )
+        source["entityMappings"] = [
+            {
+                "entityType": "Host",
+                "fieldMappings": [
+                    {"identifier": "FullName", "columnName": "DeviceName"},
+                ],
+            },
+            {
+                "entityType": "IP",
+                "fieldMappings": [
+                    {"identifier": "Address", "columnName": "IPAddress"},
+                ],
+            },
+        ]
+        source_path.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+            yolo=True,
+            campaign_id="next-step-campaign",
+        )
+        with using_run(self.solution, initialized["runId"]):
+            run_yolo_authoring(self.solution)
+            status = workflow_status(self.solution)
+            next_stage = next_workflow_stage(self.solution)
+
+        self.assertIn("nextStepRecommendation", status)
+        self.assertIn("nextBlockerReview", status)
+        self.assertEqual(status["nextStepRecommendation"], status["nextBlockerReview"])
+        self.assertEqual(
+            status["nextStepRecommendation"]["summary"],
+            next_stage["nextStepRecommendation"]["summary"],
+        )
+        rec = status["nextStepRecommendation"]
+        self.assertGreaterEqual(rec["blockerCount"], 1)
+        self.assertTrue(rec["topBlockers"])
+        self.assertIn("Next migration step: review blocker", rec["summary"])
+        self.assertTrue(
+            any(b["category"] == "detectionReview" for b in rec["topBlockers"])
+        )
+
+        # Verify report.py blocker summary and HTML rendering
+        manifest = {
+            "solution": str(self.solution),
+            "total": 2,
+            "converted": 1,
+            "needsReview": 1,
+            "reviewRequired": 1,
+            "conflicts": 1,
+            "results": [
+                {
+                    "ruleId": str(source["id"]),
+                    "displayName": source["name"],
+                    "status": "needsReview",
+                    "reviewRequired": True,
+                    "source": "Analytic Rules/Nested/Rule0.yaml",
+                    "output": "XDR Detections/Nested/Rule0.yaml",
+                    "reviewReasons": ["Multi-entity alert grouping assumption requires review"],
+                    "warnings": [],
+                    "errors": [],
+                },
+                {
+                    "ruleId": "rule-2",
+                    "displayName": "Second Rule",
+                    "status": "conflict",
+                    "reviewRequired": False,
+                    "source": "Analytic Rules/Nested/Rule1.yaml",
+                    "output": "XDR Detections/Nested/Rule1.yaml",
+                    "reviewReasons": [],
+                    "warnings": [],
+                    "errors": ["Missing required property"],
+                },
+            ],
+        }
+        report_summary = summarize_report_blockers(manifest, kind="transformation")
+        self.assertEqual(2, report_summary["blockerCount"])
+        self.assertIn("Next migration step: review blockers", report_summary["summary"])
+        html = render_transformation_report(manifest)
+        self.assertIn("next-step-banner", html)
+        self.assertIn("Next migration step: review blockers", html)
+
+        runtime_html = render_runtime_validation_report({
+            "solution": str(self.solution),
+            "platform": "Microsoft Graph Security Hunting API",
+            "provider": "graph",
+            "total": 1,
+            "valid": 0,
+            "invalid": 1,
+            "passed": 0,
+            "failed": 1,
+            "blocked": 0,
+            "results": [
+                {
+                    "detection": "XDR Detections/Nested/Rule0.yaml",
+                    "status": "failed",
+                    "error": "Semantic error in query",
+                }
+            ],
+        })
+        self.assertIn("next-step-banner", runtime_html)
+        self.assertIn("Next migration step: review blocker", runtime_html)
+
+    def test_consolidated_review_packet_inventories_detections_and_workbooks_and_cli(self) -> None:
+        from sentinel_xdr_migration.workflow import build_consolidated_review_packet
+
+        self._ensure_solution_release()
+        source_path = self._create_source_rules()[0]
+        source = yaml.safe_load(source_path.read_text())
+        source["description"] = "A" * 620 + " truncated description tail."
+        source["queryFrequency"] = "5m"
+        source["queryPeriod"] = "2d"
+        source["query"] = (
+            "CustomUnsupportedTable_CL | where TimeGenerated > ago(1h) "
+            "| project TimeGenerated, DeviceName, IPAddress"
+        )
+        source["entityMappings"] = [
+            {
+                "entityType": "Host",
+                "fieldMappings": [
+                    {"identifier": "FullName", "columnName": "DeviceName"},
+                ],
+            },
+            {
+                "entityType": "IP",
+                "fieldMappings": [
+                    {"identifier": "Address", "columnName": "IPAddress"},
+                ],
+            },
+        ]
+        source_path.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+
+        # Add a workbook with an unsupported query table so workbookQueryGaps are populated
+        workbooks_dir = self.solution / "Workbooks"
+        workbooks_dir.mkdir(parents=True, exist_ok=True)
+        (workbooks_dir / "SampleWorkbook.json").write_text(
+            json.dumps({
+                "version": "Notebook/1.0",
+                "items": [
+                    {
+                        "type": 3,
+                        "content": {
+                            "version": "KqlItem/1.0",
+                            "query": "CustomWorkbookTable_CL | take 10",
+                            "size": 0,
+                            "queryType": 0,
+                            "resourceType": "microsoft.operationalinsights/workspaces",
+                        },
+                        "name": "query - 0",
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+            yolo=True,
+            campaign_id="review-packet-campaign",
+        )
+        # Write a migration-config.yaml with a prior rule override decision inside the run directory
+        with using_run(self.solution, initialized["runId"]):
+            run_yolo_authoring(self.solution)
+            config_path = artifact_path(self.solution, "migration-config.yaml")
+            config_path.write_text(
+                yaml.safe_dump({
+                    "ruleOverrides": {
+                        str(source["id"]): {
+                            "description": "Reviewed concise description.",
+                        }
+                    }
+                }),
+                encoding="utf-8",
+            )
+            packet = build_consolidated_review_packet(self.solution)
+
+        self.assertEqual("1.0.0", packet["schemaVersion"])
+        self.assertEqual("consolidated-review-packet", packet["kind"])
+        self.assertEqual(64, len(packet["packetSha256"]))
+        self.assertGreaterEqual(packet["summary"]["totalItems"], 1)
+        self.assertTrue(packet["categories"]["timing"])
+        self.assertTrue(packet["categories"]["entityMappings"])
+        self.assertTrue(packet["categories"]["truncatedDescriptions"])
+        self.assertTrue(packet["categories"]["dependencyGaps"])
+        self.assertTrue(packet["categories"]["workbookQueryGaps"])
+        self.assertTrue(packet["groupedFindings"])
+        self.assertIn("nextStepRecommendation", packet)
+        self.assertIn("Next migration step: review blocker", packet["nextStepRecommendation"]["summary"])
+
+        # Verify preserved prior decision on the truncated description item
+        trunc_item = packet["categories"]["truncatedDescriptions"][0]
+        self.assertEqual("decided", trunc_item["decisionState"])
+        self.assertEqual(
+            "Reviewed concise description.",
+            trunc_item["priorDecision"]["description"],
+        )
+
+        # Verify CLI review-packet and consolidated-review-plan subcommands
+        output_file = self.solution / "review-packet-out.json"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            rc = cli_module.main([
+                "review-packet",
+                "--solution", str(self.solution),
+                "--run-id", initialized["runId"],
+                "--output", str(output_file),
+            ])
+        self.assertEqual(0, rc, stderr.getvalue())
+        cli_packet = json.loads(stdout.getvalue())
+        self.assertEqual(packet["packetSha256"], cli_packet["packetSha256"])
+        self.assertTrue(output_file.is_file())
+        written_packet = json.loads(output_file.read_text(encoding="utf-8"))
+        self.assertEqual(packet["packetSha256"], written_packet["packetSha256"])
+
+    def test_status_reminder_emits_diagram_batch_explanation_and_suppresses_no_change(self) -> None:
+        from sentinel_xdr_migration.workflow import build_migration_status_reminder
+
+        self._ensure_solution_release()
+        self._create_source_rules(count=15)
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+        )
+        run_id = initialized["runId"]
+        with using_run(self.solution, run_id):
+            start_workflow_stage(self.solution, "discovery")
+            complete_workflow_stage(self.solution, "discovery", status="passed")
+            start_workflow_stage(self.solution, "conversion")
+
+            first = build_migration_status_reminder(self.solution, run_id=run_id)
+            self.assertFalse(first["suppressedNoChange"])
+            self.assertIsNone(first["previousStateFingerprint"])
+            self.assertEqual(64, len(first["stateFingerprint"]))
+            self.assertIn(
+                "Applying reviewed decisions or converting detections before validation",
+                first["currentActivity"],
+            )
+            self.assertIn("[> Conversion <]", first["workflowDiagram"])
+            self.assertIn("[Discovery]", first["workflowDiagram"])
+            self.assertIsNotNone(first["durationExplanation"])
+            self.assertIn("15 source analytic rules", first["durationExplanation"])
+            self.assertEqual(
+                {
+                    "readOnlyObserver": True,
+                    "createsExecutor": False,
+                    "singleOwnerRespected": True,
+                },
+                first["watchdogCoordination"],
+            )
+            self.assertEqual(15, first["itemCounts"]["analyticRules"])
+
+            # Repeat call without state change suppresses repetitive notice
+            second = build_migration_status_reminder(self.solution, run_id=run_id)
+            self.assertTrue(second["suppressedNoChange"])
+            self.assertEqual(first["stateFingerprint"], second["stateFingerprint"])
+            self.assertEqual(first["stateFingerprint"], second["previousStateFingerprint"])
+
+            # State change unsuppresses reminder and updates diagram
+            complete_workflow_stage(self.solution, "conversion", status="passed")
+            start_workflow_stage(self.solution, "validation")
+            third = build_migration_status_reminder(self.solution, run_id=run_id)
+            self.assertFalse(third["suppressedNoChange"])
+            self.assertNotEqual(first["stateFingerprint"], third["stateFingerprint"])
+            self.assertEqual(first["stateFingerprint"], third["previousStateFingerprint"])
+            self.assertIn("[> Validation <]", third["workflowDiagram"])
+
+        # Verify CLI workflow-status-reminder subcommand
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            rc = cli_module.main([
+                "workflow-status-reminder",
+                "--solution", str(self.solution),
+                "--run-id", run_id,
+            ])
+        self.assertEqual(0, rc, stderr.getvalue())
+        cli_reminder = json.loads(stdout.getvalue())
+        self.assertTrue(cli_reminder["suppressedNoChange"])
+        self.assertEqual(third["stateFingerprint"], cli_reminder["stateFingerprint"])
+
+    def test_execution_ownership_enforces_single_owner_and_cli(self) -> None:
+        from sentinel_xdr_migration.workflow import (
+            claim_execution_ownership,
+            release_execution_ownership,
+        )
+
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+        )
+        run_id = initialized["runId"]
+
+        claimed = claim_execution_ownership(
+            self.solution,
+            owner_id="coordinator-alpha",
+            operation="convert-and-validate",
+            scope={"rules": 7, "workbooks": 1},
+            run_id=run_id,
+        )
+        self.assertEqual("active", claimed["status"])
+        self.assertTrue(claimed["singleOwnerEnforced"])
+        self.assertEqual("coordinator-alpha", claimed["ownerId"])
+        self.assertEqual(0, claimed["renewedCount"])
+
+        # Same owner renewing is permitted
+        renewed = claim_execution_ownership(
+            self.solution,
+            owner_id="coordinator-alpha",
+            operation="convert-and-validate",
+            scope={"rules": 7, "workbooks": 1},
+            run_id=run_id,
+        )
+        self.assertEqual("active", renewed["status"])
+        self.assertEqual(1, renewed["renewedCount"])
+
+        # Conflicting second owner attempting to claim or release the same operation is blocked
+        with self.assertRaisesRegex(ValueError, "duplicate_executor_blocked"):
+            claim_execution_ownership(
+                self.solution,
+                owner_id="duplicate-executor-beta",
+                operation="convert-and-validate",
+                run_id=run_id,
+            )
+        with self.assertRaisesRegex(ValueError, "duplicate_executor_blocked"):
+            release_execution_ownership(
+                self.solution,
+                owner_id="duplicate-executor-beta",
+                operation="convert-and-validate",
+                run_id=run_id,
+            )
+
+        # Original owner releases lease; another owner can now claim via CLI
+        released = release_execution_ownership(
+            self.solution,
+            owner_id="coordinator-alpha",
+            operation="convert-and-validate",
+            run_id=run_id,
+        )
+        self.assertEqual("released", released["status"])
+        self.assertIsNotNone(released["releasedAtUtc"])
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            rc = cli_module.main([
+                "workflow-execution-owner",
+                "--solution", str(self.solution),
+                "--run-id", run_id,
+                "--action", "claim",
+                "--owner-id", "coordinator-beta",
+                "--operation", "convert-and-validate",
+                "--scope", json.dumps({"rules": 7}),
+            ])
+        self.assertEqual(0, rc, stderr.getvalue())
+        cli_claimed = json.loads(stdout.getvalue())
+        self.assertEqual("active", cli_claimed["status"])
+        self.assertEqual("coordinator-beta", cli_claimed["ownerId"])
+
+    def test_forward_and_verify_explicit_approval_rejects_tampering_and_wrong_owner(self) -> None:
+        from sentinel_xdr_migration.workflow import (
+            forward_explicit_approval,
+            verify_forwarded_approval,
+        )
+
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+        )
+        run_id = initialized["runId"]
+        exact_scope = {
+            "validationMode": "lab-deployment",
+            "sentinelRuleCount": 7,
+            "workbookCount": 1,
+            "customDetectionCount": 7,
+            "packageInputSha256": "a" * 64,
+        }
+
+        forwarded = forward_explicit_approval(
+            self.solution,
+            operation="preflight-lab-deployment",
+            approved_by="operator-user",
+            forwarded_to_owner_id="solution-owner-1",
+            exact_scope=exact_scope,
+            run_id=run_id,
+            reference="chat-turn-42",
+        )
+        self.assertEqual("active", forwarded["status"])
+        approval_sha = forwarded["approvalSha256"]
+        self.assertEqual(64, len(approval_sha))
+
+        # Exact match passes verification
+        verified = verify_forwarded_approval(
+            self.solution,
+            owner_id="solution-owner-1",
+            operation="preflight-lab-deployment",
+            exact_scope=exact_scope,
+            approval_sha256=approval_sha,
+            run_id=run_id,
+        )
+        self.assertTrue(verified["verified"])
+        self.assertEqual(approval_sha, verified["approvalSha256"])
+
+        # Wrong owner rejected
+        with self.assertRaisesRegex(ValueError, "forwarded_approval_owner_mismatch"):
+            verify_forwarded_approval(
+                self.solution,
+                owner_id="wrong-owner-2",
+                operation="preflight-lab-deployment",
+                exact_scope=exact_scope,
+                approval_sha256=approval_sha,
+                run_id=run_id,
+            )
+
+        # Scope broadening / tampering rejected
+        tampered_scope = dict(exact_scope, customDetectionCount=8)
+        with self.assertRaisesRegex(ValueError, "forwarded_approval_scope_mismatch"):
+            verify_forwarded_approval(
+                self.solution,
+                owner_id="solution-owner-1",
+                operation="preflight-lab-deployment",
+                exact_scope=tampered_scope,
+                approval_sha256=approval_sha,
+                run_id=run_id,
+            )
+
+        # Altered hash rejected
+        with self.assertRaisesRegex(ValueError, "forwarded_approval_hash_mismatch"):
+            verify_forwarded_approval(
+                self.solution,
+                owner_id="solution-owner-1",
+                operation="preflight-lab-deployment",
+                exact_scope=exact_scope,
+                approval_sha256="f" * 64,
+                run_id=run_id,
+            )
+
+        # CLI forward + verify round-trip
+        cli_scope = {"target": "workbook-review", "count": 1}
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            rc_fwd = cli_module.main([
+                "workflow-forward-approval",
+                "--solution", str(self.solution),
+                "--run-id", run_id,
+                "--action", "forward",
+                "--operation", "workbook-dependency-apply",
+                "--approved-by", "operator-user",
+                "--owner-id", "solution-owner-1",
+                "--exact-scope", json.dumps(cli_scope),
+            ])
+        self.assertEqual(0, rc_fwd, stderr.getvalue())
+        cli_fwd_payload = json.loads(stdout.getvalue())
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            rc_ver = cli_module.main([
+                "workflow-forward-approval",
+                "--solution", str(self.solution),
+                "--run-id", run_id,
+                "--action", "verify",
+                "--operation", "workbook-dependency-apply",
+                "--owner-id", "solution-owner-1",
+                "--exact-scope", json.dumps(cli_scope),
+                "--approval-sha256", cli_fwd_payload["approvalSha256"],
+            ])
+        self.assertEqual(0, rc_ver, stderr.getvalue())
+        self.assertTrue(json.loads(stdout.getvalue())["verified"])
+
 
 if __name__ == "__main__":
     unittest.main()

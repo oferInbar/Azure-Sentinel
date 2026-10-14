@@ -59,10 +59,15 @@ from .target_config import resolve_qualification_target
 from .workflow import (
     STAGES,
     WORKFLOW_PROFILES,
+    build_consolidated_review_packet,
+    build_migration_status_reminder,
+    claim_execution_ownership,
     complete_workflow_stage,
+    forward_explicit_approval,
     initialize_workflow,
     next_workflow_stage,
     read_authoring_contract,
+    release_execution_ownership,
     package_workflow_v3_1,
     plan_new_package_release,
     plan_release_notes_refresh,
@@ -71,6 +76,7 @@ from .workflow import (
     refresh_yolo_authoring,
     run_yolo_authoring,
     start_workflow_stage,
+    verify_forwarded_approval,
     verify_same_version_content_rebuild,
     workflow_status,
 )
@@ -106,6 +112,24 @@ def _key_values(values: list[str] | None) -> dict[str, str]:
             raise ValueError(f"duplicate artifact name: {key}")
         result[key] = item
     return result
+
+
+def _json_object_arg(raw: str | None, *, flag_name: str) -> dict:
+    if raw is None:
+        return {}
+    candidate = Path(raw).expanduser()
+    try:
+        text = (
+            candidate.read_text(encoding="utf-8-sig")
+            if candidate.is_file()
+            else raw
+        )
+        parsed = json.loads(text)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid JSON object for {flag_name}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{flag_name} must decode to a JSON object")
+    return parsed
 
 
 def _package_batch_members(values: list[str]) -> list[dict[str, str]]:
@@ -169,6 +193,37 @@ def main(argv: list[str] | None = None) -> int:
         "workbook-review", help="Apply complete hash-bound accept/change/defer decisions to run-local config and receipt.")
     for option in ("solution", "plan", "decisions", "plan-sha256", "actor", "reference", "output-dir"):
         workbook_review.add_argument("--" + option, required=True)
+    for review_cmd in ("review-packet", "consolidated-review-plan"):
+        review_packet_parser = subparsers.add_parser(
+            review_cmd,
+            help=(
+                "Build one consolidated, hash-bound review packet covering outstanding "
+                "detection and workbook review items."
+            ),
+        )
+        review_packet_parser.add_argument("--solution", required=True)
+        review_packet_parser.add_argument(
+            "--results",
+            help="Exact-query-bound successful LA metadata results for detection dependencies.",
+        )
+        review_packet_parser.add_argument(
+            "--workbook-results",
+            help="Exact-query-bound successful LA metadata results for workbook dependencies.",
+        )
+        review_packet_parser.add_argument(
+            "--workspace-id",
+            help="Explicitly approved lab workspace customer ID.",
+        )
+        review_packet_parser.add_argument(
+            "--rule",
+            action="append",
+            dest="rule_selectors",
+            help="Optional rule ID, filename, or stem filter; repeat to select multiple.",
+        )
+        review_packet_parser.add_argument(
+            "--output",
+            help="Optional path to write the consolidated review packet JSON.",
+        )
     migration = subparsers.add_parser("migrate-reports", help="Plan a non-destructive copy of legacy reports into solution Logs.")
     migration.add_argument("--solution", required=True)
     migration.add_argument("--apply", action="store_true", help="Copy after reviewing the dry-run; originals are preserved.")
@@ -665,7 +720,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Authorize one exact ReleaseNotes-only refresh without incrementing the package version.",
     )
     notes_refresh.add_argument("--solution", required=True)
-    notes_refresh.add_argument("--release-date", required=True)
+    notes_refresh.add_argument(
+        "--release-date",
+        default=None,
+        help="Release date in DD-MM-YYYY format (defaults to today's date in DD-MM-YYYY).",
+    )
     notes_refresh.add_argument("--change-history", required=True)
     notes_refresh.add_argument(
         "--expected-package-input-sha256",
@@ -861,6 +920,69 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         help="Evidence path or reference; repeat for multiple values.",
     )
+    workflow_status_reminder = subparsers.add_parser(
+        "workflow-status-reminder",
+        help=(
+            "Emit a deterministic, evidence-bound operator status reminder with "
+            "stage diagram, batch duration explanation, and no-change suppression."
+        ),
+    )
+    workflow_status_reminder.add_argument("--solution", required=True)
+    workflow_status_reminder.add_argument(
+        "--no-persist-cursor",
+        action="store_true",
+        help="Compute the reminder without updating status-reminder-cursor.json.",
+    )
+    workflow_execution_owner = subparsers.add_parser(
+        "workflow-execution-owner",
+        help="Claim or release single-owner execution lease for a workflow operation.",
+    )
+    workflow_execution_owner.add_argument("--solution", required=True)
+    workflow_execution_owner.add_argument(
+        "--action",
+        choices=["claim", "release"],
+        default="claim",
+        help="Claim/renew or release the execution lease for (runId, operation).",
+    )
+    workflow_execution_owner.add_argument("--owner-id", required=True)
+    workflow_execution_owner.add_argument("--operation", required=True)
+    workflow_execution_owner.add_argument(
+        "--scope",
+        help="Optional JSON object string or file path describing the leased scope.",
+    )
+    workflow_forward_approval = subparsers.add_parser(
+        "workflow-forward-approval",
+        help="Forward or verify an explicit, hash-bound operation approval for the accountable owner.",
+    )
+    workflow_forward_approval.add_argument("--solution", required=True)
+    workflow_forward_approval.add_argument(
+        "--action",
+        choices=["forward", "verify"],
+        default="forward",
+        help="Forward a new approval receipt or verify an existing receipt.",
+    )
+    workflow_forward_approval.add_argument("--operation", required=True)
+    workflow_forward_approval.add_argument(
+        "--owner-id",
+        "--forwarded-to-owner-id",
+        dest="forwarded_to_owner_id",
+        required=True,
+        help="Accountable owner ID receiving or verifying the forwarded approval.",
+    )
+    workflow_forward_approval.add_argument(
+        "--approved-by",
+        help="Approving user/actor identity (required when --action forward).",
+    )
+    workflow_forward_approval.add_argument(
+        "--exact-scope",
+        required=True,
+        help="JSON object string or file path binding exact target/artifact/hash scope.",
+    )
+    workflow_forward_approval.add_argument(
+        "--approval-sha256",
+        help="Expected approvalSha256 when verifying a forwarded approval.",
+    )
+    workflow_forward_approval.add_argument("--reference")
     coordinator_enroll_parser = subparsers.add_parser(
         "coordinator-enroll",
         help="Enroll a selected persisted run with an accountable owner; shadow mode only.",
@@ -1058,7 +1180,7 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "solution", None) and args.command not in isolated_permission_commands:
             selection = select_run(args.solution, args.run_id)
         # Read-only status and migration planning must not initialize or change artifacts.
-        if args.command not in {"migrate-reports", "workflow-status", "workflow-next", "workflow-init", "workflow-runs", "workflow-verify-same-version-content-rebuild", "export-evidence", "preflight-deployment", "plan-deployment", "review-deployment-plan", "plan-runtime-query-consent", "confirm-primary-lab-setting", "review-runtime-query-consent", "revoke-lab-runtime-query-consent", "check-runtime-query-consent", "coordinator-enroll", "coordinator-status", "coordinator-reconcile", "coordinator-event", "coordinator-claim", "coordinator-heartbeat", "coordinator-ack", *isolated_permission_commands} and not (
+        if args.command not in {"migrate-reports", "workflow-status", "workflow-status-reminder", "workflow-execution-owner", "workflow-forward-approval", "workflow-next", "workflow-init", "workflow-runs", "workflow-verify-same-version-content-rebuild", "export-evidence", "preflight-deployment", "plan-deployment", "review-deployment-plan", "plan-runtime-query-consent", "confirm-primary-lab-setting", "review-runtime-query-consent", "revoke-lab-runtime-query-consent", "check-runtime-query-consent", "coordinator-enroll", "coordinator-status", "coordinator-reconcile", "coordinator-event", "coordinator-claim", "coordinator-heartbeat", "coordinator-ack", "review-packet", "consolidated-review-plan", *isolated_permission_commands} and not (
             args.command == "convert" and args.rule_id
         ):
             configure_logging(getattr(args, "solution", None))
@@ -1429,6 +1551,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.solution, plan_path=args.plan, decisions_path=args.decisions,
                 expected_plan_sha256=args.plan_sha256, actor=args.actor, reference=args.reference,
                 output_directory=args.output_dir)
+        elif args.command in {"review-packet", "consolidated-review-plan"}:
+            result = build_consolidated_review_packet(
+                args.solution,
+                detection_results_path=args.results,
+                workbook_results_path=args.workbook_results,
+                workspace_id=args.workspace_id,
+                rule_selectors=args.rule_selectors,
+            )
+            if args.output:
+                output_path = Path(args.output).expanduser().resolve()
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(
+                    json.dumps(result, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
         elif args.command == "inspect":
             from .workbook_workflow import inspect_content
             result = inspect_content(args.solution)
@@ -1666,6 +1803,51 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "workflow-next":
             result = next_workflow_stage(args.solution)
+        elif args.command == "workflow-status-reminder":
+            result = build_migration_status_reminder(
+                args.solution,
+                run_id=args.run_id,
+                persist_cursor=not args.no_persist_cursor,
+            )
+        elif args.command == "workflow-execution-owner":
+            if args.action == "release":
+                result = release_execution_ownership(
+                    args.solution,
+                    owner_id=args.owner_id,
+                    operation=args.operation,
+                    run_id=args.run_id,
+                )
+            else:
+                result = claim_execution_ownership(
+                    args.solution,
+                    owner_id=args.owner_id,
+                    operation=args.operation,
+                    scope=_json_object_arg(args.scope, flag_name="--scope"),
+                    run_id=args.run_id,
+                )
+        elif args.command == "workflow-forward-approval":
+            scope_dict = _json_object_arg(args.exact_scope, flag_name="--exact-scope")
+            if args.action == "verify":
+                result = verify_forwarded_approval(
+                    args.solution,
+                    owner_id=args.forwarded_to_owner_id,
+                    operation=args.operation,
+                    exact_scope=scope_dict,
+                    approval_sha256=args.approval_sha256,
+                    run_id=args.run_id,
+                )
+            else:
+                if not args.approved_by:
+                    raise ValueError("--approved-by is required when --action forward")
+                result = forward_explicit_approval(
+                    args.solution,
+                    operation=args.operation,
+                    approved_by=args.approved_by,
+                    forwarded_to_owner_id=args.forwarded_to_owner_id,
+                    exact_scope=scope_dict,
+                    run_id=args.run_id,
+                    reference=args.reference,
+                )
         elif args.command == "workflow-recover-conversion-evidence":
             result = recover_conversion_evidence(args.solution)
         elif args.command == "workflow-start-stage":

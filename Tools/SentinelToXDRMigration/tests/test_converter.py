@@ -235,17 +235,32 @@ class ConverterTests(unittest.TestCase):
         source.write_text(yaml.safe_dump(rule), encoding="utf-8")
 
         result = convert_solution(self.solution)
-        self.assertEqual(0, result["converted"])
-        self.assertEqual(1, result["needsReview"])
+        self.assertEqual(1, result["converted"])
+        self.assertEqual(0, result["needsReview"])
         output = self.solution / "XDR Detections/SampleRule.yaml"
         document = yaml.safe_load(output.read_text(encoding="utf-8"))
         self.assertEqual(rule["query"], document["properties"]["queryCondition"]["queryText"])
         self.assertEqual([], validate_document(document))
         conversion = document["contentProvenance"]["conversion"]
-        self.assertEqual("needsReview", conversion["status"])
+        self.assertEqual("converted", conversion["status"])
+        self.assertEqual("default-native-lookback", conversion["eventTimeWindow"]["status"])
+        self.assertEqual("PT4H", conversion["eventTimeWindow"]["effectiveLookback"])
+        self.assertFalse(conversion["eventTimeWindow"]["filterInjected"])
+
+        # For a non-1h lookback that is still narrower than the 4h service window,
+        # missing an event-time column continues to require review.
+        rule["queryPeriod"] = "2h"
+        source.write_text(yaml.safe_dump(rule), encoding="utf-8")
+        result_2h = convert_solution(self.solution, overwrite=True)
+        self.assertEqual(0, result_2h["converted"])
+        self.assertEqual(1, result_2h["needsReview"])
+        document_2h = yaml.safe_load(output.read_text(encoding="utf-8"))
+        self.assertEqual([], validate_document(document_2h))
+        conversion_2h = document_2h["contentProvenance"]["conversion"]
+        self.assertEqual("needsReview", conversion_2h["status"])
         self.assertTrue(any(
             "source query does not establish an event-time column" in reason
-            for reason in conversion["reviewReasons"]
+            for reason in conversion_2h["reviewReasons"]
         ))
 
     def test_other_query_blockers_remain_without_event_time(self) -> None:
@@ -788,7 +803,92 @@ AzureActivity
         output = yaml.safe_load(
             (self.solution / "XDR Detections" / "SampleRule.yaml").read_text(encoding="utf-8")
         )
-        self.assertEqual(output["properties"]["schedule"]["frequency"], "PT1H")
+        self.assertEqual(output["kind"], "CustomDetection")
+        self.assertEqual(output["properties"]["schedule"]["frequency"], "PT0S")
+        self.assertEqual([], validate_document(output))
+
+    def test_nrt_incompatible_query_requires_review_instead_of_silent_schedule(self) -> None:
+        path = self.solution / "Analytic Rules" / "SampleRule.yaml"
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document["kind"] = "NRT"
+        document.pop("queryFrequency")
+        document["query"] = (
+            "DeviceEvents | summarize Count = count() by AccountUpn, IPAddress, Timestamp"
+        )
+        path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        result = convert_solution(self.solution)
+        self.assertEqual(result["converted"], 0)
+        self.assertEqual(result["needsReview"], 1)
+        output = yaml.safe_load(
+            (self.solution / "XDR Detections" / "SampleRule.yaml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(output["properties"]["schedule"]["frequency"], "PT0S")
+        conversion = output["contentProvenance"]["conversion"]
+        self.assertEqual(conversion["status"], "needsReview")
+        self.assertTrue(conversion["reviewRequired"])
+        self.assertTrue(
+            any("not eligible for Continuous (NRT)" in r for r in conversion["reviewReasons"])
+        )
+
+    def test_standard_builtin_asim_parsers_allowed_in_detections(self) -> None:
+        for query in (
+            "_ASim_NetworkSession | where TimeGenerated > ago(1h) | project AccountUpn=SrcUsername, IPAddress=SrcIpAddr",
+            "_Im_WebSession(url_has_any=dynamic(['example.com'])) | where TimeGenerated > ago(1h) | project AccountUpn=SrcUsername, IPAddress=SrcIpAddr",
+        ):
+            with self.subTest(query=query):
+                converted, warnings, errors = convert_query(query, {})
+                self.assertEqual([], errors)
+                self.assertEqual([], warnings)
+                self.assertEqual(query, converted)
+
+    def test_solution_release_version_inheritance_and_source_version_lexical_preservation(self) -> None:
+        path = self.solution / "Analytic Rules" / "SampleRule.yaml"
+        raw = path.read_text(encoding="utf-8").replace("version: 1.0.0", "version: 1.0")
+        path.write_text(raw, encoding="utf-8")
+        data_dir = self.solution / "Data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "Solution_Sample.json").write_text(
+            json.dumps({"Name": "Sample", "Version": "3.2.1"}),
+            encoding="utf-8",
+        )
+        result = convert_solution(self.solution, overwrite=True)
+        self.assertEqual(result["converted"], 1)
+        output = yaml.safe_load(
+            (self.solution / "XDR Detections" / "SampleRule.yaml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(output["version"], "3.2.1")
+        self.assertEqual(output["contentProvenance"]["source"]["version"], "1.0")
+
+    def test_entity_identity_rejects_synthetic_hash_and_filename_only_hash_bindings(self) -> None:
+        path = self.solution / "Analytic Rules" / "SampleRule.yaml"
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document["query"] = (
+            'DeviceEvents\n'
+            '| where TimeGenerated > ago(1h)\n'
+            '| extend Algorithm = "SHA256"\n'
+            '| extend FileEntity = strcat("See_auditd_events_for_details_", tostring(hash(AccountUpn)))\n'
+            '| project Timestamp = TimeGenerated, AccountUpn, IPAddress, Algorithm, FileEntity, FileName\n'
+        )
+        document["entityMappings"].append(
+            {
+                "entityType": "FileHash",
+                "fieldMappings": [
+                    {"identifier": "Algorithm", "columnName": "Algorithm"},
+                    {"identifier": "Value", "columnName": "FileEntity"},
+                ],
+            }
+        )
+        path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        result = convert_solution(self.solution, overwrite=True)
+        self.assertEqual(result["converted"], 0)
+        self.assertEqual(result["needsReview"], 1)
+        output = yaml.safe_load(
+            (self.solution / "XDR Detections" / "SampleRule.yaml").read_text(encoding="utf-8")
+        )
+        conversion = output["contentProvenance"]["conversion"]
+        self.assertTrue(
+            any("genuine content SHA-1/SHA-256 is required" in r for r in conversion["reviewReasons"])
+        )
 
     @mock.patch(
         "sentinel_xdr_migration.runtime._advanced_hunting_token",

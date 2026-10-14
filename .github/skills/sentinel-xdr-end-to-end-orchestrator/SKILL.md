@@ -84,3 +84,22 @@ currently applied selected AR/CD scope, preserving all selected-item lab/write
 gates. Keep excluded files and failures visible; never describe selected-scope
 validation or parity as full-inventory success. Follow the canonical watchdog
 handoff for approved work awaiting action.
+
+Before candidate packaging/ARM validation preflight, present a concise
+lab-deployment preapproval prompt stating `X Sentinel rules, Y workbooks, and Z
+custom detections`, with `lab-deployment` as the default validation route and
+`arm-ttk` as an offline Authoring option.
+
+Enforce single-owner execution (`workflow-execution-owner`), safe hash-bound
+approval forwarding (`workflow-forward-approval`), and evidence-bound status
+reminders with no-change suppression (`workflow-status-reminder`):
+
+- Claim/release single-owner execution leases per `(runId, operation)` so
+  conflicting duplicate executors are blocked (`duplicate_executor_blocked`).
+- Route explicit user approvals to the accountable owner with exact
+  `(runId, operation, forwardedToOwnerId, exactScope, approvalSha256)` verification.
+- Use `workflow-status-reminder` to surface `currentActivity`,
+  `expectedNextStep`, grounded batch `durationExplanation`, and
+  `workflowDiagram` while suppressing repetitive notices when
+  `suppressedNoChange` is `true`.
+

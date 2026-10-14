@@ -56,8 +56,54 @@ BLOCKING_KQL_PATTERNS = {
 REVIEW_KQL_PATTERNS = {
     r"\bexternaldata\s*\(": "externaldata availability must be verified by runtime validation",
     r"\bunion\s+isfuzzy\s*=\s*true\b": "isfuzzy unions can still fail semantic binding in Advanced Hunting",
-    r"\b_[Ii]m_[A-Za-z0-9_]+\s*\(": "ASIM parser availability must be verified in Advanced Hunting",
 }
+STANDARD_BUILTIN_ASIM_PARSER_RE = re.compile(
+    r"^_(?:asim|im)_(?:agentevent|alertevent|assetentity|auditevent|authentication|dhcp|dns|email|fileevent|networksession|process|registry|usermanagement|websession)[a-z0-9_]*$",
+    re.IGNORECASE,
+)
+NRT_SUPPORTED_TABLES = frozenset(
+    name.lower()
+    for name in (
+        "AlertEvidence",
+        "CloudAppEvents",
+        "DeviceEvents",
+        "DeviceFileCertificateInfo",
+        "DeviceFileEvents",
+        "DeviceImageLoadEvents",
+        "DeviceInfo",
+        "DeviceLogonEvents",
+        "DeviceNetworkEvents",
+        "DeviceNetworkInfo",
+        "DeviceProcessEvents",
+        "DeviceRegistryEvents",
+        "EmailAttachmentInfo",
+        "EmailEvents",
+        "EmailPostDeliveryEvents",
+        "EmailUrlInfo",
+        "IdentityDirectoryEvents",
+        "IdentityLogonEvents",
+        "IdentityQueryEvents",
+        "UrlClickEvents",
+        "ABAPAuditLog_C",
+        "ABAPChangeDocsLog_CL",
+        "AuditLogs",
+        "AWSCloudTrail",
+        "AWSGuardDuty",
+        "AzureActivity",
+        "CommonSecurityLog",
+        "GCPAuditLogs",
+        "MicrosoftGraphActivityLogs",
+        "OfficeActivity",
+        "Okta_CL",
+        "OktaV2_CL",
+        "ProofpointPOD",
+        "ProofPointTAPClicksPermitted_CL",
+        "ProofPointTAPMessagesDelivered_CL",
+        "SecurityAlert",
+        "SecurityEvent",
+        "SigninLogs",
+    )
+)
 
 ENTITY_MAP: dict[str, tuple[str, dict[str, str | None]]] = {
     "Host": (
@@ -234,6 +280,8 @@ def slugify(value: str) -> str:
 def iso_duration(value: Any, default: str = "PT1H") -> tuple[str, str | None]:
     text = str(value or "").strip().lower()
     iso = text.upper()
+    if iso in {"NRT", "0", "PT0S"}:
+        return "PT0S", None
     if re.fullmatch(
         r"P(?:(?:\d+D)(?:T(?:\d+H)?(?:\d+M)?(?:\d+S)?)?|T(?:\d+H)?(?:\d+M)?(?:\d+S)?)",
         iso,
@@ -391,6 +439,12 @@ def convert_query(query: str, config: dict[str, Any]) -> tuple[str, list[str], l
     for pattern, message in REVIEW_KQL_PATTERNS.items():
         if re.search(pattern, converted, re.IGNORECASE):
             warnings.append(message)
+    asim_calls = [
+        match.group(1)
+        for match in re.finditer(r"\b(_(?:[Ii]m|[Aa][Ss]im)_[A-Za-z0-9_]+)\s*\(", converted)
+    ]
+    if any(not STANDARD_BUILTIN_ASIM_PARSER_RE.match(name) for name in asim_calls):
+        warnings.append("ASIM parser availability must be verified in Advanced Hunting")
     if _has_search_operator(converted):
         warnings.append(SEARCH_REVIEW_REASON)
     if query_has_mixed_time_semantics(converted):
@@ -798,12 +852,158 @@ def _format_kql_duration(seconds: int) -> str:
     return f"{seconds}s"
 
 
+def _assess_nrt_eligibility(source_query: str, target_query: str) -> tuple[bool, list[str]]:
+    """Check Defender XDR Continuous (NRT) query and table eligibility."""
+    reasons: list[str] = []
+    from ._workbook_core import rewrite
+
+    segments = rewrite._segments(target_query or "")
+    if any(kind == "comment" for kind, _ in segments) or "/*" in "".join(
+        text for kind, text in segments if kind == "code"
+    ):
+        reasons.append("Continuous (NRT) frequency does not support KQL comments")
+    code = "".join(text if kind == "code" else " " * len(text) for kind, text in segments)
+    if re.search(r"\bexternal_?data\s*\(", code, re.IGNORECASE):
+        reasons.append("Continuous (NRT) frequency does not support externaldata")
+    if re.search(r"\b(?:join|union|lookup)\b", code, re.IGNORECASE):
+        reasons.append("Continuous (NRT) frequency does not support join, union, or lookup operators")
+    if re.search(r"\b(?:summarize|make-series)\b|\|\s*count\b", code, re.IGNORECASE):
+        reasons.append("Continuous (NRT) frequency does not support summarize or aggregation operators")
+
+    refs = query_table_references(target_query)
+    tables = []
+    for ref in refs:
+        t = str(ref.get("table") or "").strip()
+        if t and t.lower() not in {x.lower() for x in tables}:
+            tables.append(t)
+    if len(tables) != 1:
+        reasons.append(
+            "Continuous (NRT) frequency requires a single supported table"
+            if not tables
+            else f"Continuous (NRT) frequency requires a single table, found {', '.join(tables)}"
+        )
+    else:
+        table = tables[0]
+        if table.lower() not in NRT_SUPPORTED_TABLES:
+            reasons.append(
+                f"table {table} is not supported for Continuous (NRT) frequency in Defender XDR"
+            )
+        elif table.lower() == "emailevents" and re.search(
+            r"\b(?:LatestDeliveryLocation|LatestDeliveryAction)\b", code, re.IGNORECASE
+        ):
+            reasons.append(
+                "EmailEvents columns LatestDeliveryLocation and LatestDeliveryAction are not supported in Continuous (NRT) frequency"
+            )
+    return not reasons, reasons
+
+
+_FILENAME_ONLY_HASH_COLUMNS = frozenset(
+    {
+        "filename",
+        "initiatingprocessfilename",
+        "folderpath",
+        "initiatingprocessfolderpath",
+        "filepath",
+        "targetfilename",
+        "sourcefilename",
+        "imagefile",
+        "process",
+        "processname",
+        "commandline",
+        "processcommandline",
+        "initiatingprocesscommandline",
+    }
+)
+_SYNTHETIC_HASH_FUNCTIONS = frozenset(
+    {
+        "hash",
+        "hash_sha1",
+        "hash_sha256",
+        "hash_md5",
+        "hash_xxhash64",
+        "hash_combine",
+        "hash_many",
+        "strcat",
+    }
+)
+
+
+def _is_non_hash_or_synthetic_hash_column(query: str, column: str) -> str | None:
+    """Return a rejection reason if column is a filename-only binding or synthetic text hash."""
+    col = (column or "").strip()
+    if not col:
+        return None
+    if col.lower() in _FILENAME_ONLY_HASH_COLUMNS:
+        return "filename-only or non-hash binding"
+    facts = _linear_facts(query)
+    if facts:
+        assignments = facts[2]
+        rhs = assignments.get(col)
+        if rhs:
+            if len(rhs) == 1 and rhs[0].lower() in _FILENAME_ONLY_HASH_COLUMNS:
+                return "filename-only or non-hash binding"
+            if any(tok.lower() in _SYNTHETIC_HASH_FUNCTIONS for tok in rhs):
+                return "synthetic text hash"
+    from ._workbook_core import rewrite
+
+    code = "".join(text if kind == "code" else " " * len(text) for kind, text in rewrite._segments(query or ""))
+    assign_pat = re.compile(
+        rf"\b{re.escape(col)}\s*=\s*(?:tostring\s*\(\s*)?({'|'.join(_SYNTHETIC_HASH_FUNCTIONS)})\s*\(",
+        re.IGNORECASE,
+    )
+    if assign_pat.search(code):
+        return "synthetic text hash"
+    alias_pat = re.compile(
+        rf"\b{re.escape(col)}\s*=\s*({'|'.join(_FILENAME_ONLY_HASH_COLUMNS)})\b(?!\s*\()",
+        re.IGNORECASE,
+    )
+    if alias_pat.search(code):
+        return "filename-only or non-hash binding"
+    return None
+
+
 def constrain_event_window(
     doc: dict[str, Any], source_query: str, target_query: str, frequency: str,
 ) -> tuple[str, dict[str, Any] | None, str | None]:
     source_period = _duration_seconds(doc.get("queryPeriod"))
     source_frequency = _duration_seconds(doc.get("queryFrequency"))
     target_frequency = _duration_seconds(frequency)
+    if (
+        str(doc.get("kind") or "").lower() != "nrt"
+        and source_frequency == 3600
+        and source_period == 3600
+        and target_frequency == 3600
+    ):
+        has_aggregation = bool(re.search(r"\b(?:summarize|make-series)\b", target_query, re.IGNORECASE))
+        metadata = {
+            "status": "default-native-lookback",
+            "appliedDefault": "hourly-1h-to-native-4h-lookback",
+            "queryFrequency": str(doc.get("queryFrequency") or "1h").strip(),
+            "queryPeriod": str(doc.get("queryPeriod") or "1h").strip(),
+            "targetFrequency": frequency,
+            "effectiveLookback": "PT4H",
+            "originalSentinelLookbackSeconds": source_period,
+            "effectiveEventWindowSeconds": 14400,
+            "xdrServiceWindowSeconds": 14400,
+            "filterInjected": False,
+            "parityClaimed": False,
+            "hasAggregation": has_aggregation,
+            "aggregationWindowDifference": has_aggregation,
+            "timingDifference": (
+                "Four hours (PT4H / 14400s) is the native XDR ingestion-based lookback window "
+                "for PT1H execution frequency, not the execution frequency; original Sentinel "
+                "queryPeriod was 1h (3600s)."
+            ),
+            "aggregationDifference": (
+                "Query contains summarize/make-series aggregation; evaluating over the native "
+                "4-hour XDR lookback window without an injected 1h event-time filter may "
+                "aggregate up to 4 hours of events per hourly run instead of 1 hour."
+                if has_aggregation
+                else "No summarize/make-series aggregation detected in query; native 4-hour XDR "
+                     "lookback relies on Defender XDR alert deduplication across hourly runs."
+            ),
+        }
+        return target_query, metadata, None
     source_table = _native_pipeline_table(source_query)
     target_table = _native_pipeline_table(target_query)
     native_tokens = set(_tokens(source_query)) | set(_tokens(target_query))
@@ -927,6 +1127,17 @@ def assess_schedule(
         f"lookback={doc.get('queryPeriod') or 'unknown'}; target frequency={frequency}, "
         f"native lookback={str(target_period) + 's' if target_period else 'unknown/unconfigured'}"
     )
+    if str(doc.get("kind") or "").lower() == "nrt" and frequency in {"PT0S", "NRT"}:
+        nrt_eligible, nrt_reasons = _assess_nrt_eligibility(source_query, target_query)
+        if nrt_eligible:
+            return [], [
+                f"Schedule assessment: source kind=NRT; target frequency={frequency} (Continuous); "
+                f"single-table Continuous (NRT) execution is supported in Defender XDR. See {SCHEDULE_REFERENCE}"
+            ]
+        return [
+            f"Schedule assessment: source kind=NRT; target frequency={frequency} (Continuous); "
+            f"query is not eligible for Continuous (NRT) execution ({'; '.join(nrt_reasons)}). See {SCHEDULE_REFERENCE}"
+        ], []
     reason = None
     if str(doc.get("kind") or "").lower() == "nrt":
         reason = "source NRT timing is not preserved by the emitted scheduled frequency"
@@ -1034,13 +1245,24 @@ def convert_entities(
             target = {"'SHA1'": "sha1Column", "'SHA256'": "sha256Column"}.get(
                 algorithm[0].upper() if algorithm and len(algorithm) == 1 else ""
             )
-            if target and value_column and columns is not None and value_column in columns:
+            bad_hash_reason = (
+                _is_non_hash_or_synthetic_hash_column(query, value_column)
+                if value_column
+                else None
+            )
+            if target and value_column and columns is not None and value_column in columns and not bad_hash_reason:
                 fields[target] = value_column
                 unsupported = [value for value in unsupported if value not in {"Algorithm", "Value"}]
                 information.append(
                     f"FileHash.Algorithm `{algorithm_column}` is the query-proven constant "
                     f"{algorithm[0]}; FileHash.Value `{value_column}` is represented by files.{target}"
                 )
+            elif bad_hash_reason:
+                warnings.append(
+                    f"converter cannot map FileHash.Algorithm/Value: column `{value_column}` is a "
+                    f"{bad_hash_reason}; a genuine content SHA-1/SHA-256 is required"
+                )
+                unsupported = [value for value in unsupported if value not in {"Algorithm", "Value"}]
             else:
                 warnings.append(
                     "converter cannot map FileHash.Algorithm/Value: requires a query-proven "
@@ -1442,9 +1664,80 @@ def custom_detail_binding_warnings(document: dict[str, Any]) -> list[str]:
     ]
 
 
+def _extract_raw_yaml_version(raw_text: str, doc: dict[str, Any]) -> str:
+    """Preserve exact source YAML version lexical text (e.g., 1.0 vs 1.0.0)."""
+    for line in (raw_text or "").splitlines():
+        match = re.match(r"^version\s*:\s*(.+?)\s*$", line)
+        if not match:
+            continue
+        raw_val = match.group(1).strip()
+        if not raw_val or raw_val.startswith("#"):
+            continue
+        if (raw_val.startswith('"') and raw_val.endswith('"')) or (
+            raw_val.startswith("'") and raw_val.endswith("'")
+        ):
+            return raw_val[1:-1]
+        raw_val = re.sub(r"\s+#.*$", "", raw_val).strip()
+        if raw_val:
+            return raw_val
+    return str(doc.get("version") or "")
+
+
+def _version_tuple(version: str) -> tuple[int, int, int]:
+    parts = str(version).split(".")
+    if len(parts) == 3 and all(part.isdigit() for part in parts):
+        return int(parts[0]), int(parts[1]), int(parts[2])
+    return (0, 0, 0)
+
+
+def _solution_release_version(solution_root: Path, config: dict[str, Any] | None = None) -> str:
+    """Resolve the solution release version in [3.1.0, 4.0.0) or default to INITIAL_XDR_VERSION."""
+    if isinstance(config, dict):
+        for key in ("targetVersion", "version"):
+            candidate = config.get(key)
+            if isinstance(candidate, str) and re.fullmatch(XDR_VERSION_PATTERN, candidate.strip()):
+                return candidate.strip()
+    try:
+        from .artifacts import current_workflow_state
+
+        state = current_workflow_state(solution_root)
+        if isinstance(state, dict):
+            target_ver = state.get("targetVersion")
+            if isinstance(target_ver, str) and re.fullmatch(XDR_VERSION_PATTERN, target_ver.strip()):
+                return target_ver.strip()
+    except Exception:
+        pass
+    candidates: list[str] = []
+    data_dir = solution_root / "Data"
+    if data_dir.is_dir():
+        for data_path in sorted(data_dir.glob("Solution_*.json")):
+            try:
+                payload = json.loads(data_path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(payload, dict):
+                ver = payload.get("Version") or payload.get("version")
+                if isinstance(ver, str) and re.fullmatch(XDR_VERSION_PATTERN, ver.strip()):
+                    candidates.append(ver.strip())
+    meta_path = solution_root / "SolutionMetadata.json"
+    if meta_path.is_file():
+        try:
+            payload = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            ver = payload.get("version") or payload.get("Version")
+            if isinstance(ver, str) and re.fullmatch(XDR_VERSION_PATTERN, ver.strip()):
+                candidates.append(ver.strip())
+    if candidates:
+        return max(candidates, key=_version_tuple)
+    return INITIAL_XDR_VERSION
+
+
 def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]) -> dict[str, Any]:
     with source.open(encoding="utf-8-sig") as handle:
-        doc = yaml.safe_load(handle) or {}
+        raw_source_text = handle.read()
+    doc = yaml.safe_load(raw_source_text) or {}
     if not isinstance(doc, dict):
         raise ValueError(f"analytic rule must contain a YAML object: {source}")
 
@@ -1465,10 +1758,24 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
         warnings.extend(parser_warnings)
     except ValueError as exc:
         errors.append(str(exc))
+    source_id = str(doc.get("id") or "")
+    rule_override = (config.get("ruleOverrides") or {}).get(source_id) or {}
     is_nrt = str(doc.get("kind") or "").lower() == "nrt"
-    frequency, frequency_warning = iso_duration(
-        doc.get("queryFrequency") or ("PT1H" if is_nrt else None)
-    )
+    override_frequency = rule_override.get("frequency") if isinstance(rule_override, dict) else None
+    if is_nrt and not override_frequency and not doc.get("queryFrequency"):
+        frequency = "PT0S"
+        nrt_eligible, nrt_reasons = _assess_nrt_eligibility(source_query, converted_query)
+        frequency_warning = (
+            None
+            if nrt_eligible
+            else (
+                "source NRT rule is not eligible for Continuous (NRT) execution in Defender XDR "
+                f"({'; '.join(nrt_reasons)}); review schedule or configure a scheduled frequency override"
+            )
+        )
+    else:
+        raw_freq = override_frequency if override_frequency is not None else doc.get("queryFrequency")
+        frequency, frequency_warning = iso_duration(raw_freq or ("PT1H" if is_nrt else None))
     if frequency_warning:
         warnings.append(frequency_warning)
         review_reasons.append(frequency_warning)
@@ -1484,13 +1791,14 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
         ).hexdigest(),
         "targetQuerySha256": hashlib.sha256(converted_query.encode("utf-8")).hexdigest(),
     }
+    if isinstance(event_window, dict) and event_window.get("status") == "default-native-lookback":
+        event_window["sourceDocumentSha256"] = review_scope["sourceDocumentSha256"]
+        event_window["targetQuerySha256"] = review_scope["targetQuerySha256"]
     schedule_warnings, schedule_information = assess_schedule(
         doc, source_query, converted_query, frequency,
     )
     warnings.extend(schedule_warnings)
     informational.extend(schedule_information)
-    source_id = str(doc.get("id") or "")
-    rule_override = (config.get("ruleOverrides") or {}).get(source_id) or {}
 
     entity_information: list[str] = []
     column_mappings = (
@@ -1536,6 +1844,7 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
         warning
         for warning in mapping_warnings
         if warning.startswith(NONBLOCKING_ENTITY_REVIEW_PREFIXES)
+        or "genuine content SHA-1/SHA-256 is required" in warning
     ]
     if any(reason.startswith(ENTITY_CONFIRMATION_PREFIX) for reason in entity_review_reasons) and REQUIRED_ASSET_COLLECTIONS.intersection(
         mappings
@@ -1626,7 +1935,12 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
         if source_hash != review_scope["sourceDocumentSha256"] or query_hash != review_scope["targetQuerySha256"]:
             errors.append(f"reviewDecision for {reason!r} is stale; source document or target query hash changed")
             continue
-        if reason not in review_reasons:
+        is_legacy_hourly_lookback_decision = (
+            isinstance(event_window, dict)
+            and event_window.get("status") == "default-native-lookback"
+            and reason.startswith("Original Sentinel lookback is shorter than the native XDR service window")
+        )
+        if reason not in review_reasons and not is_legacy_hourly_lookback_decision:
             errors.append(f"reviewDecision reason does not match a current review finding: {reason}")
             continue
         recorded_review_decisions.append({
@@ -1674,7 +1988,7 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
     )
     return {
         "schemaVersion": SCHEMA_VERSION,
-        "version": INITIAL_XDR_VERSION,
+        "version": _solution_release_version(solution_root, config),
         "kind": "CustomDetection",
         "resourceType": "Microsoft.Security/detectionRules",
         "apiVersion": DETECTION_API_VERSION,
@@ -1692,7 +2006,7 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
                 "kind": "AnalyticsRule",
                 "id": source_id,
                 "path": relative_source,
-                "version": str(doc.get("version") or ""),
+                "version": _extract_raw_yaml_version(raw_source_text, doc),
                 "querySha256": hashlib.sha256(source_query.encode("utf-8")).hexdigest(),
                 "schedule": {
                     "queryFrequency": str(doc.get("queryFrequency") or ""),
@@ -1857,8 +2171,37 @@ def validate_document(document: dict[str, Any]) -> list[str]:
     query = ((properties.get("queryCondition") or {}).get("queryText") or "")
     if not query:
         errors.append("properties.queryCondition.queryText is required")
+    schedule = properties.get("schedule") or {}
+    if isinstance(schedule, dict) and schedule.get("frequency") in {"PT0S", "NRT"}:
+        nrt_eligible, nrt_reasons = _assess_nrt_eligibility(query, query)
+        if not nrt_eligible and conversion.get("status") != "needsReview":
+            errors.extend(f"NRT schedule: {reason}" for reason in nrt_reasons)
     alert = ((properties.get("detectionAction") or {}).get("alertTemplate") or {})
     mappings = alert.get("entityMappings") or {}
+    if isinstance(mappings, dict):
+        for collection_name in ("files", "processes"):
+            items = mappings.get(collection_name)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if collection_name == "processes" and not (
+                    item.get("sha1Column") or item.get("sha256Column")
+                ):
+                    errors.append(
+                        "entityMappings.processes requires a genuine sha1Column or sha256Column content hash; "
+                        "filename-only bindings are not supported"
+                    )
+                for hash_field in ("sha1Column", "sha256Column"):
+                    col = item.get(hash_field)
+                    if isinstance(col, str) and col:
+                        bad_reason = _is_non_hash_or_synthetic_hash_column(query, col)
+                        if bad_reason:
+                            errors.append(
+                                f"entityMappings.{collection_name}.{hash_field} column `{col}` is a "
+                                f"{bad_reason}; a genuine content SHA-1/SHA-256 is required"
+                            )
     custom_details = alert.get("customDetails")
     if isinstance(custom_details, dict):
         if sum(len(key.encode("utf-8")) for key in custom_details if isinstance(key, str)) > 4096:
@@ -2087,7 +2430,8 @@ def convert_solution(
                         )
                     )
                     continue
-                document["version"] = existing_document["version"]
+                if _version_tuple(existing_document["version"]) >= _version_tuple(document["version"]):
+                    document["version"] = existing_document["version"]
             previous_id = existing_document["properties"]["id"]
             identity_change = (
                 (existing_document.get("contentProvenance") or {}).get("conversion") or {}

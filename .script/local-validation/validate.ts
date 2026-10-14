@@ -39,7 +39,7 @@
  *   - For ARM-TTK: PowerShell with ARM-TTK module
  */
 
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -637,19 +637,42 @@ async function validateWorkbookTemplate(filePath: string, _fileKind: string): Pr
       return { validator: "Workbook Template", filePath, passed: true, skipped: true, skipReason: "Metadata file" };
     }
 
+    if (/(^|[\\/])XDR Workbooks[\\/]/.test(filePath)) {
+      return {
+        validator: "Workbook Template",
+        filePath,
+        passed: true,
+        skipped: true,
+        skipReason: "Legacy Sentinel Workbook Template validator does not apply to XDR Workbooks; validated by XDR Workbook validator",
+      };
+    }
+
     const workbookTemplateString = fs.readFileSync(filePath, "utf8");
     const parsedWorkbookTemplate = JSON.parse(workbookTemplateString);
 
-    // Check if it's actually a workbook JSON
+    // Check if it's actually a Sentinel workbook JSON
     if (typeof parsedWorkbookTemplate.$schema !== "undefined"
         && String(parsedWorkbookTemplate.$schema).includes("schema/workbook.json")
         && typeof parsedWorkbookTemplate.version !== "undefined"
         && parsedWorkbookTemplate.version === "Notebook/1.0") {
       isFromTemplateIdNotSentinelUserWorkbook(parsedWorkbookTemplate);
       doesNotContainResourceInfo(workbookTemplateString);
+      return { validator: "Workbook Template", filePath, passed: true };
     }
 
-    return { validator: "Workbook Template", filePath, passed: true };
+    if (/(^|[\\/])Workbooks[\\/]/.test(filePath) && parsedWorkbookTemplate.version === "Notebook/1.0") {
+      isFromTemplateIdNotSentinelUserWorkbook(parsedWorkbookTemplate);
+      doesNotContainResourceInfo(workbookTemplateString);
+      return { validator: "Workbook Template", filePath, passed: true };
+    }
+
+    return {
+      validator: "Workbook Template",
+      filePath,
+      passed: true,
+      skipped: true,
+      skipReason: "Not a Sentinel Workbook Template",
+    };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     return { validator: "Workbook Template", filePath, passed: false, error: msg };
@@ -784,6 +807,15 @@ async function validateDocumentsLink(filePath: string, _fileKind: string): Promi
 
 // ----- 11. Solution Validator -----
 async function validateSolution(filePath: string, _fileKind: string): Promise<ValidationResult> {
+  if (!filePath.endsWith("mainTemplate.json") && !filePath.endsWith("createUiDefinition.json")) {
+    return {
+      validator: "Solution",
+      filePath,
+      passed: true,
+      skipped: true,
+      skipReason: "Not mainTemplate.json or createUiDefinition.json",
+    };
+  }
   try {
     IsValidSolutionDomainsVerticals(filePath);
     IsValidSupportObject(filePath);
@@ -803,25 +835,51 @@ async function validateIdChange(filePath: string, fileKind: string): Promise<Val
     return { validator: "ID Change", filePath, passed: true, skipped: true, skipReason: "Only checks modified files" };
   }
 
-  if (!filePath.includes("Detections") && !filePath.includes("Analytic Rules")) {
-    return { validator: "ID Change", filePath, passed: true, skipped: true, skipReason: "Not a detection file" };
+  const isXdrWorkbook = /(^|[\\/])XDR Workbooks[\\/]/.test(filePath);
+  const isDetection = filePath.includes("Detections") || filePath.includes("Analytic Rules");
+  if (!isDetection && !isXdrWorkbook) {
+    return { validator: "ID Change", filePath, passed: true, skipped: true, skipReason: "Not a detection or XDR workbook file" };
   }
 
   try {
     const skipFilePath = path.join(toolkitRoot, ".script/tests/idChangeValidatorTest/SkipIdValidationsTemplates.json");
     const skipIds: string[] = fs.existsSync(skipFilePath) ? JSON.parse(fs.readFileSync(skipFilePath, "utf8")) : [];
 
-    const guidRegex = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-    const templateIdRegex = `(id: ${guidRegex}(.|\n)*){2}`;
+    const guidRegex = "(?:xdr-)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+    const templateIdRegex = isXdrWorkbook
+      ? `("(?:contentId|instanceId)"\\s*:\\s*"${guidRegex}"(.|\\n)*){2}`
+      : `(id:\\s*['"]?${guidRegex}['"]?(.|\\n)*){2}`;
 
     const targetBranch = detectDefaultBranch();
     const mergeBase = execSync(`git merge-base ${targetBranch} HEAD`, { encoding: "utf8" }).trim();
     const fullPath = path.resolve(process.cwd(), filePath);
     const diffSummary = execSync(`git diff ${mergeBase} HEAD -- "${fullPath}"`, { encoding: "utf8" });
 
+    if (/^new file mode /m.test(diffSummary) || diffSummary.includes("--- /dev/null")) {
+      return { validator: "ID Change", filePath, passed: true, skipped: true, skipReason: "New file in branch" };
+    }
+
+    const isXdrDetection = /(^|[\\/])XDR Detections[\\/]/.test(filePath);
+    if (isXdrDetection) {
+      const removedPropId = diffSummary.match(/^-[ \t]+id:\s*['"]?(xdr-[0-9a-fA-F-]{36}|[0-9a-fA-F-]{36})['"]?/m);
+      const addedPropId = diffSummary.match(/^\+[ \t]+id:\s*['"]?(xdr-[0-9a-fA-F-]{36}|[0-9a-fA-F-]{36})['"]?/m);
+      if (removedPropId && addedPropId && removedPropId[1] !== addedPropId[1]) {
+        if (skipIds.indexOf(addedPropId[1]) > -1) {
+          return { validator: "ID Change", filePath, passed: true, skipped: true, skipReason: "ID in skip list" };
+        }
+        return {
+          validator: "ID Change",
+          filePath,
+          passed: false,
+          error: `Template ID changed from ${removedPropId[1]} to ${addedPropId[1]} — IDs must not be modified`,
+        };
+      }
+      return { validator: "ID Change", filePath, passed: true };
+    }
+
     const idPosition = diffSummary.search(new RegExp(templateIdRegex));
     if (idPosition > 0) {
-      const regex = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
+      const regex = /(?:xdr-)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
       let match;
       let oldId = "";
       let newId = "";
@@ -850,15 +908,163 @@ async function validateIdChange(filePath: string, fileKind: string): Promise<Val
 
     return { validator: "ID Change", filePath, passed: true };
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = (e instanceof Error ? e.message : String(e)).replace(/[\r\n]+/g, " ").trim();
     // If git diff fails (e.g., in --path mode), skip gracefully
     return { validator: "ID Change", filePath, passed: true, skipped: true, skipReason: `Git diff unavailable: ${msg}` };
   }
 }
 
 
+// ----- 12b. XDR Detections & XDR Workbooks Validators (Python subprocess) -----
+function resolvePythonExecutable(): string | null {
+  const candidates = [
+    process.env.PYTHON_EXECUTABLE,
+    "/opt/anaconda3/bin/python3.12",
+    "python3",
+    "python",
+  ].filter((c): c is string => Boolean(c && c.trim()));
+
+  for (const candidate of candidates) {
+    try {
+      execFileSync(candidate, ["--version"], { encoding: "utf8", stdio: "pipe" });
+      return candidate;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+async function runXdrContentValidators(
+  files: ChangedFile[],
+  options: CLIOptions,
+  runDetections: boolean,
+  runWorkbooks: boolean,
+): Promise<ValidationResult[]> {
+  const results: ValidationResult[] = [];
+  if (!runDetections && !runWorkbooks) {
+    return results;
+  }
+
+  const scriptPath = path.join(toolkitRoot, ".script/local-validation/validate-xdr-content.py");
+  if (!fs.existsSync(scriptPath)) {
+    if (runDetections) {
+      results.push({
+        validator: "XDR Detection",
+        filePath: scriptPath,
+        passed: false,
+        error: `XDR validation script not found: ${scriptPath}`,
+      });
+    }
+    if (runWorkbooks) {
+      results.push({
+        validator: "XDR Workbook",
+        filePath: scriptPath,
+        passed: false,
+        error: `XDR validation script not found: ${scriptPath}`,
+      });
+    }
+    return results;
+  }
+
+  const pythonExe = resolvePythonExecutable();
+  if (!pythonExe) {
+    const reason = "Python 3 interpreter not available to run XDR content validator";
+    if (runDetections) {
+      results.push({
+        validator: "XDR Detection",
+        filePath: scriptPath,
+        passed: true,
+        skipped: true,
+        skipReason: reason,
+      });
+    }
+    if (runWorkbooks) {
+      results.push({
+        validator: "XDR Workbook",
+        filePath: scriptPath,
+        passed: true,
+        skipped: true,
+        skipReason: reason,
+      });
+    }
+    return results;
+  }
+
+  const family = runDetections && runWorkbooks ? "all" : runDetections ? "detections" : "workbooks";
+  const args = [
+    scriptPath,
+    "--toolkit-root",
+    toolkitRoot,
+    "--content-root",
+    contentRoot,
+    "--family",
+    family,
+  ];
+  if (options.mode === "path" && options.targetPath) {
+    args.push("--solution-path", options.targetPath);
+  } else {
+    args.push("--files", ...files.map(f => f.filePath));
+  }
+
+  let rawOutput = "";
+  try {
+    rawOutput = execFileSync(pythonExe, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 120000,
+    });
+  } catch (e: unknown) {
+    const errObj = e as { stdout?: string; stderr?: string; message?: string };
+    if (errObj && typeof errObj.stdout === "string" && errObj.stdout.trim().startsWith("{")) {
+      rawOutput = errObj.stdout;
+    } else {
+      const msg = (errObj?.stderr || errObj?.message || String(e)).trim();
+      if (runDetections) {
+        results.push({
+          validator: "XDR Detection",
+          filePath: options.targetPath || "Solutions",
+          passed: false,
+          error: `XDR content validator process failed: ${msg}`,
+        });
+      }
+      if (runWorkbooks) {
+        results.push({
+          validator: "XDR Workbook",
+          filePath: options.targetPath || "Solutions",
+          passed: false,
+          error: `XDR content validator process failed: ${msg}`,
+        });
+      }
+      return results;
+    }
+  }
+
+  const parsed = JSON.parse(rawOutput);
+  if (Array.isArray(parsed.results)) {
+    for (const item of parsed.results) {
+      results.push({
+        validator: String(item.validator),
+        filePath: String(item.filePath),
+        passed: Boolean(item.passed),
+        error: item.error ? String(item.error) : undefined,
+        skipped: Boolean(item.skipped),
+        skipReason: item.skipReason ? String(item.skipReason) : undefined,
+      });
+    }
+  }
+  return results;
+}
+
+
 // ----- 13–15. .NET Validators (subprocess invocation) -----
-async function runDotNetValidator(projectPath: string, validatorName: string, selectedContentRoot: string): Promise<ValidationResult[]> {
+async function runDotNetValidator(
+  projectPath: string,
+  validatorName: string,
+  selectedContentRoot: string,
+  requiredRuntimeRegex?: RegExp,
+  requiredRuntimeLabel?: string,
+): Promise<ValidationResult[]> {
   const results: ValidationResult[] = [];
   try {
     if (!fs.existsSync(projectPath)) {
@@ -872,7 +1078,21 @@ async function runDotNetValidator(projectPath: string, validatorName: string, se
       return results;
     }
 
-    execSync(`dotnet test "${projectPath}" --configuration Release --verbosity minimal`, {
+    if (requiredRuntimeRegex) {
+      const runtimesOut = execSync("dotnet --list-runtimes", { encoding: "utf8", stdio: "pipe" });
+      if (!requiredRuntimeRegex.test(runtimesOut)) {
+        results.push({
+          validator: validatorName,
+          filePath: projectPath,
+          passed: true,
+          skipped: true,
+          skipReason: `${requiredRuntimeLabel || "Required .NET runtime"} not installed`,
+        });
+        return results;
+      }
+    }
+
+    const testOut = execSync(`dotnet test "${projectPath}" --configuration Release --verbosity minimal`, {
       encoding: "utf8",
       stdio: "pipe",
       timeout: 300000, // 5 minute timeout
@@ -881,6 +1101,17 @@ async function runDotNetValidator(projectPath: string, validatorName: string, se
         SENTINEL_VALIDATION_CONTENT_ROOT: selectedContentRoot,
       },
     });
+
+    if (/Total:\s*0\b|No test is available/i.test(testOut)) {
+      results.push({
+        validator: validatorName,
+        filePath: projectPath,
+        passed: true,
+        skipped: true,
+        skipReason: "No applicable tests executed by .NET test runner",
+      });
+      return results;
+    }
 
     results.push({ validator: validatorName, filePath: projectPath, passed: true });
   } catch (e: unknown) {
@@ -900,10 +1131,19 @@ async function runArmTtkValidator(files: ChangedFile[]): Promise<ValidationResul
   );
 
   if (armFiles.length === 0) {
+    results.push({
+      validator: "ARM-TTK",
+      filePath: "Solutions",
+      passed: true,
+      skipped: true,
+      skipReason: "No mainTemplate.json or createUiDefinition.json found in scope",
+    });
     return results;
   }
 
-  const scriptPath = path.join(toolkitRoot, ".script/package-automation/arm-ttk-tests.ps1");
+  const legacyScriptPath = path.join(toolkitRoot, ".script/package-automation/arm-ttk-tests.ps1");
+  const localScriptPath = path.join(toolkitRoot, ".script/local-validation/run-arm-ttk.ps1");
+  const scriptPath = fs.existsSync(legacyScriptPath) ? legacyScriptPath : localScriptPath;
   if (!fs.existsSync(scriptPath)) {
     results.push({
       validator: "ARM-TTK",
@@ -917,7 +1157,10 @@ async function runArmTtkValidator(files: ChangedFile[]): Promise<ValidationResul
 
   for (const file of armFiles) {
     try {
-      execSync(`pwsh -NoProfile -File "${scriptPath}" -FilePath "${file.filePath}"`, {
+      const cmd = scriptPath === localScriptPath
+        ? `pwsh -NoProfile -File "${scriptPath}" -PackagePath "${path.dirname(path.resolve(contentRoot, file.filePath))}"`
+        : `pwsh -NoProfile -File "${scriptPath}" -FilePath "${file.filePath}"`;
+      execSync(cmd, {
         encoding: "utf8",
         stdio: "pipe",
         timeout: 120000,
@@ -1239,8 +1482,18 @@ async function main(): Promise<void> {
     activeValidators = activeValidators.filter(v => !options.skip.includes(v.id));
   }
 
+  const shouldRunXdrDetection = (options.only.length === 0 || options.only.includes("xdr-detection"))
+                              && !options.skip.includes("xdr-detection");
+  const shouldRunXdrWorkbook = (options.only.length === 0 || options.only.includes("xdr-workbook"))
+                             && !options.skip.includes("xdr-workbook");
+
   if (!options.jsonOutput) {
-    console.log(`🔧 Active validators: ${activeValidators.map(v => v.id).join(", ")}`);
+    const activeIds = [
+      ...activeValidators.map(v => v.id),
+      ...(shouldRunXdrDetection ? ["xdr-detection"] : []),
+      ...(shouldRunXdrWorkbook ? ["xdr-workbook"] : []),
+    ];
+    console.log(`🔧 Active validators: ${activeIds.join(", ")}`);
   }
 
   // --- Run Validations ---
@@ -1256,11 +1509,40 @@ async function main(): Promise<void> {
     allResults.push(...fileResults);
   }
 
+  // --- Run XDR Detections & XDR Workbooks Validators ---
+  if (shouldRunXdrDetection || shouldRunXdrWorkbook) {
+    const xdrResults = await runXdrContentValidators(
+      files,
+      options,
+      shouldRunXdrDetection,
+      shouldRunXdrWorkbook,
+    );
+    allResults.push(...xdrResults);
+  }
+
   // --- Run .NET Validators (if not skipped) ---
   const dotnetValidators = [
-    { id: "kql", name: "KQL Validation", project: path.join(toolkitRoot, ".script/tests/KqlvalidationsTests/Kqlvalidations.Tests.csproj") },
-    { id: "detection-schema", name: "Detection Template Schema", project: path.join(toolkitRoot, ".script/tests/detectionTemplateSchemaValidation/DetectionTemplateSchemaValidation.Tests.csproj") },
-    { id: "non-ascii", name: "Non-ASCII", project: path.join(toolkitRoot, ".script/tests/NonAsciiValidationsTests/NonAsciiValidations.Tests.csproj") },
+    {
+      id: "kql",
+      name: "KQL Validation",
+      project: path.join(toolkitRoot, ".script/tests/KqlvalidationsTests/Kqlvalidations.Tests.csproj"),
+      runtimeRegex: /Microsoft\.NETCore\.App 8\./,
+      runtimeLabel: ".NET 8.0",
+    },
+    {
+      id: "detection-schema",
+      name: "Detection Template Schema",
+      project: path.join(toolkitRoot, ".script/tests/detectionTemplateSchemaValidation/DetectionTemplateSchemaValidation.Tests.csproj"),
+      runtimeRegex: /Microsoft\.NETCore\.App 3\.1\./,
+      runtimeLabel: ".NET Core 3.1",
+    },
+    {
+      id: "non-ascii",
+      name: "Non-ASCII",
+      project: path.join(toolkitRoot, ".script/tests/NonAsciiValidationsTests/NonAsciiValidations.Tests.csproj"),
+      runtimeRegex: /Microsoft\.NETCore\.App 3\.1\./,
+      runtimeLabel: ".NET Core 3.1",
+    },
   ];
 
   for (const dotnetValidator of dotnetValidators) {
@@ -1293,7 +1575,13 @@ async function main(): Promise<void> {
       }
       if (!dotnetAvailable) continue;
 
-      const dotnetResults = await runDotNetValidator(dotnetValidator.project, dotnetValidator.name, contentRoot);
+      const dotnetResults = await runDotNetValidator(
+        dotnetValidator.project,
+        dotnetValidator.name,
+        contentRoot,
+        dotnetValidator.runtimeRegex,
+        dotnetValidator.runtimeLabel,
+      );
       for (const result of dotnetResults) {
         if (!result.passed && result.error && result.error.includes("GitHub App ID")) {
           result.passed = true;

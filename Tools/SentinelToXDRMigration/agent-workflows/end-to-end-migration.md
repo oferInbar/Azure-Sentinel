@@ -975,6 +975,38 @@ repeat unchanged, already-granted common choices or expand into unapproved
 work. The watchdog rule does not add a scheduler, backend, agent registry, or
 native CLI watchdog capability.
 
+#### Scheduled status reminders, single-owner execution, and approval forwarding
+
+To improve operator visibility during longer stages or larger batches, use the
+read-only status reminder helper (`workflow-status-reminder`). It reads actual
+`workflow-state.json` and run artifacts—never inventing progress, completion
+estimates, or approvals—and emits `currentActivity`, `expectedNextStep`, a
+grounded batch `durationExplanation` (for example, when source Analytic Rules
+`>= 15` or workbook queries `>= 50`), a stage `workflowDiagram`, and
+`watchdogCoordination` (`readOnlyObserver: true`, `createsExecutor: false`,
+`singleOwnerRespected: true`). When the deterministic `stateFingerprint` matches
+`status-reminder-cursor.json`, it sets `suppressedNoChange: true` so repetitive
+no-change notices are suppressed.
+
+Before candidate packaging/ARM validation preflight, present a concise
+lab-deployment preapproval prompt stating the exact inventory scope:
+`X Sentinel rules, Y workbooks, and Z custom detections`, with `lab-deployment`
+as the default validation route and `arm-ttk` available as an offline Authoring
+option.
+
+Maintain single-owner execution and safe approval forwarding with the CLI
+helpers:
+
+- `workflow-execution-owner --action claim|release`: records the single
+  accountable owner (`ownerId`, `operation`, `scope`, `claimedAtUtc`) in
+  `execution-ownership.json` and blocks any duplicate executor
+  (`duplicate_executor_blocked`) with a different `ownerId` for the same
+  `(runId, operation)`.
+- `workflow-forward-approval --action forward|verify`: binds `runId`,
+  `operation`, `approvedBy`, `forwardedToOwnerId`, `exactScope`, and
+  `approvalSha256` in `forwarded-approvals.json`, rejecting any scope
+  broadening, mismatched owner, or altered digest.
+
 ## Stage gates
 
 ### Discovery

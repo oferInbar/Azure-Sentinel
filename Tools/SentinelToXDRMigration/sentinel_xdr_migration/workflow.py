@@ -3308,98 +3308,18 @@ def _validate_historical_package_receipt(
 def _release_notes_refresh_proposal(
     solution: Path,
     *,
-    release_date: str,
+    release_date: str | None = None,
     change_history: str,
 ) -> tuple[Path, str, str]:
-    version = solution_data_version(solution)
-    if not version or not re.fullmatch(r"\d+\.\d+\.\d+", version):
-        raise ValueError("current solution package version must use X.Y.Z format")
-    try:
-        parsed_date = datetime.strptime(release_date, "%d-%m-%Y")
-    except ValueError as exc:
-        raise ValueError("release date must be a valid DD-MM-YYYY date") from exc
-    if parsed_date.strftime("%d-%m-%Y") != release_date:
-        raise ValueError("release date must use DD-MM-YYYY format")
-    if not change_history.strip() or "|" in change_history or "\n" in change_history or "\r" in change_history:
-        raise ValueError("release history must be one non-empty Markdown table cell")
-    path = solution / "ReleaseNotes.md"
-    if not path.is_file():
-        raise ValueError("solution ReleaseNotes.md is missing")
-    original = path.read_bytes()
-    try:
-        text = original.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("ReleaseNotes.md must be UTF-8") from exc
-    lines = text.splitlines(keepends=True)
+    from .release_notes import release_notes_refresh_proposal
 
-    def table_cells(line: str) -> list[str] | None:
-        stripped = line.strip()
-        if not stripped.startswith("|") or not stripped.endswith("|"):
-            return None
-        return [cell.strip() for cell in stripped[1:-1].split("|")]
-
-    expected_header = [
-        "**Version**",
-        "**Date Modified (DD-MM-YYYY)**",
-        "**Change History**",
-    ]
-    header_index = next(
-        (index for index, line in enumerate(lines) if table_cells(line) == expected_header),
-        None,
+    path, original_sha, expected_sha, _ = release_notes_refresh_proposal(
+        solution,
+        version=solution_data_version(solution),
+        release_date=release_date,
+        change_history=change_history,
     )
-    if header_index is None or header_index + 1 >= len(lines):
-        raise ValueError("ReleaseNotes.md does not have the required three-column table header")
-    separator_cells = table_cells(lines[header_index + 1])
-    if (
-        separator_cells is None
-        or len(separator_cells) != 3
-        or any(not re.fullmatch(r":?-{3,}:?", cell) for cell in separator_cells)
-    ):
-        raise ValueError("ReleaseNotes.md table separator is invalid")
-
-    versions: list[tuple[int, int, int]] = []
-    seen: set[str] = set()
-    for line in lines[header_index + 2:]:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        cells = table_cells(line)
-        if cells is None or len(cells) != 3:
-            raise ValueError("ReleaseNotes.md contains a row that is not exactly three columns")
-        if not cells[0]:
-            continue
-        if not re.fullmatch(r"\d+\.\d+\.\d+", cells[0]):
-            raise ValueError("ReleaseNotes.md contains an invalid semantic version")
-        if cells[0] in seen:
-            raise ValueError("ReleaseNotes.md contains a duplicate version")
-        seen.add(cells[0])
-        try:
-            date_value = datetime.strptime(cells[1], "%d-%m-%Y")
-        except ValueError as exc:
-            raise ValueError("ReleaseNotes.md contains an invalid DD-MM-YYYY date") from exc
-        if date_value.strftime("%d-%m-%Y") != cells[1] or not cells[2]:
-            raise ValueError("ReleaseNotes.md contains an invalid date or empty change history")
-        versions.append(tuple(int(part) for part in cells[0].split(".")))
-    if versions != sorted(versions, reverse=True):
-        raise ValueError("ReleaseNotes.md versions are not in descending order")
-    new_version = tuple(int(part) for part in version.split("."))
-    if version in seen or (versions and new_version <= versions[0]):
-        raise ValueError(
-            "same-release notes refresh requires the current package version to be absent "
-            "and newer than the existing release notes"
-        )
-
-    newline = "\r\n" if "\r\n" in text else "\n"
-    row = f"| {version} | {release_date} | {change_history.strip()} |{newline}"
-    updated_lines = lines[:header_index + 2] + [row] + lines[header_index + 2:]
-    updated = "".join(updated_lines)
-    if not text.endswith(("\n", "\r")) and updated.endswith(("\n", "\r")):
-        updated = updated.rstrip("\r\n")
-    return (
-        path,
-        hashlib.sha256(original).hexdigest(),
-        hashlib.sha256(updated.encode("utf-8")).hexdigest(),
-    )
+    return path, original_sha, expected_sha
 
 
 def _identity_from_file_hashes(files: dict[str, str]) -> str:
@@ -4237,13 +4157,16 @@ def verify_same_version_content_rebuild(
 def plan_release_notes_refresh(
     solution: str | Path,
     *,
-    release_date: str,
+    release_date: str | None = None,
     change_history: str,
     expected_package_input_sha256: str,
 ) -> dict[str, Any]:
     """Authorize only an exact ReleaseNotes row refresh without incrementing package version."""
+    from .release_notes import resolve_release_date
+
     if not re.fullmatch(r"[a-f0-9]{64}", expected_package_input_sha256 or ""):
         raise ValueError("expected package input identity must be a lowercase SHA-256")
+    resolved_release_date = resolve_release_date(release_date)
     root = Path(solution).expanduser().resolve()
     with _state_writer_lock(root) as path:
         loaded_path, state = _load(root)
@@ -4284,7 +4207,7 @@ def plan_release_notes_refresh(
         if current_version != successful.get("version"):
             raise ValueError("same-release notes refresh must retain the last packaged version")
         notes_path, original_notes_sha, expected_notes_sha = _release_notes_refresh_proposal(
-            root, release_date=release_date, change_history=change_history,
+            root, release_date=resolved_release_date, change_history=change_history,
         )
         relative_notes = notes_path.relative_to(root).as_posix()
         expected_files = dict(files)
@@ -4300,7 +4223,7 @@ def plan_release_notes_refresh(
             "releaseNotesPath": relative_notes,
             "releaseNotesOriginalSha256": original_notes_sha,
             "releaseNotesExpectedSha256": expected_notes_sha,
-            "releaseNotesDate": release_date,
+            "releaseNotesDate": resolved_release_date,
             "releaseNotesVersion": current_version,
             "releaseNotesChangeHistory": change_history.strip(),
             "packageInputFilesBefore": files,
@@ -4332,7 +4255,8 @@ def plan_release_notes_refresh(
             "packageInputSha256Before": base_identity,
             "packageInputSha256After": expected_identity,
             "releaseNotesPath": relative_notes,
-            "releaseNotesDate": release_date,
+            "releaseDate": resolved_release_date,
+            "releaseNotesDate": resolved_release_date,
             "releaseNotesChangeHistory": change_history.strip(),
             "next": "add the exact approved row to ReleaseNotes.md, then package-v3-1 --version-bump none",
             "workflowStatus": state["workflowStatus"],
@@ -5704,28 +5628,38 @@ def workflow_status(solution: str | Path) -> dict[str, Any]:
                     (state.get("stages") or {}).get("alertParity") or {}
                 ).get("status"),
             }
+    workbook_summary = workbook_workflow.summary(solution, state)
+    runtime_assessment = {
+        "runtimeStatus": (
+            "not-run"
+            if offline_authoring
+            else "passed"
+            if runtime_evidence.get("passed")
+            else "source-waived"
+            if runtime_evidence.get("sourceStatus") == "source-waived"
+            else "blocked"
+        ),
+        "sourceStatus": runtime_evidence.get("sourceStatus", "not-run"),
+        "fullyRuntimeQualified": bool(runtime_evidence.get("passed")),
+        "sourceWaiverOnlyBlocker": bool(
+            runtime_evidence.get("sourceWaiverOnlyBlocker")
+        ),
+        "sourceWhitelist": runtime_evidence.get("sourceWhitelist") or [],
+        "issues": runtime_evidence.get("issues") or [],
+    }
+    recommendation = _build_next_step_recommendation(
+        solution,
+        state,
+        next_stage=next_stage,
+        freshness=freshness,
+        runtime_assessment=runtime_assessment,
+        workbook_summary=workbook_summary,
+    )
     return {
         **state,
-        "workbookSummary": workbook_workflow.summary(solution, state),
+        "workbookSummary": workbook_summary,
         "packageFreshness": freshness,
-        "runtimeAssessment": {
-            "runtimeStatus": (
-                "not-run"
-                if offline_authoring
-                else "passed"
-                if runtime_evidence.get("passed")
-                else "source-waived"
-                if runtime_evidence.get("sourceStatus") == "source-waived"
-                else "blocked"
-            ),
-            "sourceStatus": runtime_evidence.get("sourceStatus", "not-run"),
-            "fullyRuntimeQualified": bool(runtime_evidence.get("passed")),
-            "sourceWaiverOnlyBlocker": bool(
-                runtime_evidence.get("sourceWaiverOnlyBlocker")
-            ),
-            "sourceWhitelist": runtime_evidence.get("sourceWhitelist") or [],
-            "issues": runtime_evidence.get("issues") or [],
-        },
+        "runtimeAssessment": runtime_assessment,
         "authoringSummary": authoring_summary,
         "partialSolution": partial_package_summary,
         "budgetSummary": (
@@ -5742,6 +5676,8 @@ def workflow_status(solution: str | Path) -> dict[str, Any]:
         "conversionScope": conversion_scope(solution),
         "statePath": str(existing_artifact_path(solution, STATE_FILE_NAME)),
         "next": next_stage,
+        "nextStepRecommendation": recommendation,
+        "nextBlockerReview": recommendation,
     }
 
 
@@ -5913,6 +5849,13 @@ def next_workflow_stage(solution: str | Path) -> dict[str, Any]:
             )
             if blocked_by:
                 break
+    recommendation = _build_next_step_recommendation(
+        solution,
+        state,
+        next_stage=name,
+        freshness=freshness,
+        workbook_summary=workbook_workflow.summary(solution, state),
+    )
     return {
         "runId": state.get("runId"),
         "conversionScope": conversion_scope(solution),
@@ -5923,6 +5866,8 @@ def next_workflow_stage(solution: str | Path) -> dict[str, Any]:
         "blockedBy": blocked_by,
         "packageFreshness": freshness,
         "releaseActionRequired": release_action_required,
+        "nextStepRecommendation": recommendation,
+        "nextBlockerReview": recommendation,
     }
 
 
@@ -6197,3 +6142,1808 @@ def _complete_workflow_stage_unlocked(
         "workflowStatus": state["workflowStatus"],
         "next": _next_stage_name(state),
     }
+
+
+def _categorize_detection_finding(reason: str) -> str:
+    low = reason.casefold()
+    if any(
+        token in low
+        for token in (
+            "nrt",
+            "frequency",
+            "period",
+            "lookback",
+            "window",
+            "schedule",
+            "timing",
+        )
+    ):
+        return "timing"
+    if any(
+        token in low
+        for token in (
+            "entity",
+            "host.",
+            "account.",
+            "ip.",
+            "mailbox",
+            "customdetails",
+            "custom-detail",
+            "asset",
+        )
+    ):
+        return "entityMappings"
+    if "truncat" in low or "description" in low:
+        return "truncatedDescriptions"
+    if any(
+        token in low
+        for token in (
+            "dependency",
+            "workload",
+            "connector",
+            "datatype",
+            "data type",
+            "unmapped",
+        )
+    ):
+        return "dependencyGaps"
+    return "otherConversionFindings"
+
+
+def _build_next_step_recommendation(
+    solution: str | Path,
+    state: dict[str, Any],
+    *,
+    next_stage: str | None = None,
+    freshness: dict[str, Any] | None = None,
+    runtime_assessment: dict[str, Any] | None = None,
+    workbook_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    root = Path(solution).expanduser().resolve()
+    blockers: list[dict[str, str]] = []
+    seen_labels: set[str] = set()
+
+    def add_blocker(
+        *,
+        blocker_id: str,
+        label: str,
+        category: str,
+        stage: str,
+        reason: str,
+    ) -> None:
+        normalized_label = label.strip() or blocker_id
+        if normalized_label in seen_labels:
+            return
+        seen_labels.add(normalized_label)
+        blockers.append(
+            {
+                "id": blocker_id,
+                "label": normalized_label,
+                "kind": category,
+                "category": category,
+                "stage": stage,
+                "reason": reason,
+            }
+        )
+
+    authoring = state.get("authoring") or {}
+    if isinstance(authoring, dict) and authoring.get("status") in {
+        "stopped",
+        "conflicted",
+        "budget-exhausted",
+    }:
+        status_label = str(authoring.get("status"))
+        add_blocker(
+            blocker_id=f"authoring-{status_label}",
+            label=f"authoring-{status_label}",
+            category="workflow",
+            stage="conversion",
+            reason=str(
+                authoring.get("stopReason")
+                or f"Authoring workflow is {status_label}"
+            ),
+        )
+
+    stages = state.get("stages") or {}
+    for stage_name in STAGES:
+        stage_info = stages.get(stage_name) or {}
+        if stage_info.get("status") in {"failed", "blocked"}:
+            add_blocker(
+                blocker_id=f"stage-{stage_name}",
+                label=stage_name,
+                category="stage",
+                stage=stage_name,
+                reason=str(
+                    stage_info.get("message")
+                    or f"Stage {stage_name} is {stage_info.get('status')}"
+                ),
+            )
+
+    detections_dir = root / "XDR Detections"
+    if detections_dir.is_dir():
+        try:
+            detection_files = xdr_detection_files(detections_dir)
+        except (OSError, ValueError):
+            detection_files = sorted(
+                p
+                for p in detections_dir.rglob("*")
+                if p.is_file() and p.suffix.lower() in {".yaml", ".yml"}
+            )
+        for target_path in detection_files:
+            try:
+                doc = yaml.safe_load(target_path.read_text(encoding="utf-8-sig")) or {}
+            except (OSError, yaml.YAMLError):
+                continue
+            if not isinstance(doc, dict):
+                continue
+            provenance = doc.get("contentProvenance") or {}
+            if not isinstance(provenance, dict):
+                continue
+            source_meta = provenance.get("source") or {}
+            conversion = provenance.get("conversion") or {}
+            rule_id = str(source_meta.get("id") or target_path.stem)
+            alert_title = str(
+                (
+                    (((doc.get("properties") or {}).get("detectionAction") or {}).get(
+                        "alertTemplate"
+                    )
+                    or {})
+                ).get("title")
+                or target_path.stem
+            )
+            errors = list(conversion.get("errors") or [])
+            review_reasons = list(conversion.get("reviewReasons") or [])
+            dep_review = bool(provenance.get("dependencyReviewRequired"))
+            if errors:
+                add_blocker(
+                    blocker_id=rule_id,
+                    label=alert_title,
+                    category="technicalFailure",
+                    stage="conversion",
+                    reason=str(errors[0]),
+                )
+            elif review_reasons or conversion.get("reviewRequired"):
+                add_blocker(
+                    blocker_id=rule_id,
+                    label=alert_title,
+                    category="detectionReview",
+                    stage="conversion",
+                    reason=str(
+                        review_reasons[0]
+                        if review_reasons
+                        else "Detection requires author review"
+                    ),
+                )
+            elif dep_review:
+                add_blocker(
+                    blocker_id=f"{rule_id}:dependencies",
+                    label=f"{alert_title} dependencies",
+                    category="dependencyReview",
+                    stage="conversion",
+                    reason="Detection workload/connector dependencies require review",
+                )
+
+    if isinstance(workbook_summary, dict):
+        for issue in workbook_summary.get("issues") or []:
+            add_blocker(
+                blocker_id="workbook-inventory",
+                label="workbook-inventory",
+                category="workbookReview",
+                stage="conversion",
+                reason=str(issue),
+            )
+        for source in workbook_summary.get("sources") or []:
+            if not isinstance(source, dict) or not source.get("selected"):
+                continue
+            wb_path = str(source.get("path") or "workbook")
+            wb_status = str(source.get("status") or "not-converted")
+            wb_issues = list(source.get("issues") or [])
+            if wb_status != "converted" or wb_issues:
+                add_blocker(
+                    blocker_id=wb_path,
+                    label=Path(wb_path).stem or wb_path,
+                    category="workbookReview",
+                    stage="conversion",
+                    reason=str(
+                        wb_issues[0]
+                        if wb_issues
+                        else f"Workbook status is {wb_status}"
+                    ),
+                )
+
+    if (
+        isinstance(runtime_assessment, dict)
+        and runtime_assessment.get("runtimeStatus") == "blocked"
+        and (stages.get("validation") or {}).get("status") != "passed"
+    ):
+        for index, issue in enumerate((runtime_assessment.get("issues") or [])[:2], start=1):
+            add_blocker(
+                blocker_id=f"runtime-validation-{index}",
+                label="runtime-validation" if index == 1 else f"runtime-validation-{index}",
+                category="runtimeValidation",
+                stage="validation",
+                reason=str(issue),
+            )
+
+    if isinstance(freshness, dict) and freshness.get("status") not in {
+        "current",
+        "notPackaged",
+    }:
+        add_blocker(
+            blocker_id="package-freshness",
+            label=f"package-freshness ({freshness.get('status')})",
+            category="packaging",
+            stage="packaging",
+            reason=str(
+                freshness.get("reason")
+                or f"Package freshness status is {freshness.get('status')}"
+            ),
+        )
+
+    top_blockers = blockers[:3]
+    labels = [item["label"] for item in top_blockers]
+    if len(labels) == 1:
+        summary_text = f"Next migration step: review blocker {labels[0]}."
+    elif len(labels) >= 2:
+        summary_text = f"Next migration step: review blockers {labels[0]} and {labels[1]}."
+    elif next_stage:
+        summary_text = f"Next migration step: run {next_stage} stage."
+    else:
+        summary_text = "Next migration step: workflow complete; no remaining blockers."
+
+    required_stages = [
+        name
+        for name in STAGES
+        if (stages.get(name) or {}).get("status") != "notRequired"
+    ]
+    passed_stages = [
+        name
+        for name in required_stages
+        if (stages.get(name) or {}).get("status") == "passed"
+    ]
+    running_stages = [
+        name
+        for name in required_stages
+        if (stages.get(name) or {}).get("status") == "running"
+    ]
+    current_phase = (
+        running_stages[0]
+        if running_stages
+        else (next_stage or ("completed" if state.get("workflowStatus") == "completed" else "blocked"))
+    )
+    recommended_command = (
+        "review-packet"
+        if any(
+            item["category"]
+            in {"detectionReview", "dependencyReview", "workbookReview", "technicalFailure"}
+            for item in top_blockers
+        )
+        else f"workflow-start-stage --stage {next_stage}"
+        if next_stage
+        else "workflow-status"
+    )
+    return {
+        "nextStage": next_stage,
+        "status": (
+            "blocked"
+            if blockers
+            else "ready"
+            if next_stage
+            else "complete"
+        ),
+        "blockerCount": len(blockers),
+        "topBlockers": top_blockers,
+        "blockerLabels": labels,
+        "summary": summary_text,
+        "message": summary_text,
+        "recommendedCommand": recommended_command,
+        "progress": {
+            "completedStages": len(passed_stages),
+            "totalRequiredStages": len(required_stages),
+            "passedStages": passed_stages,
+            "currentPhase": current_phase,
+            "phaseSummary": (
+                f"{len(passed_stages)}/{len(required_stages)} required stages passed; "
+                f"current phase: {current_phase}"
+            ),
+        },
+    }
+
+
+def build_consolidated_review_packet(
+    solution: str | Path,
+    *,
+    results_path: str | Path | None = None,
+    detection_results_path: str | Path | None = None,
+    workbook_results_path: str | Path | None = None,
+    workspace_id: str | None = None,
+    selected_rules: list[str] | None = None,
+    rule_selectors: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build a deterministic, hash-bound one-shot review packet for detections and workbooks."""
+    from .converter import load_config, validate_document
+    from .dependencies import dependency_plan, plan_solution_dependencies
+    from .workbook_dependencies import plan_workbook_dependencies
+    from .workbooks import inventory_workbooks
+
+    if results_path is None and detection_results_path is not None:
+        results_path = detection_results_path
+    if selected_rules is None and rule_selectors is not None:
+        selected_rules = rule_selectors
+
+    root = Path(solution).expanduser().resolve()
+    state_file = existing_artifact_path(root, STATE_FILE_NAME)
+    active_run_id: str | None = None
+    if state_file.is_file():
+        try:
+            _, loaded_state = _load(root)
+            active_run_id = loaded_state.get("runId")
+        except (OSError, ValueError):
+            active_run_id = None
+
+    config = load_config(root / "XDR Detections")
+    rule_overrides = config.get("ruleOverrides") if isinstance(config.get("ruleOverrides"), dict) else {}
+    table_mappings = config.get("tableMappings") if isinstance(config.get("tableMappings"), dict) else {}
+
+    category_names = (
+        "timing",
+        "entityMappings",
+        "truncatedDescriptions",
+        "dependencyGaps",
+        "workbookQueryGaps",
+        "technicalFailures",
+        "otherConversionFindings",
+    )
+    categories: dict[str, list[dict[str, Any]]] = {name: [] for name in category_names}
+    items: list[dict[str, Any]] = []
+    preserved_decisions: list[dict[str, Any]] = []
+    detection_records: list[dict[str, Any]] = []
+    workbook_records: list[dict[str, Any]] = []
+    inventory_entries: list[dict[str, str]] = []
+
+    selected_filter = {
+        str(value).strip()
+        for value in (selected_rules or [])
+        if str(value).strip()
+    }
+
+    def add_item(
+        *,
+        domain: str,
+        category: str,
+        severity: str,
+        target_id: str,
+        target_name: str,
+        source_path: str,
+        output_path: str,
+        query_pointer: str,
+        hashes: dict[str, str],
+        finding: str,
+        current_decision: str = "pending",
+        prior_decision: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        resolvable_by_batch = category != "technicalFailures"
+        decision_options = (
+            ["change", "defer"]
+            if category == "technicalFailures"
+            else ["accept", "change", "defer"]
+        )
+        canonical_id_payload = json.dumps(
+            {
+                "domain": domain,
+                "category": category,
+                "targetId": target_id,
+                "outputPath": output_path,
+                "queryPointer": query_pointer,
+                "finding": finding,
+                "hashes": hashes,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        item_id = hashlib.sha256(canonical_id_payload).hexdigest()
+        record: dict[str, Any] = {
+            "itemId": item_id,
+            "domain": domain,
+            "category": category,
+            "severity": severity,
+            "targetId": target_id,
+            "targetName": target_name,
+            "sourcePath": source_path,
+            "outputPath": output_path,
+            "queryPointer": query_pointer,
+            "hashes": hashes,
+            "finding": finding,
+            "currentDecision": current_decision,
+            "decisionState": (
+                "decided"
+                if current_decision in {"accept", "change"}
+                else current_decision
+            ),
+            "decisionOptions": decision_options,
+            "resolvableByBatchAccept": resolvable_by_batch,
+        }
+        if prior_decision is not None:
+            record["priorDecision"] = prior_decision
+        categories[category].append(record)
+        items.append(record)
+        return record
+
+    live_dep_by_detection: dict[str, dict[str, Any]] = {}
+    if results_path is not None:
+        dep_plan_result = plan_solution_dependencies(
+            root, results_path=results_path, workspace_id=workspace_id
+        )
+        for row in dep_plan_result.get("results") or []:
+            if isinstance(row, dict) and isinstance(row.get("detection"), str):
+                live_dep_by_detection[row["detection"]] = row
+
+    detections_dir = root / "XDR Detections"
+    detection_files: list[Path] = []
+    if detections_dir.is_dir():
+        try:
+            detection_files = xdr_detection_files(detections_dir)
+        except (OSError, ValueError):
+            detection_files = sorted(
+                p
+                for p in detections_dir.rglob("*")
+                if p.is_file() and p.suffix.lower() in {".yaml", ".yml"}
+            )
+
+    converted_source_paths: set[str] = set()
+    for target_path in detection_files:
+        output_rel = target_path.relative_to(root).as_posix()
+        raw_bytes = target_path.read_bytes()
+        detection_sha = hashlib.sha256(raw_bytes).hexdigest()
+        doc = yaml.safe_load(raw_bytes.decode("utf-8-sig")) or {}
+        if not isinstance(doc, dict):
+            continue
+        provenance = doc.get("contentProvenance") or {}
+        source_meta = provenance.get("source") or {}
+        conversion = provenance.get("conversion") or {}
+        rule_id = str(source_meta.get("id") or target_path.stem)
+        source_rel = str(source_meta.get("path") or "")
+        if source_rel:
+            converted_source_paths.add(source_rel)
+        if selected_filter and not (
+            {rule_id, output_rel, source_rel, target_path.stem, target_path.name}
+            & selected_filter
+        ):
+            continue
+
+        inventory_entries.append(
+            {
+                "kind": "detection",
+                "id": rule_id,
+                "path": output_rel,
+                "sha256": detection_sha,
+            }
+        )
+        alert_template = (
+            ((doc.get("properties") or {}).get("detectionAction") or {}).get(
+                "alertTemplate"
+            )
+            or {}
+        )
+        rule_name = str(
+            alert_template.get("title")
+            or (doc.get("properties") or {}).get("displayName")
+            or target_path.stem
+        )
+        query_text = str(
+            ((doc.get("properties") or {}).get("queryCondition") or {}).get("queryText")
+            or ""
+        )
+        review_scope = conversion.get("reviewScope") or {}
+        source_doc_sha = str(
+            review_scope.get("sourceDocumentSha256")
+            or source_meta.get("querySha256")
+            or ""
+        )
+        target_query_sha = str(
+            review_scope.get("targetQuerySha256")
+            or hashlib.sha256(query_text.encode("utf-8")).hexdigest()
+        )
+        item_hashes = {
+            "sourceDocumentSha256": source_doc_sha,
+            "targetQuerySha256": target_query_sha,
+            "detectionSha256": detection_sha,
+        }
+
+        rule_override = (
+            rule_overrides.get(rule_id)
+            if isinstance(rule_overrides.get(rule_id), dict)
+            else {}
+        )
+        decision_lookup: dict[str, dict[str, Any]] = {}
+        for source_list in (
+            rule_override.get("reviewDecisions") or [],
+            conversion.get("reviewDecisions") or [],
+        ):
+            if not isinstance(source_list, list):
+                continue
+            for dec in source_list:
+                if not isinstance(dec, dict) or not isinstance(dec.get("reason"), str):
+                    continue
+                reason_key = dec["reason"]
+                hashes_match = (
+                    dec.get("sourceDocumentSha256") == source_doc_sha
+                    and dec.get("targetQuerySha256") == target_query_sha
+                )
+                normalized_choice = (
+                    "accept"
+                    if dec.get("decision") in {"accepted", "accept"}
+                    else "change"
+                    if dec.get("decision") in {"rejected", "change"}
+                    else "defer"
+                    if dec.get("decision") in {"deferred", "defer"}
+                    else str(dec.get("decision") or "pending")
+                )
+                status_value = normalized_choice if hashes_match else "stale"
+                record_dec = {
+                    "domain": "detection",
+                    "targetId": rule_id,
+                    "reason": reason_key,
+                    "decision": normalized_choice,
+                    "status": "current" if hashes_match else "stale",
+                    "sourceDocumentSha256": str(dec.get("sourceDocumentSha256") or ""),
+                    "targetQuerySha256": str(dec.get("targetQuerySha256") or ""),
+                }
+                decision_lookup[reason_key] = {
+                    "currentDecision": status_value,
+                    "priorDecision": record_dec,
+                }
+                if record_dec not in preserved_decisions:
+                    preserved_decisions.append(record_dec)
+
+        for accepted_reason in conversion.get("acceptedReviewReasons") or []:
+            if isinstance(accepted_reason, str) and accepted_reason not in decision_lookup:
+                rec = {
+                    "domain": "detection",
+                    "targetId": rule_id,
+                    "reason": accepted_reason,
+                    "decision": "accept",
+                    "status": "current",
+                    "sourceDocumentSha256": source_doc_sha,
+                    "targetQuerySha256": target_query_sha,
+                }
+                decision_lookup[accepted_reason] = {
+                    "currentDecision": "accept",
+                    "priorDecision": rec,
+                }
+                if rec not in preserved_decisions:
+                    preserved_decisions.append(rec)
+
+        has_entity_override = isinstance(rule_override.get("entityMappings"), dict)
+        if has_entity_override:
+            ent_rec = {
+                "domain": "detection",
+                "targetId": rule_id,
+                "reason": "ruleOverrides.entityMappings",
+                "decision": "change",
+                "status": "current",
+                "sourceDocumentSha256": source_doc_sha,
+                "targetQuerySha256": target_query_sha,
+            }
+            if ent_rec not in preserved_decisions:
+                preserved_decisions.append(ent_rec)
+
+        rule_items: list[dict[str, Any]] = []
+        seen_rule_findings: set[tuple[str, str]] = set()
+
+        conv_errors = list(conversion.get("errors") or [])
+        try:
+            structural_errors = validate_document(doc)
+        except (OSError, ValueError):
+            structural_errors = []
+        for err in conv_errors + [e for e in structural_errors if e not in conv_errors]:
+            err_text = str(err)
+            if ("technicalFailures", err_text) in seen_rule_findings:
+                continue
+            seen_rule_findings.add(("technicalFailures", err_text))
+            rule_items.append(
+                add_item(
+                    domain="detection",
+                    category="technicalFailures",
+                    severity="error",
+                    target_id=rule_id,
+                    target_name=rule_name,
+                    source_path=source_rel,
+                    output_path=output_rel,
+                    query_pointer="properties.queryCondition.queryText",
+                    hashes=item_hashes,
+                    finding=err_text,
+                    current_decision="pending",
+                )
+            )
+
+        source_doc: dict[str, Any] = {}
+        if source_rel:
+            try:
+                source_file = content_path(root, source_rel)
+                if source_file.is_file():
+                    loaded_src = yaml.safe_load(source_file.read_text(encoding="utf-8-sig"))
+                    if isinstance(loaded_src, dict):
+                        source_doc = loaded_src
+            except (OSError, ValueError, yaml.YAMLError):
+                source_doc = {}
+
+        source_desc = str(source_doc.get("description") or "").strip()
+        override_desc = (
+            rule_override.get("description").strip()
+            if isinstance(rule_override.get("description"), str)
+            and rule_override.get("description").strip()
+            else None
+        )
+        if len(source_desc) > 600:
+            trunc_msg = (
+                f"Source description ({len(source_desc)} chars) was truncated to "
+                "600 chars in alertTemplate.description."
+            )
+            dec_info = decision_lookup.get(trunc_msg, {})
+            if not dec_info and override_desc:
+                desc_rec = {
+                    "domain": "detection",
+                    "targetId": rule_id,
+                    "reason": "ruleOverrides.description",
+                    "decision": "change",
+                    "status": "current",
+                    "description": override_desc,
+                    "sourceDocumentSha256": source_doc_sha,
+                    "targetQuerySha256": target_query_sha,
+                }
+                if desc_rec not in preserved_decisions:
+                    preserved_decisions.append(desc_rec)
+                dec_info = {
+                    "currentDecision": "change",
+                    "priorDecision": desc_rec,
+                }
+            seen_rule_findings.add(("truncatedDescriptions", trunc_msg))
+            rule_items.append(
+                add_item(
+                    domain="detection",
+                    category="truncatedDescriptions",
+                    severity="review",
+                    target_id=rule_id,
+                    target_name=rule_name,
+                    source_path=source_rel,
+                    output_path=output_rel,
+                    query_pointer="properties.detectionAction.alertTemplate.description",
+                    hashes=item_hashes,
+                    finding=trunc_msg,
+                    current_decision=dec_info.get("currentDecision", "pending"),
+                    prior_decision=dec_info.get("priorDecision"),
+                )
+            )
+        source_title = str(source_doc.get("name") or "").strip()
+        if len(source_title) > 120:
+            trunc_title_msg = (
+                f"Source name ({len(source_title)} chars) was truncated to "
+                "120 chars in alertTemplate.title."
+            )
+            dec_info = decision_lookup.get(trunc_title_msg, {})
+            seen_rule_findings.add(("truncatedDescriptions", trunc_title_msg))
+            rule_items.append(
+                add_item(
+                    domain="detection",
+                    category="truncatedDescriptions",
+                    severity="review",
+                    target_id=rule_id,
+                    target_name=rule_name,
+                    source_path=source_rel,
+                    output_path=output_rel,
+                    query_pointer="properties.detectionAction.alertTemplate.title",
+                    hashes=item_hashes,
+                    finding=trunc_title_msg,
+                    current_decision=dec_info.get("currentDecision", "pending"),
+                    prior_decision=dec_info.get("priorDecision"),
+                )
+            )
+
+        all_reasons = list(conversion.get("reviewReasons") or [])
+        for accepted_reason in conversion.get("acceptedReviewReasons") or []:
+            if isinstance(accepted_reason, str) and accepted_reason not in all_reasons:
+                all_reasons.append(accepted_reason)
+        for warning_msg in conversion.get("warnings") or []:
+            if isinstance(warning_msg, str) and warning_msg not in all_reasons:
+                cat = _categorize_detection_finding(warning_msg)
+                if cat in {"timing", "entityMappings", "truncatedDescriptions", "dependencyGaps"}:
+                    all_reasons.append(warning_msg)
+
+        for reason_msg in all_reasons:
+            reason_text = str(reason_msg)
+            cat = _categorize_detection_finding(reason_text)
+            if (cat, reason_text) in seen_rule_findings:
+                continue
+            seen_rule_findings.add((cat, reason_text))
+            dec_info = decision_lookup.get(reason_text, {})
+            default_dec = (
+                "change"
+                if cat == "entityMappings" and has_entity_override and not dec_info
+                else dec_info.get("currentDecision", "pending")
+            )
+            pointer = (
+                "properties.detectionAction.alertTemplate.entityMappings"
+                if cat == "entityMappings"
+                else "properties.queryCondition"
+                if cat == "timing"
+                else "properties.queryCondition.queryText"
+            )
+            rule_items.append(
+                add_item(
+                    domain="detection",
+                    category=cat,
+                    severity="review",
+                    target_id=rule_id,
+                    target_name=rule_name,
+                    source_path=source_rel,
+                    output_path=output_rel,
+                    query_pointer=pointer,
+                    hashes=item_hashes,
+                    finding=reason_text,
+                    current_decision=default_dec,
+                    prior_decision=dec_info.get("priorDecision"),
+                )
+            )
+
+        rel_from_xdr = (
+            target_path.relative_to(detections_dir).as_posix()
+            if target_path.is_relative_to(detections_dir)
+            else target_path.name
+        )
+        dep_info = live_dep_by_detection.get(rel_from_xdr)
+        if dep_info is None:
+            source_query_text = str(source_doc.get("query") or query_text)
+            dep_info = dependency_plan(
+                source_query_text,
+                target_query=query_text,
+                connectors=source_doc.get("requiredDataConnectors")
+                or doc.get("requiredDataConnectors"),
+                table_mappings=table_mappings,
+            )
+        dep_reasons = list(dep_info.get("reviewReasons") or [])
+        for unmapped_dt in dep_info.get("unmappedDataTypes") or []:
+            msg = f"Unmapped data type requires workload mapping: {unmapped_dt}"
+            if msg not in dep_reasons:
+                dep_reasons.append(msg)
+        if provenance.get("dependencyReviewRequired") and not dep_reasons:
+            dep_reasons.append("Detection workload/connector dependencies require author review.")
+        for dep_reason in dep_reasons:
+            dep_text = str(dep_reason)
+            if ("dependencyGaps", dep_text) in seen_rule_findings:
+                continue
+            seen_rule_findings.add(("dependencyGaps", dep_text))
+            dec_info = decision_lookup.get(dep_text, {})
+            rule_items.append(
+                add_item(
+                    domain="detection",
+                    category="dependencyGaps",
+                    severity="review",
+                    target_id=rule_id,
+                    target_name=rule_name,
+                    source_path=source_rel,
+                    output_path=output_rel,
+                    query_pointer="contentProvenance.requiredWorkloads",
+                    hashes=item_hashes,
+                    finding=dep_text,
+                    current_decision=dec_info.get("currentDecision", "pending"),
+                    prior_decision=dec_info.get("priorDecision"),
+                )
+            )
+
+        detection_records.append(
+            {
+                "ruleId": rule_id,
+                "ruleName": rule_name,
+                "sourcePath": source_rel,
+                "outputFile": output_rel,
+                "hashes": item_hashes,
+                "status": str(conversion.get("status") or "converted"),
+                "reviewRequired": bool(conversion.get("reviewRequired")),
+                "dependencyReviewRequired": bool(
+                    provenance.get("dependencyReviewRequired")
+                ),
+                "findingCount": len(rule_items),
+                "technicalFailureCount": sum(
+                    1 for item in rule_items if item["category"] == "technicalFailures"
+                ),
+                "itemIds": [item["itemId"] for item in rule_items],
+            }
+        )
+
+    prior_wb_query_decisions: dict[tuple[str, str], dict[str, Any]] = {}
+    prior_wb_dep_decisions: dict[str, dict[str, Any]] = {}
+    try:
+        reports_dir = report_directory(root)
+        receipt_candidates = []
+        if reports_dir.is_dir():
+            direct_receipt = reports_dir / "workbook-review-receipt.json"
+            if direct_receipt.is_file():
+                receipt_candidates.append(direct_receipt)
+            for child in sorted(reports_dir.iterdir()):
+                if child.is_dir():
+                    nested = child / "workbook-review-receipt.json"
+                    if nested.is_file():
+                        receipt_candidates.append(nested)
+        for receipt_path in receipt_candidates:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            decisions_obj = (receipt.get("decisions") or {}) if isinstance(receipt, dict) else {}
+            for q_dec in decisions_obj.get("queries") or []:
+                if isinstance(q_dec, dict) and isinstance(q_dec.get("workbook"), str) and isinstance(q_dec.get("path"), str):
+                    prior_wb_query_decisions[(q_dec["workbook"], q_dec["path"])] = q_dec
+            for w_dec in decisions_obj.get("workbooks") or []:
+                if isinstance(w_dec, dict) and isinstance(w_dec.get("path"), str):
+                    prior_wb_dep_decisions[w_dec["path"]] = w_dec
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+
+    wb_plan: dict[str, Any] | None = None
+    try:
+        wb_inventory = inventory_workbooks(root)
+    except (OSError, ValueError):
+        wb_inventory = []
+    if wb_inventory or workbook_results_path is not None:
+        try:
+            wb_plan = plan_workbook_dependencies(
+                root,
+                results_path=workbook_results_path,
+                workspace_id=workspace_id,
+            )
+        except (OSError, ValueError):
+            wb_plan = None
+
+    if wb_plan is not None:
+        wb_by_path: dict[str, list[dict[str, Any]]] = {}
+        for row in wb_plan.get("inventory") or []:
+            if isinstance(row, dict) and isinstance(row.get("path"), str):
+                inventory_entries.append(
+                    {
+                        "kind": "workbook",
+                        "id": row["path"],
+                        "path": row["path"],
+                        "sha256": str(row.get("sha256") or ""),
+                    }
+                )
+                wb_by_path[row["path"]] = []
+
+        for query_row in wb_plan.get("queries") or []:
+            if not isinstance(query_row, dict):
+                continue
+            wb_path = str(query_row.get("workbook") or "")
+            q_path = str(query_row.get("path") or "")
+            wb_sha = str(query_row.get("workbookSha256") or "")
+            q_sha = str(query_row.get("querySha256") or "")
+            wb_hashes = {
+                "workbookSha256": wb_sha,
+                "querySha256": q_sha,
+            }
+            prior_q = prior_wb_query_decisions.get((wb_path, q_path))
+            prior_rec: dict[str, Any] | None = None
+            resolved_dec = "pending"
+            if prior_q is not None:
+                hash_matches = prior_q.get("querySha256") == q_sha
+                raw_choice = str(prior_q.get("decision") or "pending")
+                resolved_dec = raw_choice if hash_matches else "stale"
+                prior_rec = {
+                    "domain": "workbook",
+                    "targetId": wb_path,
+                    "queryPointer": q_path,
+                    "decision": raw_choice,
+                    "status": "current" if hash_matches else "stale",
+                    "querySha256": str(prior_q.get("querySha256") or ""),
+                }
+                if prior_rec not in preserved_decisions:
+                    preserved_decisions.append(prior_rec)
+
+            for blocker in query_row.get("technicalBlockers") or []:
+                item = add_item(
+                    domain="workbook",
+                    category="technicalFailures",
+                    severity="error",
+                    target_id=wb_path,
+                    target_name=Path(wb_path).stem or wb_path,
+                    source_path=wb_path,
+                    output_path=wb_path,
+                    query_pointer=q_path,
+                    hashes=wb_hashes,
+                    finding=str(blocker),
+                    current_decision="pending",
+                )
+                wb_by_path.setdefault(wb_path, []).append(item)
+
+            gap_messages = list(query_row.get("gapExplanations") or []) + list(
+                query_row.get("externalSourceWarnings") or []
+            )
+            if (query_row.get("proposal") or {}).get("reviewRequired") and not gap_messages:
+                gap_messages.append("Workbook query dependencies require author review.")
+            for gap in gap_messages:
+                item = add_item(
+                    domain="workbook",
+                    category="workbookQueryGaps",
+                    severity="review",
+                    target_id=wb_path,
+                    target_name=Path(wb_path).stem or wb_path,
+                    source_path=wb_path,
+                    output_path=wb_path,
+                    query_pointer=q_path,
+                    hashes=wb_hashes,
+                    finding=str(gap),
+                    current_decision=resolved_dec,
+                    prior_decision=prior_rec,
+                )
+                wb_by_path.setdefault(wb_path, []).append(item)
+
+        for row in wb_plan.get("inventory") or []:
+            if not isinstance(row, dict) or not isinstance(row.get("path"), str):
+                continue
+            wb_path = row["path"]
+            wb_items = wb_by_path.get(wb_path, [])
+            prior_w = prior_wb_dep_decisions.get(wb_path)
+            if prior_w is not None:
+                w_rec = {
+                    "domain": "workbook",
+                    "targetId": wb_path,
+                    "reason": "workbookDependencies",
+                    "decision": str(prior_w.get("decision") or "pending"),
+                    "status": "current",
+                    "workbookSha256": str(row.get("sha256") or ""),
+                }
+                if w_rec not in preserved_decisions:
+                    preserved_decisions.append(w_rec)
+            workbook_records.append(
+                {
+                    "workbook": wb_path,
+                    "workbookSha256": str(row.get("sha256") or ""),
+                    "findingCount": len(wb_items),
+                    "technicalFailureCount": sum(
+                        1 for i in wb_items if i["category"] == "technicalFailures"
+                    ),
+                    "itemIds": [i["itemId"] for i in wb_items],
+                }
+            )
+
+    grouped_map: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for item in items:
+        key = (item["domain"], item["category"], item["finding"])
+        grouped_map.setdefault(key, []).append(item)
+
+    grouped_findings: list[dict[str, Any]] = []
+    for (domain, category, finding), members in sorted(
+        grouped_map.items(), key=lambda entry: entry[0]
+    ):
+        group_id = hashlib.sha256(
+            f"{domain}:{category}:{finding}".encode("utf-8")
+        ).hexdigest()
+        resolvable = category != "technicalFailures"
+        grouped_findings.append(
+            {
+                "groupId": group_id,
+                "domain": domain,
+                "category": category,
+                "severity": "error" if category == "technicalFailures" else "review",
+                "finding": finding,
+                "count": len(members),
+                "allowedDecisions": (
+                    ["change", "defer"]
+                    if category == "technicalFailures"
+                    else ["accept", "change", "defer"]
+                ),
+                "perItemExceptionsSupported": True,
+                "resolvableByBatchAccept": resolvable,
+                "affectedItems": [
+                    {
+                        "itemId": m["itemId"],
+                        "targetId": m["targetId"],
+                        "targetName": m["targetName"],
+                        "sourcePath": m["sourcePath"],
+                        "outputPath": m["outputPath"],
+                        "queryPointer": m["queryPointer"],
+                        "hashes": m["hashes"],
+                        "currentDecision": m["currentDecision"],
+                    }
+                    for m in members
+                ],
+            }
+        )
+
+    inventory_sha = hashlib.sha256(
+        json.dumps(
+            sorted(inventory_entries, key=lambda x: (x["kind"], x["path"], x["id"])),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    technical_failures = list(categories["technicalFailures"])
+    deferred_items = [item for item in items if item["currentDecision"] == "defer"]
+    pending_items = [
+        item
+        for item in items
+        if item["currentDecision"] in {"pending", "stale", "defer"}
+        or item["category"] == "technicalFailures"
+    ]
+
+    top_blocker_labels: list[str] = []
+    for item in technical_failures + pending_items:
+        label = f"{item['targetName']} ({item['category']})"
+        if label not in top_blocker_labels:
+            top_blocker_labels.append(label)
+        if len(top_blocker_labels) >= 3:
+            break
+    if len(top_blocker_labels) == 1:
+        rec_text = f"Next migration step: review blocker {top_blocker_labels[0]}."
+    elif len(top_blocker_labels) >= 2:
+        rec_text = (
+            f"Next migration step: review blockers {top_blocker_labels[0]} "
+            f"and {top_blocker_labels[1]}."
+        )
+    else:
+        rec_text = "Next migration step: all review items resolved; ready for validation."
+
+    summary_counts = {
+        "totalItems": len(items),
+        "pendingReviewCount": len(pending_items),
+        "preservedDecisionCount": len(preserved_decisions),
+        "technicalFailureCount": len(technical_failures),
+        "deferredItemCount": len(deferred_items),
+        "groupCount": len(grouped_findings),
+        "timingCount": len(categories["timing"]),
+        "entityMappingCount": len(categories["entityMappings"]),
+        "truncatedDescriptionCount": len(categories["truncatedDescriptions"]),
+        "dependencyGapCount": len(categories["dependencyGaps"]),
+        "workbookQueryGapCount": len(categories["workbookQueryGaps"]),
+        "otherConversionFindingCount": len(categories["otherConversionFindings"]),
+        "readyForValidation": len(pending_items) == 0 and len(technical_failures) == 0,
+    }
+
+    packet: dict[str, Any] = {
+        "schemaVersion": "1.0.0",
+        "kind": "consolidated-review-packet",
+        "solution": str(root),
+        "solutionName": root.name,
+        "runId": active_run_id,
+        "conversionScope": conversion_scope(root),
+        "inventorySha256": inventory_sha,
+        "allowedDecisions": ["accept", "change", "defer"],
+        "perItemExceptionsSupported": True,
+        "authorityLimits": {
+            "establishesRuntimeCorrectness": False,
+            "establishesAlertParity": False,
+            "authorizesPackaging": False,
+            "authorizesEnvironmentWrites": False,
+        },
+        "summary": summary_counts,
+        "nextStepRecommendation": {
+            "status": "blocked" if pending_items or technical_failures else "ready",
+            "blockerCount": len(pending_items),
+            "blockerLabels": top_blocker_labels,
+            "summary": rec_text,
+            "message": rec_text,
+        },
+        "categories": categories,
+        "items": items,
+        "groupedFindings": grouped_findings,
+        "groups": grouped_findings,
+        "detections": detection_records,
+        "workbooks": workbook_records,
+        "preservedDecisions": preserved_decisions,
+        "technicalFailures": technical_failures,
+        "deferredItems": deferred_items,
+    }
+    packet_sha = hashlib.sha256(
+        json.dumps(packet, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    return {**packet, "packetSha256": packet_sha}
+
+
+plan_consolidated_review = build_consolidated_review_packet
+
+STATUS_REMINDER_CURSOR_FILE = "status-reminder-cursor.json"
+EXECUTION_OWNERSHIP_FILE = "execution-ownership.json"
+FORWARDED_APPROVALS_FILE = "forwarded-approvals.json"
+LARGE_DETECTION_BATCH_THRESHOLD = 15
+LARGE_WORKBOOK_QUERY_BATCH_THRESHOLD = 50
+
+
+def _build_workflow_diagram(state: dict[str, Any], next_stage: str | None) -> str:
+    stages = state.get("stages") or {}
+    packaging_stage = stages.get("packaging") or {}
+    packaging_artifacts = packaging_stage.get("artifacts") or {}
+    candidate_generated = (
+        packaging_artifacts.get("packageLifecycleStatus") == "candidate-generated"
+    )
+    running = [
+        name for name in STAGES if (stages.get(name) or {}).get("status") == "running"
+    ]
+    focus = running[0] if running else next_stage
+
+    diagram_nodes = [
+        ("discovery", "Discovery"),
+        ("conversion", "Conversion"),
+        ("validation", "Validation"),
+        ("candidatePackaging", "Candidate Packaging"),
+        ("armValidation", "ARM Validation"),
+        ("acceptedPackaging", "Accepted Packaging"),
+        ("report", "Report"),
+    ]
+    active_key: str | None = None
+    if focus in {"discovery", "conversion", "validation", "report"}:
+        active_key = focus
+    elif focus in {"packaging", "workflow-arm-candidate", "deployment", "mockIngestion", "alertParity"}:
+        if candidate_generated or focus in {"workflow-arm-candidate", "deployment"}:
+            active_key = "armValidation"
+        elif (packaging_stage.get("status") or "") == "passed":
+            active_key = "acceptedPackaging"
+        else:
+            active_key = "candidatePackaging"
+    elif state.get("workflowStatus") == "completed":
+        active_key = "report"
+    elif candidate_generated:
+        active_key = "armValidation"
+
+    rendered: list[str] = []
+    for key, label in diagram_nodes:
+        if key == active_key:
+            rendered.append(f"[> {label} <]")
+        else:
+            rendered.append(f"[{label}]")
+    return " -> ".join(rendered)
+
+
+def _describe_current_activity(
+    state: dict[str, Any],
+    next_stage: str | None,
+    recommendation: dict[str, Any],
+) -> str:
+    stages = state.get("stages") or {}
+    running = [
+        name for name in STAGES if (stages.get(name) or {}).get("status") == "running"
+    ]
+    active_stage = running[0] if running else next_stage
+    top_blockers = recommendation.get("topBlockers") or []
+    blocker_categories = {item.get("category") for item in top_blockers if isinstance(item, dict)}
+
+    if blocker_categories & {"detectionReview", "dependencyReview", "workbookReview", "technicalFailure"}:
+        return "Applying reviewed decisions or converting detections before validation."
+    if active_stage == "discovery":
+        return "Inspecting solution source inventory and validating content structure before conversion."
+    if active_stage == "conversion":
+        return "Applying reviewed decisions or converting detections before validation."
+    if active_stage == "validation":
+        return "Validating converted XDR detections and workbooks before candidate packaging."
+    if active_stage in {"packaging", "workflow-arm-candidate"}:
+        packaging_artifacts = ((stages.get("packaging") or {}).get("artifacts")) or {}
+        if packaging_artifacts.get("packageLifecycleStatus") == "candidate-generated":
+            return "Validating candidate V3.1 package and ARM template readiness before accepted packaging."
+        return "Building and verifying the V3.1 solution package."
+    if active_stage == "deployment":
+        return "Deploying disabled detections and approved solution resources to the locked lab target."
+    if active_stage == "mockIngestion":
+        return "Ingesting reviewed mock telemetry into the locked lab workspace."
+    if active_stage == "alertParity":
+        return "Verifying alert parity between Sentinel Analytic Rules and Defender XDR Custom Detections."
+    if active_stage == "report":
+        return "Generating the consolidated solution migration report."
+    if state.get("workflowStatus") == "completed":
+        return "Migration workflow completed; all required stages passed."
+    return "Reviewing current workflow gates and blocker evidence before the next stage."
+
+
+def _build_duration_explanation(
+    analytic_rule_count: int,
+    xdr_detection_count: int,
+    workbook_count: int,
+    workbook_query_count: int,
+) -> tuple[str, bool]:
+    large_rules = analytic_rule_count >= LARGE_DETECTION_BATCH_THRESHOLD
+    large_queries = workbook_query_count >= LARGE_WORKBOOK_QUERY_BATCH_THRESHOLD
+    is_large = large_rules or large_queries
+    if large_rules and large_queries:
+        return (
+            f"Large migration batch in progress: processing {analytic_rule_count} source analytic rules "
+            f"({xdr_detection_count} converted XDR detections) and {workbook_query_count} workbook queries "
+            f"across {workbook_count} workbooks; no completion time is estimated.",
+            True,
+        )
+    if large_rules:
+        return (
+            f"Large detection batch in progress: processing {analytic_rule_count} source analytic rules "
+            f"({xdr_detection_count} converted XDR detections); no completion time is estimated.",
+            True,
+        )
+    if large_queries:
+        return (
+            f"Large workbook query batch in progress: processing {workbook_query_count} workbook queries "
+            f"across {workbook_count} workbooks; no completion time is estimated.",
+            True,
+        )
+    return (
+        f"Processing {analytic_rule_count} source analytic rules ({xdr_detection_count} converted XDR "
+        f"detections) and {workbook_query_count} workbook queries across {workbook_count} workbooks; "
+        "no completion time is estimated.",
+        False,
+    )
+
+
+def build_migration_status_reminder(
+    solution_path: str | Path,
+    *,
+    run_id: str | None = None,
+    persist_cursor: bool = True,
+) -> dict[str, Any]:
+    """Build a deterministic, evidence-bound status reminder with no-change suppression."""
+    from .workbooks import inventory_workbooks
+
+    root = Path(solution_path).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"solution folder does not exist: {root}")
+
+    from contextlib import nullcontext
+
+    run_ctx = using_run(root, run_id) if run_id else nullcontext()
+    with run_ctx:
+        state_path, state = _load(root)
+        status = workflow_status(root)
+        actual_run_id = str(status.get("runId") or state_path.parent.name)
+
+        has_rule_folder = any(
+            (root / name).exists() or (root / name).is_symlink()
+            for name in ("Analytic Rules", "Analytics Rules")
+        )
+        try:
+            analytic_rule_count = len(analytic_rule_files(root)) if has_rule_folder else 0
+        except (OSError, ValueError):
+            analytic_rule_count = 0
+
+        detections_dir = root / "XDR Detections"
+        try:
+            xdr_detection_count = (
+                len(xdr_detection_files(detections_dir))
+                if detections_dir.is_dir()
+                else 0
+            )
+        except (OSError, ValueError):
+            xdr_detection_count = 0
+
+        try:
+            wb_inventory = inventory_workbooks(root)
+        except (OSError, ValueError):
+            wb_inventory = []
+        workbook_count = len(wb_inventory)
+        workbook_query_count = sum(
+            len(wb.get("queries") or [])
+            for wb in wb_inventory
+            if isinstance(wb, dict)
+        )
+
+        recommendation = status["nextStepRecommendation"]
+        blocker_count = int(recommendation.get("blockerCount") or 0)
+        blocker_labels = list(recommendation.get("blockerLabels") or [])
+        next_stage = status.get("next")
+
+        stage_statuses = {
+            stage_name: {
+                "status": (status["stages"].get(stage_name) or {}).get("status"),
+                "attempts": (status["stages"].get(stage_name) or {}).get("attempts", 0),
+                "message": (status["stages"].get(stage_name) or {}).get("message"),
+            }
+            for stage_name in STAGES
+        }
+        fingerprint_payload = {
+            "runId": actual_run_id,
+            "workflowStatus": status.get("workflowStatus"),
+            "nextStage": next_stage,
+            "stages": stage_statuses,
+            "itemCounts": {
+                "analyticRules": analytic_rule_count,
+                "xdrDetections": xdr_detection_count,
+                "workbooks": workbook_count,
+                "workbookQueries": workbook_query_count,
+            },
+            "blockerCount": blocker_count,
+            "blockerLabels": blocker_labels,
+            "packageFreshnessStatus": (status.get("packageFreshness") or {}).get("status"),
+        }
+        state_fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+        cursor_path = state_path.parent / STATUS_REMINDER_CURSOR_FILE
+        previous_fingerprint: str | None = None
+        if cursor_path.is_file():
+            try:
+                cursor_doc = json.loads(cursor_path.read_text(encoding="utf-8-sig"))
+                if isinstance(cursor_doc, dict):
+                    previous_fingerprint = str(
+                        cursor_doc.get("stateFingerprint")
+                        or cursor_doc.get("lastStateFingerprint")
+                        or ""
+                    ) or None
+            except (OSError, json.JSONDecodeError):
+                previous_fingerprint = None
+
+        suppressed_no_change = previous_fingerprint == state_fingerprint
+        now = _utc_now()
+        if persist_cursor and not suppressed_no_change:
+            with _run_writer_lock(state_path.parent):
+                _atomic_json(
+                    cursor_path,
+                    {
+                        "schemaVersion": "1.0.0",
+                        "runId": actual_run_id,
+                        "stateFingerprint": state_fingerprint,
+                        "lastStateFingerprint": state_fingerprint,
+                        "updatedAtUtc": now,
+                    },
+                )
+
+        current_activity = _describe_current_activity(state, next_stage, recommendation)
+        duration_explanation, is_large_batch = _build_duration_explanation(
+            analytic_rule_count,
+            xdr_detection_count,
+            workbook_count,
+            workbook_query_count,
+        )
+        workflow_diagram = _build_workflow_diagram(state, next_stage)
+        watchdog_coordination = {
+            "readOnlyObserver": True,
+            "createsExecutor": False,
+            "singleOwnerRespected": True,
+        }
+
+        return {
+            "schemaVersion": "1.0.0",
+            "kind": "migration-status-reminder",
+            "solution": str(root),
+            "solutionName": root.name,
+            "runId": actual_run_id,
+            "workflowStatus": status.get("workflowStatus"),
+            "stateFingerprint": state_fingerprint,
+            "previousStateFingerprint": previous_fingerprint,
+            "suppressedNoChange": suppressed_no_change,
+            "cursorPath": str(cursor_path),
+            "currentActivity": current_activity,
+            "expectedNextStep": recommendation["summary"],
+            "nextStepRecommendation": recommendation,
+            "durationExplanation": duration_explanation,
+            "isLargeBatch": is_large_batch,
+            "itemCounts": {
+                "analyticRules": analytic_rule_count,
+                "xdrDetections": xdr_detection_count,
+                "workbooks": workbook_count,
+                "workbookQueries": workbook_query_count,
+            },
+            "blockerCount": blocker_count,
+            "workflowDiagram": workflow_diagram,
+            "watchdogCoordination": watchdog_coordination,
+        }
+
+
+def claim_execution_ownership(
+    solution_path: str | Path,
+    owner_id: str | None = None,
+    operation: str | None = None,
+    *,
+    scope: dict[str, Any] | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Claim or renew single-owner execution lease for (runId, operation) in execution-ownership.json."""
+    if not isinstance(owner_id, str) or not owner_id.strip():
+        raise ValueError("ownerId must be a non-empty string")
+    if not isinstance(operation, str) or not operation.strip():
+        raise ValueError("operation must be a non-empty string")
+    if scope is not None and not isinstance(scope, dict):
+        raise ValueError("scope must be a JSON object when provided")
+
+    owner_clean = owner_id.strip()
+    operation_clean = operation.strip()
+    normalized_scope = dict(scope or {})
+    root = Path(solution_path).expanduser().resolve()
+
+    from contextlib import nullcontext
+
+    run_ctx = using_run(root, run_id) if run_id else nullcontext()
+    with run_ctx:
+        state_path, state = _load(root)
+        actual_run_id = str(state.get("runId") or state_path.parent.name)
+        ownership_path = state_path.parent / EXECUTION_OWNERSHIP_FILE
+        with _run_writer_lock(state_path.parent):
+            doc: dict[str, Any] = {}
+            if ownership_path.is_file():
+                try:
+                    loaded = json.loads(ownership_path.read_text(encoding="utf-8-sig"))
+                    if isinstance(loaded, dict):
+                        doc = loaded
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ValueError(f"invalid execution ownership file: {ownership_path}: {exc}") from exc
+
+            leases = dict(doc.get("leases") or {})
+            history = list(doc.get("history") or [])
+            existing = leases.get(operation_clean)
+            if (
+                isinstance(existing, dict)
+                and existing.get("status") == "active"
+                and existing.get("ownerId") != owner_clean
+            ):
+                raise ValueError(
+                    f"duplicate_executor_blocked: operation {operation_clean!r} in run "
+                    f"{actual_run_id!r} is already owned by {existing.get('ownerId')!r}; "
+                    f"conflicting claim by {owner_clean!r} rejected"
+                )
+
+            now = _utc_now()
+            renewed_count = (
+                int(existing.get("renewedCount", 0)) + 1
+                if isinstance(existing, dict)
+                and existing.get("status") == "active"
+                and existing.get("ownerId") == owner_clean
+                else 0
+            )
+            claimed_at = (
+                str(existing.get("claimedAtUtc") or now)
+                if renewed_count > 0 and isinstance(existing, dict)
+                else now
+            )
+            lease_record = {
+                "runId": actual_run_id,
+                "ownerId": owner_clean,
+                "operation": operation_clean,
+                "scope": normalized_scope,
+                "status": "active",
+                "claimedAtUtc": claimed_at,
+                "updatedAtUtc": now,
+                "releasedAtUtc": None,
+                "renewedCount": renewed_count,
+                "singleOwnerEnforced": True,
+            }
+            leases[operation_clean] = lease_record
+            history.append({
+                "event": "renewed" if renewed_count > 0 else "claimed",
+                "runId": actual_run_id,
+                "ownerId": owner_clean,
+                "operation": operation_clean,
+                "scope": normalized_scope,
+                "timestampUtc": now,
+            })
+            updated_doc = {
+                "schemaVersion": "1.0.0",
+                "runId": actual_run_id,
+                "solution": str(root),
+                "ownerId": owner_clean,
+                "operation": operation_clean,
+                "scope": normalized_scope,
+                "claimedAtUtc": claimed_at,
+                "updatedAtUtc": now,
+                "status": "active",
+                "leases": leases,
+                "history": history,
+            }
+            _atomic_json(ownership_path, updated_doc)
+            return {
+                **lease_record,
+                "ownershipPath": str(ownership_path),
+            }
+
+
+def release_execution_ownership(
+    solution_path: str | Path,
+    owner_id: str | None = None,
+    operation: str | None = None,
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Release an active single-owner execution lease held by owner_id for (runId, operation)."""
+    if not isinstance(owner_id, str) or not owner_id.strip():
+        raise ValueError("ownerId must be a non-empty string")
+    if not isinstance(operation, str) or not operation.strip():
+        raise ValueError("operation must be a non-empty string")
+
+    owner_clean = owner_id.strip()
+    operation_clean = operation.strip()
+    root = Path(solution_path).expanduser().resolve()
+
+    from contextlib import nullcontext
+
+    run_ctx = using_run(root, run_id) if run_id else nullcontext()
+    with run_ctx:
+        state_path, state = _load(root)
+        actual_run_id = str(state.get("runId") or state_path.parent.name)
+        ownership_path = state_path.parent / EXECUTION_OWNERSHIP_FILE
+        with _run_writer_lock(state_path.parent):
+            if not ownership_path.is_file():
+                raise ValueError(
+                    f"execution ownership file does not exist for run {actual_run_id!r}"
+                )
+            doc = json.loads(ownership_path.read_text(encoding="utf-8-sig"))
+            if not isinstance(doc, dict):
+                raise ValueError(f"invalid execution ownership file: {ownership_path}")
+            leases = dict(doc.get("leases") or {})
+            history = list(doc.get("history") or [])
+            existing = leases.get(operation_clean)
+            if not isinstance(existing, dict) or existing.get("status") != "active":
+                raise ValueError(
+                    f"no active execution ownership lease for operation {operation_clean!r} in run {actual_run_id!r}"
+                )
+            if existing.get("ownerId") != owner_clean:
+                raise ValueError(
+                    f"duplicate_executor_blocked: operation {operation_clean!r} in run "
+                    f"{actual_run_id!r} is owned by {existing.get('ownerId')!r}; "
+                    f"release by {owner_clean!r} rejected"
+                )
+            now = _utc_now()
+            released_record = {
+                **existing,
+                "status": "released",
+                "releasedAtUtc": now,
+                "updatedAtUtc": now,
+            }
+            leases[operation_clean] = released_record
+            history.append({
+                "event": "released",
+                "runId": actual_run_id,
+                "ownerId": owner_clean,
+                "operation": operation_clean,
+                "scope": existing.get("scope") or {},
+                "timestampUtc": now,
+            })
+            updated_doc = {
+                **doc,
+                "ownerId": owner_clean,
+                "operation": operation_clean,
+                "status": "released",
+                "updatedAtUtc": now,
+                "leases": leases,
+                "history": history,
+            }
+            _atomic_json(ownership_path, updated_doc)
+            return {
+                **released_record,
+                "ownershipPath": str(ownership_path),
+            }
+
+
+def _compute_forwarded_approval_sha256(
+    *,
+    run_id: str,
+    operation: str,
+    approved_by: str,
+    forwarded_to_owner_id: str,
+    exact_scope: dict[str, Any],
+) -> str:
+    payload = {
+        "runId": run_id,
+        "operation": operation,
+        "approvedBy": approved_by,
+        "forwardedToOwnerId": forwarded_to_owner_id,
+        "exactScope": exact_scope,
+    }
+    canonical_bytes = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(canonical_bytes).hexdigest()
+
+
+def forward_explicit_approval(
+    solution_path: str | Path,
+    *,
+    operation: str,
+    approved_by: str,
+    forwarded_to_owner_id: str,
+    exact_scope: dict[str, Any],
+    run_id: str | None = None,
+    reference: str | None = None,
+) -> dict[str, Any]:
+    """Bind runId, operation, approvedBy, forwardedToOwnerId, and exactScope into forwarded-approvals.json."""
+    if not isinstance(operation, str) or not operation.strip():
+        raise ValueError("operation must be a non-empty string")
+    if not isinstance(approved_by, str) or not approved_by.strip():
+        raise ValueError("approvedBy must be a non-empty string")
+    if not isinstance(forwarded_to_owner_id, str) or not forwarded_to_owner_id.strip():
+        raise ValueError("forwardedToOwnerId must be a non-empty string")
+    if not isinstance(exact_scope, dict) or not exact_scope:
+        raise ValueError("exactScope must be a non-empty JSON object")
+
+    operation_clean = operation.strip()
+    approver_clean = approved_by.strip()
+    owner_clean = forwarded_to_owner_id.strip()
+    scope_copy = json.loads(json.dumps(exact_scope))
+    root = Path(solution_path).expanduser().resolve()
+
+    from contextlib import nullcontext
+
+    run_ctx = using_run(root, run_id) if run_id else nullcontext()
+    with run_ctx:
+        state_path, state = _load(root)
+        actual_run_id = str(state.get("runId") or state_path.parent.name)
+        ownership_path = state_path.parent / EXECUTION_OWNERSHIP_FILE
+        receipt_path = state_path.parent / FORWARDED_APPROVALS_FILE
+        with _run_writer_lock(state_path.parent):
+            if ownership_path.is_file():
+                ownership_doc = json.loads(ownership_path.read_text(encoding="utf-8-sig"))
+                if isinstance(ownership_doc, dict):
+                    active_lease = (ownership_doc.get("leases") or {}).get(operation_clean)
+                    if (
+                        isinstance(active_lease, dict)
+                        and active_lease.get("status") == "active"
+                        and active_lease.get("ownerId") != owner_clean
+                    ):
+                        raise ValueError(
+                            f"duplicate_executor_blocked: cannot forward approval for operation "
+                            f"{operation_clean!r} to {owner_clean!r} while active execution lease "
+                            f"is held by {active_lease.get('ownerId')!r}"
+                        )
+
+            approval_sha256 = _compute_forwarded_approval_sha256(
+                run_id=actual_run_id,
+                operation=operation_clean,
+                approved_by=approver_clean,
+                forwarded_to_owner_id=owner_clean,
+                exact_scope=scope_copy,
+            )
+            now = _utc_now()
+            record: dict[str, Any] = {
+                "schemaVersion": "1.0.0",
+                "runId": actual_run_id,
+                "operation": operation_clean,
+                "approvedBy": approver_clean,
+                "forwardedToOwnerId": owner_clean,
+                "exactScope": scope_copy,
+                "approvalSha256": approval_sha256,
+                "reference": reference,
+                "forwardedAtUtc": now,
+                "status": "active",
+            }
+            doc: dict[str, Any] = {}
+            if receipt_path.is_file():
+                try:
+                    loaded = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+                    if isinstance(loaded, dict):
+                        doc = loaded
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ValueError(f"invalid forwarded approvals file: {receipt_path}: {exc}") from exc
+
+            approvals = dict(doc.get("approvals") or {})
+            history = list(doc.get("history") or [])
+            approvals[operation_clean] = record
+            history.append(record)
+            updated_doc = {
+                "schemaVersion": "1.0.0",
+                "runId": actual_run_id,
+                "solution": str(root),
+                "operation": operation_clean,
+                "approvedBy": approver_clean,
+                "forwardedToOwnerId": owner_clean,
+                "exactScope": scope_copy,
+                "approvalSha256": approval_sha256,
+                "forwardedAtUtc": now,
+                "approvals": approvals,
+                "history": history,
+            }
+            _atomic_json(receipt_path, updated_doc)
+            return {
+                **record,
+                "receiptPath": str(receipt_path),
+            }
+
+
+def verify_forwarded_approval(
+    solution_path: str | Path,
+    *,
+    owner_id: str | None = None,
+    forwarded_to_owner_id: str | None = None,
+    operation: str,
+    exact_scope: dict[str, Any],
+    approval_sha256: str | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Verify byte-for-byte that recipient ownerId, runId, operation, and exactScope match approvalSha256."""
+    recipient = owner_id if owner_id is not None else forwarded_to_owner_id
+    if not isinstance(recipient, str) or not recipient.strip():
+        raise ValueError("ownerId must be a non-empty string")
+    if not isinstance(operation, str) or not operation.strip():
+        raise ValueError("operation must be a non-empty string")
+    if not isinstance(exact_scope, dict) or not exact_scope:
+        raise ValueError("exactScope must be a non-empty JSON object")
+
+    recipient_clean = recipient.strip()
+    operation_clean = operation.strip()
+    root = Path(solution_path).expanduser().resolve()
+
+    from contextlib import nullcontext
+
+    run_ctx = using_run(root, run_id) if run_id else nullcontext()
+    with run_ctx:
+        state_path, state = _load(root)
+        actual_run_id = str(state.get("runId") or state_path.parent.name)
+        receipt_path = state_path.parent / FORWARDED_APPROVALS_FILE
+        if not receipt_path.is_file():
+            raise ValueError(
+                f"forwarded approval receipt does not exist: {receipt_path}"
+            )
+        doc = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+        if not isinstance(doc, dict):
+            raise ValueError(f"invalid forwarded approvals file: {receipt_path}")
+        approvals = doc.get("approvals") or {}
+        stored = approvals.get(operation_clean)
+        if not isinstance(stored, dict):
+            raise ValueError(
+                f"no forwarded approval recorded for operation {operation_clean!r} in run {actual_run_id!r}"
+            )
+
+        stored_run_id = str(stored.get("runId") or "")
+        stored_operation = str(stored.get("operation") or "")
+        stored_approved_by = str(stored.get("approvedBy") or "")
+        stored_owner = str(stored.get("forwardedToOwnerId") or "")
+        stored_scope = stored.get("exactScope")
+        stored_sha = str(stored.get("approvalSha256") or "")
+
+        if not isinstance(stored_scope, dict):
+            raise ValueError("stored forwarded approval has invalid exactScope")
+
+        recomputed_stored_sha = _compute_forwarded_approval_sha256(
+            run_id=stored_run_id,
+            operation=stored_operation,
+            approved_by=stored_approved_by,
+            forwarded_to_owner_id=stored_owner,
+            exact_scope=stored_scope,
+        )
+        if recomputed_stored_sha != stored_sha:
+            raise ValueError(
+                "forwarded_approval_tampered: stored receipt hash does not match its recorded payload"
+            )
+        if stored_run_id != actual_run_id:
+            raise ValueError(
+                f"forwarded_approval_run_mismatch: receipt belongs to run {stored_run_id!r}, not {actual_run_id!r}"
+            )
+        if stored_operation != operation_clean:
+            raise ValueError(
+                f"forwarded_approval_operation_mismatch: receipt binds {stored_operation!r}, not {operation_clean!r}"
+            )
+        if stored_owner != recipient_clean:
+            raise ValueError(
+                f"forwarded_approval_owner_mismatch: approval was forwarded to {stored_owner!r}, "
+                f"not {recipient_clean!r}"
+            )
+
+        stored_scope_bytes = json.dumps(
+            stored_scope, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        requested_scope_bytes = json.dumps(
+            exact_scope, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        if stored_scope_bytes != requested_scope_bytes:
+            raise ValueError(
+                "forwarded_approval_scope_mismatch: requested scope differs from the approved exactScope"
+            )
+
+        candidate_sha = _compute_forwarded_approval_sha256(
+            run_id=actual_run_id,
+            operation=operation_clean,
+            approved_by=stored_approved_by,
+            forwarded_to_owner_id=recipient_clean,
+            exact_scope=exact_scope,
+        )
+        if candidate_sha != stored_sha:
+            raise ValueError(
+                "forwarded_approval_hash_mismatch: computed approvalSha256 does not match receipt"
+            )
+        if approval_sha256 is not None and approval_sha256.strip() != stored_sha:
+            raise ValueError(
+                f"forwarded_approval_hash_mismatch: expected {approval_sha256.strip()!r}, "
+                f"receipt has {stored_sha!r}"
+            )
+
+        return {
+            "verified": True,
+            "status": "verified",
+            "runId": actual_run_id,
+            "operation": operation_clean,
+            "approvedBy": stored_approved_by,
+            "forwardedToOwnerId": stored_owner,
+            "exactScope": stored_scope,
+            "approvalSha256": stored_sha,
+            "receiptPath": str(receipt_path),
+        }
+
