@@ -1,0 +1,166 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceProcessEvents
+  - DeviceNetworkEvents
+  - DeviceEvents
+  - DeviceTvmSoftwareVulnerabilities
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceEvents
+    - DeviceNetworkEvents
+    - DeviceProcessEvents
+    - DeviceTvmSoftwareVulnerabilities
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceEvents
+    - DeviceNetworkEvents
+    - DeviceProcessEvents
+    - DeviceTvmSoftwareVulnerabilities
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 26e81021-2de6-4442-a74a-a77885e96911
+    path: Analytic Rules/PossibleWebpBufferOverflow.yaml
+    version: 1.1.3
+    querySha256: 7e7a9c73f15d42dd023b3bc97a055faba311776b37180b2d6a29a33698d3ba8b
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    - 'Best-effort entity mapping requires review: Host.FullName column `DeviceName` is not available in the query output,
+      so no supported host-name mapping or supplemental customDetails binding can be made'
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - IP.Address column `LocalIP` is not produced by the query
+    - 'Host.FullName value is not preserved: column `DeviceName` is missing from the final query output. No invalid customDetails
+      binding was added and KQL was not rewritten'
+    - 'Best-effort entity mapping requires review: Host.FullName column `DeviceName` is not available in the query output,
+      so no supported host-name mapping or supplemental customDetails binding can be made'
+    - 'Account.FullName value is not preserved: column `AccountUpn` is missing from the final query output. No invalid customDetails
+      binding was added and KQL was not rewritten'
+    - 'IP.Address value is not preserved: column `LocalIP` is missing from the final query output. No invalid customDetails
+      binding was added and KQL was not rewritten'
+    - 'Process.ProcessId value is not preserved: column `ProcessId` is missing from the final query output. No invalid customDetails
+      binding was added and KQL was not rewritten'
+    - 'Process.ProcessId value is not preserved: column `InitiatingProcessId` is missing from the final query output. No invalid
+      customDetails binding was added and KQL was not rewritten'
+    - 'Process.CommandLine value is not preserved: column `ProcessCommandLine` is missing from the final query output. No
+      invalid customDetails binding was added and KQL was not rewritten'
+    informational: []
+    errors: []
+    originalTactics:
+    - Execution
+    originalTechniques:
+    - T1203
+    reviewScope:
+      sourceDocumentSha256: ede75dd1b3a5c6781d607d557a66dbaa8a45f4941b4b62c1609d22a8994e8e5b
+      targetQuerySha256: 7e7a9c73f15d42dd023b3bc97a055faba311776b37180b2d6a29a33698d3ba8b
+    reviewDecisions:
+    - reason: Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs
+        cannot be proven equivalent
+      decision: accepted
+      sourceDocumentSha256: ede75dd1b3a5c6781d607d557a66dbaa8a45f4941b4b62c1609d22a8994e8e5b
+      targetQuerySha256: 7e7a9c73f15d42dd023b3bc97a055faba311776b37180b2d6a29a33698d3ba8b
+    supplementalEntityDetails:
+    - entityType: Host
+      entityIndex: 1
+      identifier: FullName
+      sourceColumn: DeviceName
+      column: DeviceName
+      status: not-preserved
+      reason: missing
+    - entityType: Account
+      entityIndex: 2
+      identifier: FullName
+      sourceColumn: AccountUpn
+      column: AccountUpn
+      status: not-preserved
+      reason: missing
+    - entityType: IP
+      entityIndex: 3
+      identifier: Address
+      sourceColumn: LocalIP
+      column: LocalIP
+      status: not-preserved
+      reason: missing
+    - entityType: Process
+      entityIndex: 4
+      identifier: ProcessId
+      sourceColumn: ProcessId
+      column: ProcessId
+      status: not-preserved
+      reason: missing
+    - entityType: Process
+      entityIndex: 5
+      identifier: ProcessId
+      sourceColumn: InitiatingProcessId
+      column: InitiatingProcessId
+      status: not-preserved
+      reason: missing
+    - entityType: Process
+      entityIndex: 6
+      identifier: CommandLine
+      sourceColumn: ProcessCommandLine
+      column: ProcessCommandLine
+      status: not-preserved
+      reason: missing
+    acceptedReviewReasons:
+    - Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot
+      be proven equivalent
+properties:
+  id: xdr-26e81021-2de6-4442-a74a-a77885e96911
+  displayName: Execution of software vulnerable to webp buffer overflow of CVE-2023-4863
+  status: disabled
+  queryCondition:
+    queryText: |-
+      //CVE-2023-4863 Process activity with .webp files on devices where CVE-2023-4863 is unpatched
+      //This query shows all process activity with .webp files on vulnerable machines and is not an indicator of malicious activity
+      let VulnDevices = DeviceTvmSoftwareVulnerabilities
+          | where CveId == "CVE-2023-4863"
+          | distinct DeviceId;
+      union DeviceProcessEvents, DeviceNetworkEvents, DeviceEvents
+      | where DeviceId in (VulnDevices) and (InitiatingProcessCommandLine has(".webp") or ProcessCommandLine has(".webp"))
+      | extend Name = tostring(split(AccountUpn, "@")[0]), UPNSuffix = tostring(split(AccountUpn, "@")[1])
+      | extend HostName = tostring(split(DeviceName, ".")[0]), DomainIndex = toint(indexof(DeviceName, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(DeviceName, DomainIndex + 1), DeviceName)
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Execution of software vulnerable to webp buffer overflow of CVE-2023-4863
+      description: '''This query looks at device, process, and network events from Defender for Endpoint that may be vulnerable
+        to buffer overflow defined in CVE-2023-4863. Results are not an indicator of malicious activity.'''
+      severity: informational
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+        accounts:
+        - id: account1
+          nameColumn: Name
+          upnSuffixColumn: UPNSuffix
+      tactics:
+      - tactic: Execution
+        techniques:
+        - technique: T1203

@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/opt/anaconda3/bin/python3.12",
+    "-m",
+    "sentinel_xdr_migration.cli",
+    "convert",
+    "--solution",
+    "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR",
+    "--run-id",
+    "20261014T114522Z-55dd62367c044891b40892318b184efe",
+    "--rule-id",
+    "1be34fb9-f81b-47ae-84fb-465e6686d76c",
+    "--config",
+    "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe/authoring-review-config.json",
+    "--overwrite"
+  ],
+  "exitCode": 1,
+  "stdout": "{\n  \"solution\": \"/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR\",\n  \"scope\": {\n    \"kind\": \"rule\",\n    \"ruleIds\": [\n      \"1be34fb9-f81b-47ae-84fb-465e6686d76c\"\n    ],\n    \"sourceTotal\": 40,\n    \"selectedTotal\": 1\n  },\n  \"outputDirectory\": \"/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/XDR Detections\",\n  \"reportDirectory\": \"/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe\",\n  \"manifest\": \"/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe/manifest.json\",\n  \"transformationReport\": \"/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe/transformation-report.html\",\n  \"total\": 1,\n  \"converted\": 0,\n  \"excluded\": 0,\n  \"needsReview\": 1,\n  \"reviewRequired\": 1,\n  \"deploymentReady\": 0,\n  \"conflicts\": 0,\n  \"results\": [\n    {\n      \"source\": \"/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Analytic Rules/Credential Access/DoppelPaymerProcDump.yaml\",\n      \"output\": \"/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/XDR Detections/Credential Access/DoppelPaymerProcDump.yaml\",\n      \"displayName\": \"DopplePaymer Procdump\",\n      \"status\": \"needsReview\",\n      \"reviewRequired\": true,\n      \"reviewReasons\": [\n        \"catalog column mappings were not applied because table/alias scope is ambiguous\"\n      ],\n      \"warnings\": [\n        \"catalog column mappings were not applied because table/alias scope is ambiguous\",\n        \"Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native service windows differ; no explicit event-time bound proves equivalence to Defender ingestion-time evaluation. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback\"\n      ],\n      \"errors\": [],\n      \"informational\": [\n        \"Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`; the query explicitly decomposes that same full name. No fullNameColumn is emitted\"\n      ],\n      \"directGraphDeploymentReady\": false,\n      \"sourceRelativePath\": \"Analytic Rules/Credential Access/DoppelPaymerProcDump.yaml\",\n      \"outputRelativePath\": \"XDR Detections/Credential Access/DoppelPaymerProcDump.yaml\"\n    }\n  ]\n}\n",
+  "stderr": ""
+}

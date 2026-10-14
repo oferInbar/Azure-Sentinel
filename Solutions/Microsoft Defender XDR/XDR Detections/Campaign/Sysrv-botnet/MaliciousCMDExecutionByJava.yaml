@@ -1,0 +1,90 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceProcessEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceProcessEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceProcessEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 2c81c0a0-9823-4a14-b21a-2b4acd3335d2
+    path: Analytic Rules/Campaign/Sysrv-botnet/MaliciousCMDExecutionByJava.yaml
+    version: 1.0.0
+    querySha256: 4b985c1756eba16a4d5d4cb605c0bcd141a38ed6bfd27db5aece4d1744fcae8d
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      service windows differ; no explicit event-time bound proves equivalence to Defender ingestion-time evaluation. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    informational:
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    errors: []
+    originalTactics:
+    - Execution
+    originalTechniques:
+    - T1059
+    reviewScope:
+      sourceDocumentSha256: 6ccffc3625e81839918758c848e1512b2fc48227f6fe8296b6ccb41272f11960
+      targetQuerySha256: cbfd4876ee097a2440abb129f242981f720568b2d4c1fb87a287c9b33930382d
+    reviewDecisions:
+    - reason: Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish
+        an event-time column
+      decision: accepted
+      sourceDocumentSha256: 6ccffc3625e81839918758c848e1512b2fc48227f6fe8296b6ccb41272f11960
+      targetQuerySha256: cbfd4876ee097a2440abb129f242981f720568b2d4c1fb87a287c9b33930382d
+    acceptedReviewReasons:
+    - Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an
+      event-time column
+properties:
+  id: xdr-2c81c0a0-9823-4a14-b21a-2b4acd3335d2
+  displayName: Java Executing cmd to run Powershell
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents
+      | where InitiatingProcessFileName == 'java.exe' and FileName == 'cmd.exe'
+      and ProcessCommandLine has_all('powershell iex','DownloadString')
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Java Executing cmd to run Powershell
+      description: |-
+        This query was originally published in the threat analytics report, Sysrv botnet evolution.
+        Sysrv is a Go-based botnet that targets both Windows and Linux servers, and steals resources to mine cryptocurrency.
+        The following query finds instances of the Java process being used to execute cmd.exe, and download and execute a PowerShell script.
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: Execution
+        techniques:
+        - technique: T1059

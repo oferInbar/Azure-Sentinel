@@ -1,0 +1,175 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceProcessEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceProcessEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceProcessEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 28c63a44-2d35-48b7-831b-3ed24af17c7e
+    path: Analytic Rules/Ransomware/ShadowCopyDeletion.yaml
+    version: 1.0.0
+    querySha256: a3de286c1dbc727f336d89a64c7ef6405ebdac063d8932c579cad6febe3cb1b7
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - Account.DnsDomain column `AccountDomain` is not produced by the query
+    - Account mapping was completed with projected column `DnsDomain`
+    - Host.FullName value is retained as customDetails.HostFullName from query column `DeviceName`, but its target output
+      binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.HostFullName column `DeviceName` requires runtime output-schema binding verification
+    - 'Account.FullName value is not preserved: column `AccountUpn` is missing from the final query output. No invalid customDetails
+      binding was added and KQL was not rewritten'
+    - 'Account.DnsDomain value is not preserved: column `AccountDomain` is missing from the final query output. No invalid
+      customDetails binding was added and KQL was not rewritten'
+    - 'Process.ProcessId value is not preserved: column `ProcessId` is missing from the final query output. No invalid customDetails
+      binding was added and KQL was not rewritten'
+    - Process.CommandLine value is retained as customDetails.ProcessCommandLine from query column `ProcessCommandLine`, but
+      its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.ProcessCommandLine column `ProcessCommandLine` requires runtime output-schema binding verification
+    - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
+      and the service drops all custom details if exceeded
+    informational: []
+    errors: []
+    originalTactics:
+    - Impact
+    originalTechniques:
+    - T1490
+    reviewScope:
+      sourceDocumentSha256: f4a8d2d1e3deb71ccc5f664e32da06a8fa354fc052a10f9007a3da1820231f1b
+      targetQuerySha256: 1021faf5295cc873743c152dc4e6d5ad5762ad8c1857f87e9a76c47be0b6f2dc
+    reviewDecisions:
+    - reason: Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs
+        cannot be proven equivalent
+      decision: accepted
+      sourceDocumentSha256: f4a8d2d1e3deb71ccc5f664e32da06a8fa354fc052a10f9007a3da1820231f1b
+      targetQuerySha256: 1021faf5295cc873743c152dc4e6d5ad5762ad8c1857f87e9a76c47be0b6f2dc
+    - reason: 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented
+        by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also
+        retained in customDetails when the query output binding is available; this assumption does not prove entity parity'
+      decision: accepted
+      sourceDocumentSha256: f4a8d2d1e3deb71ccc5f664e32da06a8fa354fc052a10f9007a3da1820231f1b
+      targetQuerySha256: 1021faf5295cc873743c152dc4e6d5ad5762ad8c1857f87e9a76c47be0b6f2dc
+    supplementalEntityDetails:
+    - entityType: Host
+      entityIndex: 1
+      identifier: FullName
+      sourceColumn: DeviceName
+      column: DeviceName
+      status: runtime-binding-pending
+      customDetailKey: HostFullName
+    - entityType: Account
+      entityIndex: 2
+      identifier: FullName
+      sourceColumn: AccountUpn
+      column: AccountUpn
+      status: not-preserved
+      reason: missing
+    - entityType: Account
+      entityIndex: 2
+      identifier: DnsDomain
+      sourceColumn: AccountDomain
+      column: AccountDomain
+      status: not-preserved
+      reason: missing
+    - entityType: Process
+      entityIndex: 3
+      identifier: ProcessId
+      sourceColumn: ProcessId
+      column: ProcessId
+      status: not-preserved
+      reason: missing
+    - entityType: Process
+      entityIndex: 3
+      identifier: CommandLine
+      sourceColumn: ProcessCommandLine
+      column: ProcessCommandLine
+      status: runtime-binding-pending
+      customDetailKey: ProcessCommandLine
+    acceptedReviewReasons:
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot
+      be proven equivalent
+properties:
+  id: xdr-28c63a44-2d35-48b7-831b-3ed24af17c7e
+  displayName: Shadow Copy Deletions
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let CommonRansomwareExecutionCommands = dynamic([@'vssadmin.exe delete shadows /all /quiet',
+      @'wmic.exe shadowcopy delete', @'wbadmin delete catalog -quiet',
+      @'Get-WmiObject Win32_Shadowcopy | ForEach-Object {$_.Delete();}',
+      @'del /s /f /q c:\*.VHD c:\*.bac c:\*.bak c:\*.wbcat c:\*.bkf c:\Backup*.* c:\backup*.* c:\*.set c:\*.win c:\*.dsk',
+      @'wbadmin delete systemstatebackup -keepVersions:0',
+      @'schtasks.exe /Change /TN "\Microsoft\Windows\SystemRestore\SR" /disable',
+      @'schtasks.exe /Change /TN "\Microsoft\Windows\SystemRestore\SR" /enable >nul 2>&1',
+      @'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\SystemRestore" /v "DisableConfig" /t "REG_DWORD" /d "1" /f',
+      @'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\SystemRestore" /v "DisableSR" /t "REG_DWORD" /d "1" /f',
+      @'reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" /v "DisableConfig" /t "REG_DWORD" /d "1" /f',
+      @'reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" /v "DisableSR" /t "REG_DWORD" /d "1" /f',
+      @'reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\SystemRestore" /v "DisableConfig" /f >nul 2>&1',
+      @'reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\SystemRestore" /v "DisableSR" /f >nul 2>&1',
+      @'reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" /v "DisableConfig" /f >nul 2>&1',
+      @'reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" /v "DisableSR" /f >nul 2>&1']);
+      DeviceProcessEvents
+      | where ProcessCommandLine has_any (CommonRansomwareExecutionCommands)
+      | project-reorder TimeGenerated, ProcessCommandLine, DeviceName, AccountName
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Shadow Copy Deletions
+      description: "This rule detects when Shadow Copies are being deleted. This is a know actions that is performed by threat\
+        \ actors.\nThis query detects know commands that have been used by the ransomware actors.\nSome information from Mitre\
+        \ Attack: \nhttps://attack.mitre.org/techniques/T1490/"
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+        accounts:
+        - id: account1
+          nameColumn: AccountName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: Impact
+        techniques:
+        - technique: T1490
+      customDetails:
+        HostFullName: DeviceName
+        ProcessCommandLine: ProcessCommandLine

@@ -1,0 +1,289 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - AlertEvidence
+  - EmailEvents
+  - IdentityInfo
+  - DeviceEvents
+  - DeviceNetworkEvents
+- connectorId: Zscaler
+  dataTypes:
+  - CommonSecurityLog
+- connectorId: Fortinet
+  dataTypes:
+  - CommonSecurityLog
+- connectorId: CheckPoint
+  dataTypes:
+  - CommonSecurityLog
+- connectorId: PaloAltoNetworks
+  dataTypes:
+  - CommonSecurityLog
+- connectorId: AWSS3
+  dataTypes:
+  - AWSVPCFlow
+- connectorId: WindowsForwardedEvents
+  dataTypes:
+  - WindowsEvent
+- connectorId: SecurityEvents
+  dataTypes:
+  - SecurityEvent
+- connectorId: WindowsSecurityEvents
+  dataTypes:
+  - SecurityEvent
+- connectorId: MicrosoftSysmonForLinux
+  dataTypes:
+  - Syslog
+- connectorId: AzureNSG
+  dataTypes:
+  - AzureDiagnostics
+- connectorId: AzureMonitor(VMInsights)
+  dataTypes:
+  - VMConnection
+- connectorId: AIVectraStream
+  dataTypes:
+  - VectraStream_CL
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceEvents
+  - workload: mdo
+    dataTypes:
+    - EmailEvents
+  - workload: mtp
+    dataTypes:
+    - AlertEvidence
+  - workload: sentinel
+    dataTypes:
+    - CommonSecurityLog
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - AlertEvidence
+    - DeviceEvents
+    - DeviceNetworkEvents
+    - EmailEvents
+    - IdentityInfo
+  - connectorId: Zscaler
+    dataTypes:
+    - CommonSecurityLog
+  - connectorId: Fortinet
+    dataTypes:
+    - CommonSecurityLog
+  - connectorId: CheckPoint
+    dataTypes:
+    - CommonSecurityLog
+  - connectorId: PaloAltoNetworks
+    dataTypes:
+    - CommonSecurityLog
+  - connectorId: AWSS3
+    dataTypes:
+    - AWSVPCFlow
+  - connectorId: WindowsForwardedEvents
+    dataTypes:
+    - WindowsEvent
+  - connectorId: SecurityEvents
+    dataTypes:
+    - SecurityEvent
+  - connectorId: WindowsSecurityEvents
+    dataTypes:
+    - SecurityEvent
+  - connectorId: MicrosoftSysmonForLinux
+    dataTypes:
+    - Syslog
+  - connectorId: AzureNSG
+    dataTypes:
+    - AzureDiagnostics
+  - connectorId: AzureMonitor(VMInsights)
+    dataTypes:
+    - VMConnection
+  - connectorId: AIVectraStream
+    dataTypes:
+    - VectraStream_CL
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 6c3a1258-bcdd-4fcd-b753-1a9bc826ce12
+    path: Analytic Rules/PossiblePhishingwithCSL&NetworkSession.yaml
+    version: 1.1.2
+    querySha256: 56f0be8495bf066a535a7c4f22faa4a9b682f8b9fc9adf6aae732af8e9448dc9
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 1d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    - Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot
+      be proven equivalent
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    - 'Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - Account.FullName value is retained as customDetails.AccountFullName from query column `InitiatingProcessAccountUpn`,
+      but its target output binding requires runtime-schema verification; custom details do not restore entity identity or
+      correlation
+    - Supplemental customDetails.AccountFullName column `InitiatingProcessAccountUpn` requires runtime output-schema binding
+      verification
+    - Account.FullName value is retained as customDetails.AccountFullName_2 from query column `RecipientEmailAddress`, but
+      its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.AccountFullName_2 column `RecipientEmailAddress` requires runtime output-schema binding verification
+    - Host.FullName value is retained as customDetails.HostFullName from query column `DeviceName`, but its target output
+      binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.HostFullName column `DeviceName` requires runtime output-schema binding verification
+    - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
+      and the service drops all custom details if exceeded
+    informational:
+    - All source MITRE tactics are preserved in source order in authored YAML. V3.1 ARM packaging carries only the first tactic
+      and its compatible techniques; this classification loss is not validated parity. Direct Graph deployment requires a
+      single tactic.
+    errors:
+    - 'requiredDataConnectors[5]: ''dataTypes'' is a required property'
+    originalTactics:
+    - InitialAccess
+    - CommandAndControl
+    originalTechniques:
+    - T1566
+    - T1102
+    reviewScope:
+      sourceDocumentSha256: f54a5fc5f1bea022b681fa7ea15bdfed309716f83fd81a8747ff44482cb75d2f
+      targetQuerySha256: a2433781515fc03636df2b41aabcfb0387865b8dcda1e77cdc07ebbc4d3eb9f5
+    reviewDecisions:
+    - reason: 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented
+        by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also
+        retained in customDetails when the query output binding is available; this assumption does not prove entity parity'
+      decision: accepted
+      sourceDocumentSha256: f54a5fc5f1bea022b681fa7ea15bdfed309716f83fd81a8747ff44482cb75d2f
+      targetQuerySha256: a2433781515fc03636df2b41aabcfb0387865b8dcda1e77cdc07ebbc4d3eb9f5
+    supplementalEntityDetails:
+    - entityType: Account
+      entityIndex: 1
+      identifier: FullName
+      sourceColumn: InitiatingProcessAccountUpn
+      column: InitiatingProcessAccountUpn
+      status: runtime-binding-pending
+      customDetailKey: AccountFullName
+    - entityType: Account
+      entityIndex: 2
+      identifier: FullName
+      sourceColumn: RecipientEmailAddress
+      column: RecipientEmailAddress
+      status: runtime-binding-pending
+      customDetailKey: AccountFullName_2
+    - entityType: Host
+      entityIndex: 3
+      identifier: FullName
+      sourceColumn: DeviceName
+      column: DeviceName
+      status: runtime-binding-pending
+      customDetailKey: HostFullName
+    acceptedReviewReasons:
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+properties:
+  id: xdr-6c3a1258-bcdd-4fcd-b753-1a9bc826ce12
+  displayName: Possible Phishing with CSL and Network Sessions
+  status: disabled
+  queryCondition:
+    queryText: |-
+      //SuspiciousUrlClicked
+      AlertEvidence
+      | where ServiceSource =~ "Microsoft Defender for Office 365"
+      | where EntityType =~ "Url"
+      | project AlertId, RemoteUrl
+      | join kind=inner (
+      AlertEvidence
+      | where ServiceSource =~ "Microsoft Defender for Office 365"
+      | where EntityType =~ "MailMessage"
+      | project AlertId, NetworkMessageId
+      )
+      on AlertId
+      | distinct RemoteUrl, NetworkMessageId
+      | join EmailEvents on NetworkMessageId
+      | distinct RemoteUrl, NetworkMessageId, RecipientEmailAddress, RecipientObjectId
+      | join kind = inner IdentityInfo on $left.RecipientObjectId  == $right.AccountObjectId
+      | distinct RemoteUrl, NetworkMessageId, RecipientEmailAddress , RecipientObjectId, AccountSID
+      | join kind = inner
+      (DeviceEvents
+      | where ActionType =~ "BrowserLaunchedToOpenUrl"| where isnotempty(RemoteUrl)
+      | project  UrlClickedByUserSid = RemoteUrl,
+      InitiatingProcessAccountSid, DeviceName, DeviceId, InitiatingProcessFileName,
+      InitiatingProcessAccountUpn, InitiatingProcessAccountName, InitiatingProcessAccountDomain
+      )
+      on $left.AccountSID == $right.InitiatingProcessAccountSid and $left.RemoteUrl == $right.UrlClickedByUserSid
+      | distinct  RemoteUrl, NetworkMessageId, RecipientEmailAddress, RecipientObjectId,
+       AccountSID, UrlClickedByUserSid, DeviceName, DeviceId, InitiatingProcessFileName,
+       InitiatingProcessAccountUpn, InitiatingProcessAccountName, InitiatingProcessAccountDomain
+      |  join kind=inner
+      (
+      //Suspicious url clicked found in common security logs
+      CommonSecurityLog
+      | project TimeGenerated, DeviceVendor, DeviceProduct, DeviceAction, DestinationDnsDomain, DestinationIP, RequestURL, SourceIP, SourceHostName, RequestClientApplication
+      ) on $left.RemoteUrl== $right.RequestURL
+      |  join kind=inner
+      (
+      //Find the relevant network sessions
+      _Im_NetworkSession
+      | where isnotempty(DstIpAddr)
+      | where not(ipv4_is_private(DstIpAddr))
+      | project TimeGenerated, SrcIpAddr, SrcPortNumber, DstIpAddr, DstPortNumber, DstBytes, SrcBytes
+      ) on  $left.DestinationIP == $right.DstIpAddr //The relevant network session being projected
+      | summarize count() by TimeGenerated, RecipientEmailAddress, UrlClickedByUserSid, InitiatingProcessAccountUpn, InitiatingProcessAccountName, InitiatingProcessAccountDomain,
+      DeviceName, InitiatingProcessFileName, DeviceProduct, DeviceAction, SourceIP, DestinationIP, RequestClientApplication
+      | extend HostName = tostring(split(DeviceName, ".")[0]), DomainIndex = toint(indexof(DeviceName, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(DeviceName, DomainIndex + 1), DeviceName)
+      | extend RecipientEmailName = tostring(split(RecipientEmailAddress,'@',0)[0]), RecipientEmailUPNSuffix = tostring(split(RecipientEmailAddress,'@',1)[0])
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: Possible Phishing with CSL and Network Sessions
+      description: "'This query looks for malicious URL clicks in phishing email recognized by MDO in correlation with CommonSecurityLogs(CSL)\
+        \ & NetworkSession events. \nIf your workspace doesnt have one of the many data sources required for ASIM it may give\
+        \ informational error which can be safely ignored.'"
+      severity: medium
+      entityMappings:
+        accounts:
+        - id: account1
+          nameColumn: InitiatingProcessAccountName
+          upnSuffixColumn: InitiatingProcessAccountDomain
+        - id: account2
+          nameColumn: RecipientEmailName
+          upnSuffixColumn: RecipientEmailUPNSuffix
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+        ips:
+        - id: ip1
+          addressColumn: SourceIP
+        - id: ip2
+          addressColumn: DestinationIP
+      tactics:
+      - tactic: InitialAccess
+        techniques:
+        - technique: T1566
+      - tactic: CommandAndControl
+        techniques:
+        - technique: T1102
+      customDetails:
+        AccountFullName: InitiatingProcessAccountUpn
+        AccountFullName_2: RecipientEmailAddress
+        HostFullName: DeviceName

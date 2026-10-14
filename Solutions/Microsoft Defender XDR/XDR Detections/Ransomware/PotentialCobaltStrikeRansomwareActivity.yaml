@@ -1,0 +1,186 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - AlertInfo
+  - AlertEvidence
+  - DeviceLogonEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceLogonEvents
+  - workload: mtp
+    dataTypes:
+    - AlertEvidence
+    - AlertInfo
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - AlertEvidence
+    - AlertInfo
+    - DeviceLogonEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 4bd9ce9d-8586-4beb-8fdb-bd018cacbe7d
+    path: Analytic Rules/Ransomware/PotentialCobaltStrikeRansomwareActivity.yaml
+    version: 1.0.1
+    querySha256: fab13e3aee249b6a89e92b95c300b26a31163e16ad00b182deeb5b71f902c3d2
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 1d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation
+    - 'Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - Host.FullName value is retained as customDetails.HostFullName from query column `DeviceName`, but its target output
+      binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.HostFullName column `DeviceName` requires runtime output-schema binding verification
+    - Account.FullName value is retained as customDetails.AccountFullName from query column `AccountFullName`, but its target
+      output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.AccountFullName column `AccountFullName` requires runtime output-schema binding verification
+    - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
+      and the service drops all custom details if exceeded
+    informational:
+    - All source MITRE tactics are preserved in source order in authored YAML. V3.1 ARM packaging carries only the first tactic
+      and its compatible techniques; this classification loss is not validated parity. Direct Graph deployment requires a
+      single tactic.
+    errors: []
+    originalTactics:
+    - Execution
+    - Persistence
+    - DefenseEvasion
+    - Impact
+    originalTechniques:
+    - T1059
+    - T1078
+    - T1070
+    - T1490
+    reviewScope:
+      sourceDocumentSha256: 6926e9e7a2106f437660129e933c1106abb69154c5e303f436c8b742af824a95
+      targetQuerySha256: c228ff7a334fc8c257db1d831035f510ab998bf66ed8b98184f11aa2ad158cbc
+    reviewDecisions:
+    - reason: Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs
+        cannot be proven equivalent
+      decision: accepted
+      sourceDocumentSha256: 6926e9e7a2106f437660129e933c1106abb69154c5e303f436c8b742af824a95
+      targetQuerySha256: c228ff7a334fc8c257db1d831035f510ab998bf66ed8b98184f11aa2ad158cbc
+    - reason: 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented
+        by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also
+        retained in customDetails when the query output binding is available; this assumption does not prove entity parity'
+      decision: accepted
+      sourceDocumentSha256: 6926e9e7a2106f437660129e933c1106abb69154c5e303f436c8b742af824a95
+      targetQuerySha256: c228ff7a334fc8c257db1d831035f510ab998bf66ed8b98184f11aa2ad158cbc
+    supplementalEntityDetails:
+    - entityType: Host
+      entityIndex: 1
+      identifier: FullName
+      sourceColumn: DeviceName
+      column: DeviceName
+      status: runtime-binding-pending
+      customDetailKey: HostFullName
+    - entityType: Account
+      entityIndex: 2
+      identifier: FullName
+      sourceColumn: AccountFullName
+      column: AccountFullName
+      status: runtime-binding-pending
+      customDetailKey: AccountFullName
+    acceptedReviewReasons:
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot
+      be proven equivalent
+properties:
+  id: xdr-4bd9ce9d-8586-4beb-8fdb-bd018cacbe7d
+  displayName: Potential Ransomware activity related to Cobalt Strike
+  status: disabled
+  queryCondition:
+    queryText: |-
+      // Look for sc.exe disabling services
+      AlertInfo
+      // Attempts to clear security event logs.
+      | where Title in("Event log was cleared",
+      // List alerts flagging attempts to delete backup files.
+      "File backups were deleted",
+      // Potential Cobalt Strike activity - Note that other threat activity can also
+      // trigger alerts for suspicious decoded content
+      "Suspicious decoded content",
+      // Cobalt Strike activity
+      "\'Atosev\' malware was detected",
+      "\'Ploty\' malware was detected",
+      "\'Bynoco\' malware was detected",
+      "\'Cobaltstrike\' malware was detected",
+      "Echo command over pipe on localhost",
+      "Known attack framework activity was observed",
+      "An active \'Cobaltstrike\' malware was detected",
+      "Suspicious \'CobaltStrike\' behavior was prevented",
+      "Suspicious process launch by Rundll32.exe")
+      | extend AlertTime = TimeGenerated | distinct AlertTime, AlertId, Title
+      | join AlertEvidence on $left.AlertId == $right.AlertId
+      | summarize by DeviceId, AlertTime, Title, AlertId
+      // Get device IDs
+      | join DeviceLogonEvents on $left.DeviceId == $right.DeviceId
+      // Creating 10 day Window surrounding alert activity
+      | where TimeGenerated < AlertTime + 12h and TimeGenerated > AlertTime - 12h // Projecting specific columns
+      | project Title, DeviceName, DeviceId, TimeGenerated, LogonType, AccountDomain, AccountName, AccountSid, AlertTime, AlertId, RemoteIP, RemoteDeviceName
+      | extend AccountFullName = tostring(strcat(AccountDomain, "\\", AccountName))
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: Potential Ransomware activity related to Cobalt Strike
+      description: This query searches for alerts related to suspected ransomware and Cobalt Strike activity, a tool used
+        in numerous ransomware campaigns. It looks for alerts that indicate potential ransomware activity, such as attempts
+        to clear security event logs, delete backup files, and execute Cobalt Strike malware.
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+        accounts:
+        - id: account1
+          nameColumn: AccountName
+          dnsDomainColumn: AccountDomain
+        ips:
+        - id: ip1
+          addressColumn: RemoteIP
+      tactics:
+      - tactic: Execution
+        techniques:
+        - technique: T1059
+      - tactic: Persistence
+        techniques:
+        - technique: T1078
+      - tactic: DefenseEvasion
+        techniques:
+        - technique: T1078
+        - technique: T1070
+      - tactic: Impact
+        techniques:
+        - technique: T1490
+      customDetails:
+        HostFullName: DeviceName
+        AccountFullName: AccountFullName

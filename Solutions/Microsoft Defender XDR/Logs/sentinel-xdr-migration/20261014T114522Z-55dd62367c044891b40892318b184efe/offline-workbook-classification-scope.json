@@ -1,0 +1,318 @@
+{
+  "planSha256": "f0b4859aaf930986cfa3f99811429cca88579fd02f5d27331e6d4d65f90999ab",
+  "eligible": [
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/31/content/items/5/content/query",
+      "querySha256": "115d80895a5be2c85508f27e76a48f554b8cd9365d1d7821be31df99aeff3468",
+      "decision": "change",
+      "tables": [
+        "MessageEvents"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/31/content/items/6/content/query",
+      "querySha256": "0b301a80d30871d06c44e6d360d25e6e9e7d0385f8f0f6ab0cde02431fb234ce",
+      "decision": "change",
+      "tables": [
+        "MessageEvents"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/33/content/items/5/content/query",
+      "querySha256": "da62afa3f1cca75722bef666f99f46a05ef7fda8f457f474bb01ca554ca4fd09",
+      "decision": "change",
+      "tables": [
+        "MessageEvents"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/34/content/items/1/content/query",
+      "querySha256": "de4a3cd15b54b7bc12fceea891f3299f9d34e1ac844bcec0579f42f31b1f608a",
+      "decision": "change",
+      "tables": [
+        "MessageEvents",
+        "MessageUrlInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/34/content/items/7/content/query",
+      "querySha256": "36ec75051923aaa5623d7d1a4b2d36e0e93f54392269c6d32de58db718c0866a",
+      "decision": "change",
+      "tables": [
+        "MessageUrlInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/35/content/items/2/content/query",
+      "querySha256": "62029ecfef97ec15504028257c2a5d2f94ce8a1d9764529436f166426143fd61",
+      "decision": "change",
+      "tables": [
+        "MessageEvents"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/35/content/items/5/content/query",
+      "querySha256": "dffcadfd238a9e7b7648a27145cc7af9367c36cac839e2a0d4d5da8f0429a048",
+      "decision": "change",
+      "tables": [
+        "MessageEvents"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/35/content/items/6/content/query",
+      "querySha256": "d6b04c158fd6f88e4f82f99f6e2b0ab2819bdef7f05cabd7eedb790785f672ef",
+      "decision": "change",
+      "tables": [
+        "MessageEvents",
+        "MessageUrlInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/35/content/items/8/content/query",
+      "querySha256": "95180a15fb5a1004fcd60cd3fe6ba3b87f78e527c750d1d34c9dd1479c5b7bca",
+      "decision": "change",
+      "tables": [
+        "MessageEvents"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/35/content/items/10/content/query",
+      "querySha256": "a4b746884de5bb6d00bda9112992bd181df314fcbd1fc660bf27f346bc48659f",
+      "decision": "change",
+      "tables": [
+        "MessageEvents",
+        "MessageUrlInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/35/content/items/12/content/query",
+      "querySha256": "f2a08f578478be075836e68925004bcec49cde95c39255ae9e47d528567de15a",
+      "decision": "change",
+      "tables": [
+        "MessageEvents",
+        "MessageUrlInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/35/content/items/14/content/query",
+      "querySha256": "9481873a44f8ed6dfbf0fd5482557b2162572334750bd1d4a742f46c0109f2b5",
+      "decision": "change",
+      "tables": [
+        "MessageUrlInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/36/content/items/1/content/query",
+      "querySha256": "4b63c2185466fb2c0dbb2ac9cf40db7e8cc9937e1fe634739b699730519de15f",
+      "decision": "change",
+      "tables": [
+        "FileMaliciousContentInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/36/content/items/3/content/query",
+      "querySha256": "dcb287d16b575c18bc08e9b93108034de2a21143f6c2cffc4d6afb357f0467c9",
+      "decision": "change",
+      "tables": [
+        "FileMaliciousContentInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/37/content/items/1/content/query",
+      "querySha256": "d56012dfdfeab7ea980d7397bb06f4dc4f525632b6e855c3f630cb3bdfe53004",
+      "decision": "change",
+      "tables": [
+        "MessagePostDeliveryEvents"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/37/content/items/5/content/query",
+      "querySha256": "6797ba254b49a324742a1644fa0f7b25f1ca5ec2dbcc89de72f01557f3fa6e51",
+      "decision": "change",
+      "tables": [
+        "MessagePostDeliveryEvents"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/37/content/items/7/content/query",
+      "querySha256": "5b242c6518220d383b9aaf3c3c322115b22b7599436fa6aa50afb33584cd5ca7",
+      "decision": "change",
+      "tables": [
+        "MessagePostDeliveryEvents"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/39/content/items/2/content/query",
+      "querySha256": "0fb110cc01724b5f264e5aaa5c0a3e6b4be6050260a6e29a9a0d2c7fe21ed919",
+      "decision": "change",
+      "tables": [
+        "MessageEvents"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/39/content/items/4/content/query",
+      "querySha256": "4b9639f39ccb32743e168a2b1d02e8703a134387a8f8e80a368b383c8f831333",
+      "decision": "change",
+      "tables": [
+        "MessageEvents"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/57/content/items/4/content/query",
+      "querySha256": "87a79048564af89105306f9f0eb6e49d2877f0cb1fe9e4fdbe325666b51b4ff7",
+      "decision": "change",
+      "tables": [
+        "FileMaliciousContentInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/57/content/items/6/content/query",
+      "querySha256": "9ea07eb7836f2e2b1040b6b6e44a86a4c61d61e49c16dc1428c6fc2bb7b6d9d6",
+      "decision": "change",
+      "tables": [
+        "FileMaliciousContentInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/57/content/items/9/content/query",
+      "querySha256": "83eaddab2b108a2803044a325510009d0047dd94858008d869c8659b7ceb14cf",
+      "decision": "change",
+      "tables": [
+        "FileMaliciousContentInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/57/content/items/10/content/query",
+      "querySha256": "ddfe37ebdf81dc3035d9491a0fc453cd230d183059224a86193e44f1e852f98f",
+      "decision": "change",
+      "tables": [
+        "FileMaliciousContentInfo"
+      ],
+      "workspaceFunctions": []
+    },
+    {
+      "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+      "path": "/items/57/content/items/12/content/query",
+      "querySha256": "c0af2e879bb305a1ab536cf7aa9a94c0da845893774b6af9441c54e7e26c20d8",
+      "decision": "change",
+      "tables": [
+        "FileMaliciousContentInfo"
+      ],
+      "workspaceFunctions": []
+    }
+  ],
+  "excluded": [
+    {
+      "path": "/items/3/content/items/2/content/items/1/content/query",
+      "hash": "554088d9c128e08443f51fecd276d5435baaa56ab9f2dd744e1325fc0c0d4132",
+      "unapprovedAliases": [
+        "{Granularity}"
+      ],
+      "unapprovedTables": [
+        "CloudAppEvents",
+        "UrlClickEvents"
+      ],
+      "blockers": []
+    },
+    {
+      "path": "/items/30/content/query",
+      "hash": "7112638b0b50795d443ced8d00eaa0c220c8aa565ac8be30f20061f075662eaf",
+      "unapprovedAliases": [
+        "{Granularity}"
+      ],
+      "unapprovedTables": [],
+      "blockers": []
+    },
+    {
+      "path": "/items/31/content/items/2/content/query",
+      "hash": "addfc8701d3b8ad0712bae67511363b79bc36017bc20156253fc121355e30cb2",
+      "unapprovedAliases": [
+        "{Granularity}"
+      ],
+      "unapprovedTables": [],
+      "blockers": []
+    },
+    {
+      "path": "/items/33/content/items/15/content/query",
+      "hash": "987795e44176c715791378d800d09c992d12ec43b3c5821dacdabb5729189bc3",
+      "unapprovedAliases": [],
+      "unapprovedTables": [
+        "CloudAppEvents"
+      ],
+      "blockers": []
+    },
+    {
+      "path": "/items/37/content/items/4/content/query",
+      "hash": "b2e02ff93ae4800c4296fa4e53f2e91f2124a861d267f8c3f37eeac9bf1406f0",
+      "unapprovedAliases": [
+        "{Granularity}"
+      ],
+      "unapprovedTables": [],
+      "blockers": []
+    },
+    {
+      "path": "/items/56/content/query",
+      "hash": "ee6b26c853c749ddefdc422e3bf84d8957cfc20ec68caf97ea50c45a86fe6b8b",
+      "unapprovedAliases": [
+        "{Granularity}"
+      ],
+      "unapprovedTables": [],
+      "blockers": []
+    },
+    {
+      "path": "/items/57/content/items/2/content/query",
+      "hash": "3f30b8073c8b9cfd3304c7294b4171f12b9760e27160c598bcf9843a95234022",
+      "unapprovedAliases": [
+        "{Granularity}"
+      ],
+      "unapprovedTables": [],
+      "blockers": []
+    }
+  ],
+  "authorization": "Only four native MDO table classifications; no whole-workbook or other-table approval"
+}

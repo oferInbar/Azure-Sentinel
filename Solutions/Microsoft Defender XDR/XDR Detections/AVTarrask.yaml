@@ -1,0 +1,127 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - SecurityAlert
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceInfo
+  - workload: sentinel
+    dataTypes:
+    - SecurityAlert
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - SecurityAlert
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 1785d372-b9fe-4283-96a6-3a1d83cabfd1
+    path: Analytic Rules/AVTarrask.yaml
+    version: 1.0.4
+    querySha256: 9004a5fbaeabafef71cd2a55fd7841a341474b215af5076d97d566f5f38140a3
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 1d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    - Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot
+      be proven equivalent
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    - 'Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - 'Best-effort entity mapping requires review: source Host.FullName column `CompromisedEntity` is provisionally represented
+      by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also
+      retained in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - Host.FullName value is retained as customDetails.HostFullName from query column `CompromisedEntity`, but its target
+      output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.HostFullName column `CompromisedEntity` requires runtime output-schema binding verification
+    - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
+      and the service drops all custom details if exceeded
+    informational: []
+    errors: []
+    originalTactics:
+    - Persistence
+    originalTechniques:
+    - T1053
+    reviewScope:
+      sourceDocumentSha256: eed9f9a3cd0ffe72792d971610354cfda6f50177a7d96a1f003310753276ff3f
+      targetQuerySha256: dcb2c594f1fe4bdaacaa1c58c310f2703ece0245b2ce65459e4927d94912a897
+    reviewDecisions:
+    - reason: 'Best-effort entity mapping requires review: source Host.FullName column `CompromisedEntity` is provisionally
+        represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original
+        value is also retained in customDetails when the query output binding is available; this assumption does not prove
+        entity parity'
+      decision: accepted
+      sourceDocumentSha256: eed9f9a3cd0ffe72792d971610354cfda6f50177a7d96a1f003310753276ff3f
+      targetQuerySha256: dcb2c594f1fe4bdaacaa1c58c310f2703ece0245b2ce65459e4927d94912a897
+    supplementalEntityDetails:
+    - entityType: Host
+      entityIndex: 1
+      identifier: FullName
+      sourceColumn: CompromisedEntity
+      column: CompromisedEntity
+      status: runtime-binding-pending
+      customDetailKey: HostFullName
+    acceptedReviewReasons:
+    - 'Best-effort entity mapping requires review: source Host.FullName column `CompromisedEntity` is provisionally represented
+      by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also
+      retained in customDetails when the query output binding is available; this assumption does not prove entity parity'
+properties:
+  id: xdr-1785d372-b9fe-4283-96a6-3a1d83cabfd1
+  displayName: AV detections related to Tarrask malware
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let Tarrask_threats = dynamic(["HackTool:Win64/Tarrask!MS", "HackTool:Win64/Ligolo!MSR", "Behavior:Win32/ScheduledTaskHide.A", "Tarrask"]);
+      DeviceInfo
+      | extend DeviceName = tolower(DeviceName)
+      | join kind=rightouter ( SecurityAlert
+      | where ProviderName =~ "MDATP"
+      | extend ThreatName = tostring(parse_json(ExtendedProperties).ThreatName)
+      | extend ThreatFamilyName = tostring(parse_json(ExtendedProperties).ThreatFamilyName)
+      | where ThreatName in~ (Tarrask_threats) or ThreatFamilyName in~ (Tarrask_threats)
+      | extend CompromisedEntity = tolower(CompromisedEntity)
+      ) on $left.DeviceName == $right.CompromisedEntity
+      | summarize by DisplayName, ThreatName, ThreatFamilyName, PublicIP, AlertSeverity, Description, tostring(LoggedOnUsers), DeviceId, TenantId , bin(TimeGenerated, 1d), CompromisedEntity, tostring(LoggedOnUsers), ProductName, Entities
+      | extend HostName = tostring(split(CompromisedEntity, ".")[0]), DomainIndex = toint(indexof(CompromisedEntity, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(CompromisedEntity, DomainIndex + 1), CompromisedEntity)
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: AV detections related to Tarrask malware
+      description: "'This query looks for Microsoft Defender AV detections related to Tarrask malware. In Microsoft Sentinel,\
+        \ the SecurityAlerts table includes only the Device Name of the affected device, this query joins the DeviceInfo table\
+        \ to clearly connect other information such as Device group, ip, logged-on users etc. \n This would allow the Microsoft\
+        \ Sentinel analyst to have more context related to the alert, if available.\n Reference: https://www.microsoft.com/security/blog/2022/04/12/tarrask-malware-uses-scheduled-tasks-for-defense-evasion/'"
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+        ips:
+        - id: ip1
+          addressColumn: PublicIP
+      tactics:
+      - tactic: Persistence
+        techniques:
+        - technique: T1053
+      customDetails:
+        HostFullName: CompromisedEntity

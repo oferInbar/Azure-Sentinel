@@ -1,0 +1,601 @@
+{
+  "config": {
+    "ruleOverrides": {
+      "c25a8cd4-5b4a-45a8-9ba0-3b753a652f6b": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column",
+            "decision": "accepted",
+            "sourceDocumentSha256": "74252ed0d044d9402ee904a834fc267bb0ebc5c59f1327ce1ac2623a01a31fce",
+            "targetQuerySha256": "bf1d401d4e61700d07c4634087f3a0656a534fc223b0190eb7e14d80d7b77386"
+          }
+        ]
+      },
+      "2c81c0a0-9823-4a14-b21a-2b4acd3335d2": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column",
+            "decision": "accepted",
+            "sourceDocumentSha256": "6ccffc3625e81839918758c848e1512b2fc48227f6fe8296b6ccb41272f11960",
+            "targetQuerySha256": "cbfd4876ee097a2440abb129f242981f720568b2d4c1fb87a287c9b33930382d"
+          }
+        ]
+      },
+      "c332b840-61e4-462e-a201-0e2d69bad45d": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column",
+            "decision": "accepted",
+            "sourceDocumentSha256": "4103d5553e1b2475cf5e7c401464decd90affc28d7768a0cf5b011c9d5d233fd",
+            "targetQuerySha256": "73133725a611a7230f79d363403c81d287fdc4bfb9e1747f5770ec11689c998e"
+          }
+        ]
+      },
+      "5bdc1504-880c-4b30-a39c-7c746535928d": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column",
+            "decision": "accepted",
+            "sourceDocumentSha256": "1a1aaea76481b9b6a834590f04d21db5206a918f3f0dc571bf7004b06571eb1b",
+            "targetQuerySha256": "c6368782e79049fe0de92473e0f2731e8898bdfaa44acfc602f98a6771a1fa46"
+          }
+        ]
+      },
+      "174de33b-107b-4cd8-a85d-b4025a35453f": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column",
+            "decision": "accepted",
+            "sourceDocumentSha256": "d3d5177bfe606140e1f84256f7e8875ebdcdb33fb878f00413620c426cfe4ccd",
+            "targetQuerySha256": "63ffacd59620727dede1091320211b338f1112f1da58f192e4bfed7febe351b6"
+          }
+        ]
+      },
+      "506f4d6b-3864-4bb1-8f75-a13fb066f97a": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column",
+            "decision": "accepted",
+            "sourceDocumentSha256": "c38ee7da60ca36305e130c3745ab42662ca03a42516d1b285a488a9cdc26751c",
+            "targetQuerySha256": "e09014f9fb04e679c5173b20613aad159bd015327d7589ee2bfc3b68786ba248"
+          }
+        ]
+      },
+      "fa2f7d8a-6726-465a-aa72-6f6e3d4c99d7": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column",
+            "decision": "accepted",
+            "sourceDocumentSha256": "c10c07d9c5debb231da3c703e96d825aded3da5425814ae1d557ad98ef39e83b",
+            "targetQuerySha256": "2838ab56335d208630edf2f671baa2353f5b8b82a034887f0c1b5b145045d1b6"
+          }
+        ]
+      },
+      "32b29155-3fd3-4a9e-a0ca-a67e2593b60b": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column",
+            "decision": "accepted",
+            "sourceDocumentSha256": "5d99f80ab76ac454d9108fc2fa1bb0d03aebe048b746d2b75fc05a5210d4c603",
+            "targetQuerySha256": "c157754b1ce0a72d8f2c2bbff6972a5708792dc5f4ef9fa9f649fe040f8657bb"
+          }
+        ]
+      },
+      "3bd33158-3f0b-47e3-a50f-7c20a1b88038": {
+        "reviewDecisions": [
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `CompromisedEntity` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "49f85e7c98747b279b92aaedb215c42bf5cb2c1ab16e616e0905284ef05c6bc2",
+            "targetQuerySha256": "b2b427c57cc3c301da58e868dfc781185568a03c46d3a592940d0f67784f08ca"
+          }
+        ]
+      },
+      "1785d372-b9fe-4283-96a6-3a1d83cabfd1": {
+        "reviewDecisions": [
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `CompromisedEntity` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "eed9f9a3cd0ffe72792d971610354cfda6f50177a7d96a1f003310753276ff3f",
+            "targetQuerySha256": "dcb2c594f1fe4bdaacaa1c58c310f2703ece0245b2ce65459e4927d94912a897"
+          }
+        ]
+      },
+      "b6685757-3ed1-4b05-a5bd-2cacadc86c2a": {
+        "reviewDecisions": [
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `CompromisedEntity` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "ef8e5be6594a63d70027a8c0eaa9c0a93975201492963bb21f668a37755e096c",
+            "targetQuerySha256": "6d10f64486c0bde9b7458c36a85e24baf5b9d8ebea16a29ead5aa3c0d0cf9e2f"
+          }
+        ]
+      },
+      "bb46dd86-e642-48a4-975c-44f5ac2b5033": {
+        "reviewDecisions": [
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `Dvc` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "03d6cc46296965af3086a20a1e3c55c44b11241c1867d3f3415fcc6c0cc3520d",
+            "targetQuerySha256": "af7ada385a96620254ffc439eee8e08f64d5d819566e82681dee902f36e9542b"
+          }
+        ]
+      },
+      "7ce00cba-f76f-4026-ab7f-7e4f1b67bd18": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "f4e8a8e2c7a5a7376bf919d7f7c72882c68a2d10ab958b40ef14816c854f18b1",
+            "targetQuerySha256": "0b9c5e10ad1d3a55e39b331c68bb185f78f64904349c30dede379ba4afba1191"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "f4e8a8e2c7a5a7376bf919d7f7c72882c68a2d10ab958b40ef14816c854f18b1",
+            "targetQuerySha256": "0b9c5e10ad1d3a55e39b331c68bb185f78f64904349c30dede379ba4afba1191"
+          }
+        ]
+      },
+      "1be34fb9-f81b-47ae-84fb-465e6686d76c": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column",
+            "decision": "accepted",
+            "sourceDocumentSha256": "18b49b71f489a00661e7503e22d144560b4db3a6a3c14536962b6748ee81b194",
+            "targetQuerySha256": "1cd69fba9cb72ccbf756b8b785e4ffc5c3967ea8f88db7bc3a757f6cd2fa94c6"
+          }
+        ]
+      },
+      "36fbd4e7-5630-4414-aa42-702a7fdded21": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "1abda6e55d798c0d56aa9f00dd8ff630e67ba3698527653cf1923bb7ab519791",
+            "targetQuerySha256": "da9fbc2f422a6cece19fab310b53c75a42eceb75b41867a94c71fa525f91181d"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "1abda6e55d798c0d56aa9f00dd8ff630e67ba3698527653cf1923bb7ab519791",
+            "targetQuerySha256": "da9fbc2f422a6cece19fab310b53c75a42eceb75b41867a94c71fa525f91181d"
+          }
+        ]
+      },
+      "2624fc55-0998-4897-bb48-1c6422befce4": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "c68dc623db70ced56301e2f66bc9a792cba0a765f7beef3347a7bcf1a5e56bfb",
+            "targetQuerySha256": "bc6ca5fe8e22eb18cd38afaaa1f3187cecc669ca1f5c28fd893144d6eda1885d"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "c68dc623db70ced56301e2f66bc9a792cba0a765f7beef3347a7bcf1a5e56bfb",
+            "targetQuerySha256": "bc6ca5fe8e22eb18cd38afaaa1f3187cecc669ca1f5c28fd893144d6eda1885d"
+          }
+        ]
+      },
+      "2a1dc4c2-a8d6-4a0e-8539-9b971c851195": {
+        "reviewDecisions": [
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "a3dfc2503a538398a7fc17dd060c02fa300427a79897567131eaec76407cac9c",
+            "targetQuerySha256": "4f536281e9ee51b9834695ec6c23772b6ce79f459c7b36944f69baeae28b1352"
+          }
+        ]
+      },
+      "12134de5-361b-427c-a1a0-d43f40a593c4": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "7e4411d7c58e15beafcaf7c34084f6bc46851336d6bdc5e8a934112623e0bc94",
+            "targetQuerySha256": "4a656f22742a641fd6178ccc48f946a8ef6bec06f0be979ed03e4d02a0fdaf97"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "7e4411d7c58e15beafcaf7c34084f6bc46851336d6bdc5e8a934112623e0bc94",
+            "targetQuerySha256": "4a656f22742a641fd6178ccc48f946a8ef6bec06f0be979ed03e4d02a0fdaf97"
+          }
+        ]
+      },
+      "3ab04acf-e0e7-4f7c-8995-748ab4c848c2": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "da048e43fbaba46baf2910ad4e13c079b5f5335b6c3d615d98a85ffa7daea66b",
+            "targetQuerySha256": "18dddb2acd842db81500324c466179dea6c671339027ef68a1052d623c34f354"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "da048e43fbaba46baf2910ad4e13c079b5f5335b6c3d615d98a85ffa7daea66b",
+            "targetQuerySha256": "18dddb2acd842db81500324c466179dea6c671339027ef68a1052d623c34f354"
+          }
+        ]
+      },
+      "d29cc957-0ddb-4d00-8d6f-ad1bb345ff9a": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "f5af6a8b3b88b48884eb83cbe7073bc9b6a68e29374bc160d10cc6081348cad2",
+            "targetQuerySha256": "a6e9698f582f308c35a5eba6bdd95ad5c46bf04171aff21799c1fac4e09a0e0a"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "f5af6a8b3b88b48884eb83cbe7073bc9b6a68e29374bc160d10cc6081348cad2",
+            "targetQuerySha256": "a6e9698f582f308c35a5eba6bdd95ad5c46bf04171aff21799c1fac4e09a0e0a"
+          }
+        ]
+      },
+      "450f4e56-5bba-4070-b9d9-9204ba9d777d": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "31f05e41d6e760349c18fcdd7fb7bfb656cbe96cc630a8b53d46476cd641a541",
+            "targetQuerySha256": "aef48d7bec099706bbdd586ce8c3bf7d55e0e9612959393a887f67950f75596c"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "31f05e41d6e760349c18fcdd7fb7bfb656cbe96cc630a8b53d46476cd641a541",
+            "targetQuerySha256": "aef48d7bec099706bbdd586ce8c3bf7d55e0e9612959393a887f67950f75596c"
+          }
+        ]
+      },
+      "63aa43c2-e88e-4102-aea5-0432851c541a": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "33dd7393e270d0c5c391f397db477f6b5570830da71d08fd5f548e4918472c1e",
+            "targetQuerySha256": "321476c51025397a3c0aebd1bd59f7923ac687e0e80b2b964d85c5cdab2c7ba5"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "33dd7393e270d0c5c391f397db477f6b5570830da71d08fd5f548e4918472c1e",
+            "targetQuerySha256": "321476c51025397a3c0aebd1bd59f7923ac687e0e80b2b964d85c5cdab2c7ba5"
+          }
+        ]
+      },
+      "91a451e3-178f-41b2-9e5d-da97d75b9971": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "0e6a90fa07af3855e7fc54703e0f53788e3819115821a7a2eea817914888c048",
+            "targetQuerySha256": "511e9a89d4711aabd980adc527a09a3e318fd28a23352627b191cab8c9c88590"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "0e6a90fa07af3855e7fc54703e0f53788e3819115821a7a2eea817914888c048",
+            "targetQuerySha256": "511e9a89d4711aabd980adc527a09a3e318fd28a23352627b191cab8c9c88590"
+          }
+        ]
+      },
+      "6c3a1258-bcdd-4fcd-b753-1a9bc826ce12": {
+        "reviewDecisions": [
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "f54a5fc5f1bea022b681fa7ea15bdfed309716f83fd81a8747ff44482cb75d2f",
+            "targetQuerySha256": "a2433781515fc03636df2b41aabcfb0387865b8dcda1e77cdc07ebbc4d3eb9f5"
+          }
+        ]
+      },
+      "26e81021-2de6-4442-a74a-a77885e96911": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "ede75dd1b3a5c6781d607d557a66dbaa8a45f4941b4b62c1609d22a8994e8e5b",
+            "targetQuerySha256": "7e7a9c73f15d42dd023b3bc97a055faba311776b37180b2d6a29a33698d3ba8b"
+          }
+        ]
+      },
+      "1bf6e165-5e32-420e-ab4f-0da8558a8be2": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "eebfd574c53ba19e736a685a11c524b635da2faa72d60147fec4d18f526ae4e2",
+            "targetQuerySha256": "4b327e281f5412bac9835670098af971d76e63a1e6a0e9f1dcaa2df7e1b4d4df"
+          }
+        ]
+      },
+      "4bd9ce9d-8586-4beb-8fdb-bd018cacbe7d": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "6926e9e7a2106f437660129e933c1106abb69154c5e303f436c8b742af824a95",
+            "targetQuerySha256": "c228ff7a334fc8c257db1d831035f510ab998bf66ed8b98184f11aa2ad158cbc"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "6926e9e7a2106f437660129e933c1106abb69154c5e303f436c8b742af824a95",
+            "targetQuerySha256": "c228ff7a334fc8c257db1d831035f510ab998bf66ed8b98184f11aa2ad158cbc"
+          }
+        ]
+      },
+      "28c63a44-2d35-48b7-831b-3ed24af17c7e": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "f4a8d2d1e3deb71ccc5f664e32da06a8fa354fc052a10f9007a3da1820231f1b",
+            "targetQuerySha256": "1021faf5295cc873743c152dc4e6d5ad5762ad8c1857f87e9a76c47be0b6f2dc"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "f4a8d2d1e3deb71ccc5f664e32da06a8fa354fc052a10f9007a3da1820231f1b",
+            "targetQuerySha256": "1021faf5295cc873743c152dc4e6d5ad5762ad8c1857f87e9a76c47be0b6f2dc"
+          }
+        ]
+      },
+      "53e936c6-6c30-4d12-8343-b8a0456e8429": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "2f24f4efa46d595b3d82f1df804f6e2c80e6438d5e336701e90c13b9b27c207b",
+            "targetQuerySha256": "93f5a45663c37052d8e71613dae1fcea6c27c1bb0147242909070fecc42e625d"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "2f24f4efa46d595b3d82f1df804f6e2c80e6438d5e336701e90c13b9b27c207b",
+            "targetQuerySha256": "93f5a45663c37052d8e71613dae1fcea6c27c1bb0147242909070fecc42e625d"
+          }
+        ]
+      },
+      "a3c144f9-8051-47d4-ac29-ffb0c312c910": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "4fa20012bebbd362fd1965115c6e56066303fa659a0ad8ee9f6c77f571a7557d",
+            "targetQuerySha256": "46d541ca1711c05e7573214708cbcb7fe17780a284076de1a95be2bad225a939"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "4fa20012bebbd362fd1965115c6e56066303fa659a0ad8ee9f6c77f571a7557d",
+            "targetQuerySha256": "46d541ca1711c05e7573214708cbcb7fe17780a284076de1a95be2bad225a939"
+          }
+        ]
+      },
+      "ce1e7025-866c-41f3-9b08-ec170e05e73e": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+            "decision": "accepted",
+            "sourceDocumentSha256": "5937e331643384d37ca287c0a5d752629005322c9ba2dfebfefc3e59bdc87c4d",
+            "targetQuerySha256": "f38c54f99b519654929f2697195a8610c3c4bc770abe478eeabd3e1d0f4f5636"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "5937e331643384d37ca287c0a5d752629005322c9ba2dfebfefc3e59bdc87c4d",
+            "targetQuerySha256": "f38c54f99b519654929f2697195a8610c3c4bc770abe478eeabd3e1d0f4f5636"
+          }
+        ]
+      },
+      "738702fd-0a66-42c7-8586-e30f0583f8fe": {
+        "reviewDecisions": [
+          {
+            "reason": "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column",
+            "decision": "accepted",
+            "sourceDocumentSha256": "f0d862869c67862613a83cb921b56ee1f7d8ec42e910b176ec2a836ee94c8f0f",
+            "targetQuerySha256": "78e512f7245efb889bdcbb99aef43c424a8075d825d2221e0e987635735a3680"
+          },
+          {
+            "reason": "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity",
+            "decision": "accepted",
+            "sourceDocumentSha256": "f0d862869c67862613a83cb921b56ee1f7d8ec42e910b176ec2a836ee94c8f0f",
+            "targetQuerySha256": "78e512f7245efb889bdcbb99aef43c424a8075d825d2221e0e987635735a3680"
+          }
+        ]
+      }
+    }
+  },
+  "selected": [
+    {
+      "id": "3bd33158-3f0b-47e3-a50f-7c20a1b88038",
+      "path": "AVSpringShell.yaml",
+      "reasons": [
+        "Best-effort entity mapping requires review: source Host.FullName column `CompromisedEntity` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "1785d372-b9fe-4283-96a6-3a1d83cabfd1",
+      "path": "AVTarrask.yaml",
+      "reasons": [
+        "Best-effort entity mapping requires review: source Host.FullName column `CompromisedEntity` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "b6685757-3ed1-4b05-a5bd-2cacadc86c2a",
+      "path": "AVdetectionsrelatedtoUkrainebasedthreats.yaml",
+      "reasons": [
+        "Best-effort entity mapping requires review: source Host.FullName column `CompromisedEntity` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "bb46dd86-e642-48a4-975c-44f5ac2b5033",
+      "path": "Campaign/Macaw Ransomware/ImminentRansomware.yaml",
+      "reasons": [
+        "Best-effort entity mapping requires review: source Host.FullName column `Dvc` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "7ce00cba-f76f-4026-ab7f-7e4f1b67bd18",
+      "path": "Command and Control/C2-NamedPipe.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "1be34fb9-f81b-47ae-84fb-465e6686d76c",
+      "path": "Credential Access/DoppelPaymerProcDump.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column"
+      ]
+    },
+    {
+      "id": "36fbd4e7-5630-4414-aa42-702a7fdded21",
+      "path": "Defense Evasion/Regsvr32Rundll32ImageLoadsAbnormalExtension.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "2624fc55-0998-4897-bb48-1c6422befce4",
+      "path": "Defense Evasion/Regsvr32Rundll32WithAnomalousParentProcess.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "2a1dc4c2-a8d6-4a0e-8539-9b971c851195",
+      "path": "Execution/BITSAdminActivity.yaml",
+      "reasons": [
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "12134de5-361b-427c-a1a0-d43f40a593c4",
+      "path": "Execution/PotentialKerberoastActivities.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "3ab04acf-e0e7-4f7c-8995-748ab4c848c2",
+      "path": "Exfiltration/FilesCopiedToUSBDrives.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "d29cc957-0ddb-4d00-8d6f-ad1bb345ff9a",
+      "path": "Lateral Movement/ServiceAccountsPerformingRemotePS.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "450f4e56-5bba-4070-b9d9-9204ba9d777d",
+      "path": "Persistence/AccountCreation.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "63aa43c2-e88e-4102-aea5-0432851c541a",
+      "path": "Persistence/LocalAdminGroupChanges.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "91a451e3-178f-41b2-9e5d-da97d75b9971",
+      "path": "Persistence/RareProcessAsService.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "6c3a1258-bcdd-4fcd-b753-1a9bc826ce12",
+      "path": "PossiblePhishingwithCSL&NetworkSession.yaml",
+      "reasons": [
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "26e81021-2de6-4442-a74a-a77885e96911",
+      "path": "PossibleWebpBufferOverflow.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent"
+      ]
+    },
+    {
+      "id": "1bf6e165-5e32-420e-ab4f-0da8558a8be2",
+      "path": "PotentialBuildProcessCompromiseMDE.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent"
+      ]
+    },
+    {
+      "id": "4bd9ce9d-8586-4beb-8fdb-bd018cacbe7d",
+      "path": "Ransomware/PotentialCobaltStrikeRansomwareActivity.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "28c63a44-2d35-48b7-831b-3ed24af17c7e",
+      "path": "Ransomware/ShadowCopyDeletion.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "53e936c6-6c30-4d12-8343-b8a0456e8429",
+      "path": "SUNSPOTHashes.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "a3c144f9-8051-47d4-ac29-ffb0c312c910",
+      "path": "SolarWinds_SUNBURST_&_SUPERNOVA_File-IOCs.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "ce1e7025-866c-41f3-9b08-ec170e05e73e",
+      "path": "SolarWinds_SUNBURST_Network-IOCs.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    },
+    {
+      "id": "738702fd-0a66-42c7-8586-e30f0583f8fe",
+      "path": "SolarWinds_TEARDROP_Process-IOCs.yaml",
+      "reasons": [
+        "Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an event-time column",
+        "Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity"
+      ]
+    }
+  ]
+}

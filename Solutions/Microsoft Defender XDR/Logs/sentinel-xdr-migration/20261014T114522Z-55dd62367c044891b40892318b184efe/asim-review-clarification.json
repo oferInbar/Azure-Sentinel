@@ -1,0 +1,48 @@
+{
+  "kind": "review-clarification",
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "response": "consolidated-review-response.json",
+  "isValidationOrAcceptanceReceipt": false,
+  "functions": [
+    {
+      "rule": "Campaign/Macaw Ransomware/ImminentRansomware.yaml",
+      "function": "_ASim_ProcessEvent",
+      "classification": "Sentinel built-in ASIM unifying parser",
+      "definitionEvidence": "Parsers/ASimProcessEvent/Parsers/ASimProcessEvent.yaml:18-38",
+      "purpose": "Normalize process events across source-specific parsers; the rule uses CommandLine, DvcId, Dvc and TimeGenerated."
+    },
+    {
+      "rule": "PossiblePhishingwithCSL&NetworkSession.yaml",
+      "function": "_Im_NetworkSession",
+      "classification": "Sentinel built-in ASIM unifying parser",
+      "definitionEvidence": "Parsers/ASimNetworkSession/Parsers/imNetworkSession.yaml:17-62",
+      "purpose": "Normalize network sessions across source-specific parsers; the rule joins normalized source/destination addresses and ports with email, identity, endpoint and CommonSecurityLog data."
+    }
+  ],
+  "officialEvidence": [
+    {
+      "url": "https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-custom-functions",
+      "section": "Custom functions imported from Microsoft Sentinel log analytics",
+      "finding": "Imported Sentinel workspace functions are documented for workbooks, analytics rules and Advanced Hunting, but not Custom Detection rules."
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-custom-functions",
+      "section": "Write your own custom function",
+      "finding": "Functions created in Advanced Hunting can be used in Custom Detections if they are not saved in a Sentinel workspace."
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/azure/sentinel/normalization-about-parsers",
+      "section": "Unifying parsers",
+      "finding": "ASIM uses KQL unifying parsers, including built-in _Im_NetworkSession. This does not itself establish Custom Detection compatibility."
+    }
+  ],
+  "correction": {
+    "originalBroadAsimUnsupportedClaim": "not-established-for-every-asim-function",
+    "reason": "The referenced aliases are Sentinel built-in ASIM parsers, not necessarily user-saved functions imported into Advanced Hunting. The imported-function restriction does not independently prove rejection of both built-in aliases.",
+    "exactCustomDetectionCompatibility": "unverified",
+    "noLiveExecutionAttempted": true,
+    "unresolvedDispositionNotApproved": true,
+    "doNotRewriteOrExcludeTheseQueriesBasedOnlyOnTheBroadClaim": true,
+    "currentToolkitSupportRemainsConservative": true
+  }
+}

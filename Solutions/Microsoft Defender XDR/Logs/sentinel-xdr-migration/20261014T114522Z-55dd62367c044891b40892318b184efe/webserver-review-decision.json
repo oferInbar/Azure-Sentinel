@@ -1,0 +1,25 @@
+{
+  "kind": "authoring-human-review-decision",
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "sourceRuleId": "fa2f7d8a-6726-465a-aa72-6f6e3d4c99d7",
+  "approvalReference": "User selected acceptance in the webserver aggregation review form in Copilot session 5d48e2ad-f67d-4314-b990-7eb2db60a695",
+  "decision": "Accept PT1H with the native 4-hour per-device aggregate; keep the query and record the event-context limitation",
+  "reviewScope": {
+    "sourceDocumentSha256": "c10c07d9c5debb231da3c703e96d825aded3da5425814ae1d557ad98ef39e83b",
+    "targetQuerySha256": "2838ab56335d208630edf2f671baa2353f5b8b82a034887f0c1b5b145045d1b6"
+  },
+  "limitations": [
+    "The native four-hour ingestion-based lookback can add command lines and alter representative values in each per-device aggregate compared with Sentinel's one-hour period; aggregation and timing parity are not established.",
+    "DeviceId and DeviceName are retained, but summarize drops Timestamp and ReportId. Precise event timing and process enrichment are not established.",
+    "All source tactics remain in YAML; the current packaging boundary emits only the first tactic."
+  ],
+  "scope": {
+    "preserveQueryScheduleIdentityAndAlertPayload": true,
+    "preserveSourceContentAndDisabledStatus": true,
+    "otherRulesApproved": false,
+    "runtimeValidationPerformed": false,
+    "packagingApproved": false,
+    "cloudOperationsApproved": false,
+    "alertParityVerified": false
+  }
+}

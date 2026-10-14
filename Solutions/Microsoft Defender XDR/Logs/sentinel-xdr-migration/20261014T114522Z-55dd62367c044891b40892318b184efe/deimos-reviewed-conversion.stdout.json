@@ -1,0 +1,43 @@
+{
+  "solution": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR",
+  "scope": {
+    "kind": "rule",
+    "ruleIds": [
+      "c25a8cd4-5b4a-45a8-9ba0-3b753a652f6b"
+    ],
+    "sourceTotal": 40,
+    "selectedTotal": 1
+  },
+  "outputDirectory": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/XDR Detections",
+  "reportDirectory": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "manifest": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe/manifest.json",
+  "transformationReport": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe/transformation-report.html",
+  "total": 1,
+  "converted": 1,
+  "excluded": 0,
+  "needsReview": 0,
+  "reviewRequired": 0,
+  "deploymentReady": 0,
+  "conflicts": 0,
+  "results": [
+    {
+      "source": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Analytic Rules/Campaign/Jupyter-Solarmaker/DeimosComponentExecution.yaml",
+      "output": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/XDR Detections/Campaign/Jupyter-Solarmaker/DeimosComponentExecution.yaml",
+      "displayName": "Deimos Component Execution",
+      "status": "converted",
+      "reviewRequired": false,
+      "reviewReasons": [],
+      "warnings": [
+        "Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native service windows differ; no explicit event-time bound proves equivalence to Defender ingestion-time evaluation. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback"
+      ],
+      "errors": [],
+      "informational": [
+        "Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`; the query explicitly decomposes that same full name. No fullNameColumn is emitted",
+        "All source MITRE tactics are preserved in source order in authored YAML. V3.1 ARM packaging carries only the first tactic and its compatible techniques; this classification loss is not validated parity. Direct Graph deployment requires a single tactic."
+      ],
+      "directGraphDeploymentReady": false,
+      "sourceRelativePath": "Analytic Rules/Campaign/Jupyter-Solarmaker/DeimosComponentExecution.yaml",
+      "outputRelativePath": "XDR Detections/Campaign/Jupyter-Solarmaker/DeimosComponentExecution.yaml"
+    }
+  ]
+}

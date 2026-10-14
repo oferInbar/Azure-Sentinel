@@ -1,0 +1,100 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceProcessEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceProcessEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceProcessEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 4dd31bd5-11a3-4b9c-a7c5-4927ab4f2a77
+    path: Analytic Rules/Ransomware/MultiProcessKillWithTaskKill.yaml
+    version: 1.0.0
+    querySha256: ed5c5de572a99d43bf9cf8b0ce622c81822b37022da514e66bdc0f0ba32a3f5a
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; effective event
+      windows source=3600s, target=3600s; event-time window constrained to original Sentinel lookback. The XDR service window
+      remains 14400s and is not identical to the Sentinel service window; late-ingestion risk remains and cadence/service-window
+      parity is not established. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    informational:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; effective event
+      windows source=3600s, target=3600s; event-time window constrained to original Sentinel lookback. The XDR service window
+      remains 14400s and is not identical to the Sentinel service window; late-ingestion risk remains and cadence/service-window
+      parity is not established. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    errors: []
+    originalTactics:
+    - DefenseEvasion
+    originalTechniques:
+    - T1562
+    reviewScope:
+      sourceDocumentSha256: 5a4e3dc63b73eed98492ae177bd072734e78f026a2c1dfbcae883170b6a5bb6b
+      targetQuerySha256: 3cce3b48861be16962b8beaf12fc848465d16da7711ea8bce234dd7e11b26dbe
+    eventTimeWindow:
+      status: constrained
+      originalSentinelLookbackSeconds: 3600
+      effectiveEventWindowSeconds: 3600
+      xdrServiceWindowSeconds: 14400
+      sourceTimeColumn: TimeGenerated
+      targetTimeColumn: Timestamp
+      filterInjected: true
+      rationale: A conservative single-native-table pipeline proof established the source and target input and time-column
+        binding. The target Timestamp filter is placed immediately after the table input and before all filters, projections,
+        and aggregations.
+      lateIngestionRisk: 'Late-ingestion risk: events ingested after their Timestamp falls outside this constrained event-time
+        window can be missed; runtime qualification is required.'
+properties:
+  id: xdr-4dd31bd5-11a3-4b9c-a7c5-4927ab4f2a77
+  displayName: Stopping multiple processes using taskkill
+  status: disabled
+  queryCondition:
+    queryText: |-
+      // Find attempts to stop processes using taskkill.exe
+      DeviceProcessEvents | where Timestamp >= ago(1h)
+      | where FileName =~ "taskkill.exe"
+      | summarize taskKillCount = dcount(ProcessCommandLine), TaskKillList = make_set(ProcessCommandLine, 10000) by DeviceId, DeviceName, bin(Timestamp, 2m)
+      | where taskKillCount > 10
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Stopping multiple processes using taskkill
+      description: This query checks for attempts to stop at least 10 separate processes using the taskkill.exe utility. This
+        is a common technique used by ransomware to stop security products and other processes.
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: DefenseEvasion
+        techniques:
+        - technique: T1562

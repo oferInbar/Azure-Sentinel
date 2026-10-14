@@ -1,0 +1,13 @@
+{
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "completedAtUtc": "2026-10-14T13:26:00.129782+00:00",
+  "changedContentFiles": [
+    "XDR Detections/Discovery/SuspiciousCommandInitiatedByWebServerProcess.yaml"
+  ],
+  "queryAggregationScheduleIdentityAndAlertPayloadUnchanged": true,
+  "sourceAndUnselectedContentUnchanged": true,
+  "disabled": true,
+  "reviewDecisionRecorded": true,
+  "runtimeValidated": false,
+  "wholeSolutionReady": false
+}

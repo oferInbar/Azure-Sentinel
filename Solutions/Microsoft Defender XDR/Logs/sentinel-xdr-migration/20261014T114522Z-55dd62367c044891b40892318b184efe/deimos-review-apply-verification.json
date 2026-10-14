@@ -1,0 +1,13 @@
+{
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "operation": "scoped-Deimos-human-review-application",
+  "changedContentFiles": [
+    "XDR Detections/Campaign/Jupyter-Solarmaker/DeimosComponentExecution.yaml"
+  ],
+  "sourceAndUnselectedContentUnchanged": true,
+  "queryScheduleIdentityAndAlertPayloadUnchanged": true,
+  "disabled": true,
+  "reviewDecisionRecorded": true,
+  "wholeSolutionReady": false,
+  "runtimeValidated": false
+}

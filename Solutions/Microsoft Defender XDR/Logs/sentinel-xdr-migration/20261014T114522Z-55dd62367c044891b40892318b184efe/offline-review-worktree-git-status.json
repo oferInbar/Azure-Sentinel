@@ -1,0 +1,14 @@
+{
+  "command": [
+    "git",
+    "--no-pager",
+    "-C",
+    "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1",
+    "status",
+    "--short"
+  ],
+  "exitCode": 0,
+  "stdout": " M \"Solutions/Microsoft Defender XDR/Data/Solution_Microsoft Defender XDR.json\"\n?? \"Solutions/Microsoft Defender XDR/XDR Detections/\"\n?? \"Solutions/Microsoft Defender XDR/XDR Workbooks/\"\n",
+  "stderr": "",
+  "caveat": "End-of-operation status; not a pre-existing-changes baseline."
+}

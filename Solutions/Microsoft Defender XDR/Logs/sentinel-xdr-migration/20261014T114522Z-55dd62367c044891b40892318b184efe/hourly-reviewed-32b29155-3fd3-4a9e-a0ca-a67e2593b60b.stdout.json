@@ -1,0 +1,49 @@
+{
+  "solution": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR",
+  "scope": {
+    "kind": "rule",
+    "ruleIds": [
+      "32b29155-3fd3-4a9e-a0ca-a67e2593b60b"
+    ],
+    "sourceTotal": 40,
+    "selectedTotal": 1
+  },
+  "outputDirectory": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/XDR Detections",
+  "reportDirectory": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "manifest": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe/manifest.json",
+  "transformationReport": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe/transformation-report.html",
+  "total": 1,
+  "converted": 1,
+  "excluded": 0,
+  "needsReview": 0,
+  "reviewRequired": 0,
+  "deploymentReady": 1,
+  "conflicts": 0,
+  "results": [
+    {
+      "source": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Analytic Rules/Ransomware/DEV-0270/DisableSecurityServiceViaRegistry.yaml",
+      "output": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/XDR Detections/Ransomware/DEV-0270/DisableSecurityServiceViaRegistry.yaml",
+      "displayName": "Disabling Security Services via Registry",
+      "status": "converted",
+      "reviewRequired": false,
+      "reviewReasons": [],
+      "warnings": [
+        "Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native service windows differ; no explicit event-time bound proves equivalence to Defender ingestion-time evaluation. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback",
+        "Account.FullName value is retained as customDetails.AccountFullName from query column `AccountUpn`, but its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation",
+        "Supplemental customDetails.AccountFullName column `AccountUpn` requires runtime output-schema binding verification",
+        "Process.ProcessId value is retained as customDetails.ProcessProcessId from query column `ProcessId`, but its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation",
+        "Supplemental customDetails.ProcessProcessId column `ProcessId` requires runtime output-schema binding verification",
+        "Process.CommandLine value is retained as customDetails.ProcessCommandLine from query column `ProcessCommandLine`, but its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation",
+        "Supplemental customDetails.ProcessCommandLine column `ProcessCommandLine` requires runtime output-schema binding verification",
+        "Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified and the service drops all custom details if exceeded"
+      ],
+      "errors": [],
+      "informational": [
+        "Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`; the query explicitly decomposes that same full name. No fullNameColumn is emitted"
+      ],
+      "directGraphDeploymentReady": true,
+      "sourceRelativePath": "Analytic Rules/Ransomware/DEV-0270/DisableSecurityServiceViaRegistry.yaml",
+      "outputRelativePath": "XDR Detections/Ransomware/DEV-0270/DisableSecurityServiceViaRegistry.yaml"
+    }
+  ]
+}

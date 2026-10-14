@@ -1,0 +1,175 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceEvents
+  - DeviceFileEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceEvents
+    - DeviceFileEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceEvents
+    - DeviceFileEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 3ab04acf-e0e7-4f7c-8995-748ab4c848c2
+    path: Analytic Rules/Exfiltration/FilesCopiedToUSBDrives.yaml
+    version: 1.0.0
+    querySha256: 161193c19bae0958bef335b4dfd13f6346291f3ca2840af88c24e099f02b2bae
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - 'converter cannot map FileHash.Algorithm/Value: requires a query-proven constant SHA1 or SHA256 algorithm and an available
+      hash value column; MD5, unknown algorithms and linked file/process references are not inferred'
+    - Host.FullName value is retained as customDetails.HostFullName from query column `DeviceName`, but its target output
+      binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.HostFullName column `DeviceName` requires runtime output-schema binding verification
+    - File.Directory value is retained as customDetails.FileDirectory from query column `FolderPath`, but its target output
+      binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.FileDirectory column `FolderPath` requires runtime output-schema binding verification
+    - FileHash.Algorithm value is retained as customDetails.FileHashAlgorithm from query column `FileHashAlgorithm`, but its
+      target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.FileHashAlgorithm column `FileHashAlgorithm` requires runtime output-schema binding verification
+    - FileHash.Value value is retained as customDetails.FileHashValue from query column `SHA256`, but its target output binding
+      requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.FileHashValue column `SHA256` requires runtime output-schema binding verification
+    - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
+      and the service drops all custom details if exceeded
+    informational: []
+    errors: []
+    originalTactics:
+    - Exfiltration
+    originalTechniques:
+    - T1041
+    reviewScope:
+      sourceDocumentSha256: da048e43fbaba46baf2910ad4e13c079b5f5335b6c3d615d98a85ffa7daea66b
+      targetQuerySha256: 18dddb2acd842db81500324c466179dea6c671339027ef68a1052d623c34f354
+    reviewDecisions:
+    - reason: Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs
+        cannot be proven equivalent
+      decision: accepted
+      sourceDocumentSha256: da048e43fbaba46baf2910ad4e13c079b5f5335b6c3d615d98a85ffa7daea66b
+      targetQuerySha256: 18dddb2acd842db81500324c466179dea6c671339027ef68a1052d623c34f354
+    - reason: 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented
+        by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also
+        retained in customDetails when the query output binding is available; this assumption does not prove entity parity'
+      decision: accepted
+      sourceDocumentSha256: da048e43fbaba46baf2910ad4e13c079b5f5335b6c3d615d98a85ffa7daea66b
+      targetQuerySha256: 18dddb2acd842db81500324c466179dea6c671339027ef68a1052d623c34f354
+    supplementalEntityDetails:
+    - entityType: Host
+      entityIndex: 1
+      identifier: FullName
+      sourceColumn: DeviceName
+      column: DeviceName
+      status: runtime-binding-pending
+      customDetailKey: HostFullName
+    - entityType: File
+      entityIndex: 2
+      identifier: Directory
+      sourceColumn: FolderPath
+      column: FolderPath
+      status: runtime-binding-pending
+      customDetailKey: FileDirectory
+    - entityType: FileHash
+      entityIndex: 3
+      identifier: Algorithm
+      sourceColumn: FileHashAlgorithm
+      column: FileHashAlgorithm
+      status: runtime-binding-pending
+      customDetailKey: FileHashAlgorithm
+    - entityType: FileHash
+      entityIndex: 3
+      identifier: Value
+      sourceColumn: SHA256
+      column: SHA256
+      status: runtime-binding-pending
+      customDetailKey: FileHashValue
+    acceptedReviewReasons:
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot
+      be proven equivalent
+properties:
+  id: xdr-3ab04acf-e0e7-4f7c-8995-748ab4c848c2
+  displayName: Files Copied to USB Drives
+  status: disabled
+  queryCondition:
+    queryText: |-
+      let UsbDriveMount = DeviceEvents
+      | where ActionType=="UsbDriveMounted"
+      | extend ParsedFields=parse_json(AdditionalFields)
+      | project DeviceId, DeviceName, DriveLetter=ParsedFields.DriveLetter, MountTime=TimeGenerated,
+      ProductName=ParsedFields.ProductName,SerialNumber=ParsedFields.SerialNumber,Manufacturer=ParsedFields.Manufacturer
+      | order by DeviceId asc, MountTime desc;
+      let FileCreation = DeviceFileEvents
+      | where InitiatingProcessAccountName != "system"
+      | where ActionType == "FileCreated"
+      | where FolderPath !startswith "C:\\"
+      | where FolderPath !startswith "\\"
+      | project ReportId,DeviceId,InitiatingProcessAccountDomain,
+      InitiatingProcessAccountName,InitiatingProcessAccountUpn,
+      FileName, FolderPath, SHA256, TimeGenerated, SensitivityLabel, IsAzureInfoProtectionApplied
+      | order by DeviceId asc, TimeGenerated desc;
+      FileCreation | lookup kind=inner (UsbDriveMount) on DeviceId
+      | where FolderPath startswith DriveLetter
+      | where TimeGenerated >= MountTime
+      | partition hint.strategy=native by ReportId ( top 1 by MountTime )
+      | order by DeviceId asc, TimeGenerated desc
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+      | extend FileHashAlgorithm = 'SHA256'
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Files Copied to USB Drives
+      description: This query lists files copied to USB external drives with USB drive information based on FileCreated events
+        associated with most recent USBDriveMount events befor file creations. But be aware that Advanced Hunting is not monitoring
+        all the file types.
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+        files:
+        - id: file1
+          nameColumn: FileName
+      tactics:
+      - tactic: Exfiltration
+        techniques:
+        - technique: T1041
+      customDetails:
+        HostFullName: DeviceName
+        FileDirectory: FolderPath
+        FileHashAlgorithm: FileHashAlgorithm
+        FileHashValue: SHA256

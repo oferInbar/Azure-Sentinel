@@ -1,0 +1,141 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceProcessEvents
+  - DeviceNetworkEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceNetworkEvents
+    - DeviceProcessEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceNetworkEvents
+    - DeviceProcessEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 2624fc55-0998-4897-bb48-1c6422befce4
+    path: Analytic Rules/Defense Evasion/Regsvr32Rundll32WithAnomalousParentProcess.yaml
+    version: 1.0.0
+    querySha256: e392d1cd7ff45e6f79e588995722e06f1cd3e9f60e76c1ef3388295dce7ff490
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - URL.Url column `RemoteUrl` is not produced by the query
+    - Host.FullName output column `DeviceName` cannot be proven after a destructive projection; no supplemental customDetails
+      binding was added and KQL was not rewritten. Runtime output-schema verification is required
+    - URL.Url output column `RemoteUrl` cannot be proven after a destructive projection; no supplemental customDetails binding
+      was added and KQL was not rewritten. Runtime output-schema verification is required
+    informational: []
+    errors: []
+    originalTactics:
+    - DefenseEvasion
+    originalTechniques:
+    - T1218.010
+    - T1218.011
+    reviewScope:
+      sourceDocumentSha256: c68dc623db70ced56301e2f66bc9a792cba0a765f7beef3347a7bcf1a5e56bfb
+      targetQuerySha256: bc6ca5fe8e22eb18cd38afaaa1f3187cecc669ca1f5c28fd893144d6eda1885d
+    reviewDecisions:
+    - reason: Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs
+        cannot be proven equivalent
+      decision: accepted
+      sourceDocumentSha256: c68dc623db70ced56301e2f66bc9a792cba0a765f7beef3347a7bcf1a5e56bfb
+      targetQuerySha256: bc6ca5fe8e22eb18cd38afaaa1f3187cecc669ca1f5c28fd893144d6eda1885d
+    - reason: 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented
+        by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also
+        retained in customDetails when the query output binding is available; this assumption does not prove entity parity'
+      decision: accepted
+      sourceDocumentSha256: c68dc623db70ced56301e2f66bc9a792cba0a765f7beef3347a7bcf1a5e56bfb
+      targetQuerySha256: bc6ca5fe8e22eb18cd38afaaa1f3187cecc669ca1f5c28fd893144d6eda1885d
+    supplementalEntityDetails:
+    - entityType: Host
+      entityIndex: 1
+      identifier: FullName
+      sourceColumn: DeviceName
+      column: DeviceName
+      status: unproven-destructive-projection
+      reason: unproven-destructive-projection
+    - entityType: URL
+      entityIndex: 4
+      identifier: Url
+      sourceColumn: RemoteUrl
+      column: RemoteUrl
+      status: unproven-destructive-projection
+      reason: unproven-destructive-projection
+    acceptedReviewReasons:
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot
+      be proven equivalent
+properties:
+  id: xdr-2624fc55-0998-4897-bb48-1c6422befce4
+  displayName: Regsvr32 Rundll32 with Anomalous Parent Process
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents
+      | where FileName has_any ("rundll32.exe","regsvr32.exe")
+      | where InitiatingProcessFileName has_any ("wscript.exe","powershell.exe","cmd.exe","pwsh.exe","cscript.exe")
+      | project TimeGenerated, DeviceName, InvestigatedProcessName=FileName, InvestigatedProcessCommandLine = ProcessCommandLine,InvestigatedProcessStartTime = ProcessCreationTime, InvestigatedProcessId = ProcessId, InitiatingProcessFileName, InitiatingProcessCommandLine, InitiatingProcessParentFileName
+      | join (
+      DeviceNetworkEvents
+      | where InitiatingProcessFileName has_any ("rundll32.exe","regsvr32.exe")
+      | where RemoteIPType == "Public"
+      | project DeviceName, InvestigatedProcessName=InitiatingProcessFileName, InvestigatedProcessCommandLine = InitiatingProcessCommandLine,InvestigatedProcessStartTime = InitiatingProcessCreationTime, InvestigatedProcessId = InitiatingProcessId, LocalIP, RemoteIP, RemoteUrl
+      ) on DeviceName, InvestigatedProcessCommandLine, InvestigatedProcessId, InvestigatedProcessName, InvestigatedProcessStartTime
+      | project-away DeviceName1, InvestigatedProcessCommandLine1, InvestigatedProcessId1, InvestigatedProcessName1, InvestigatedProcessStartTime1
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Regsvr32 Rundll32 with Anomalous Parent Process
+      description: |-
+        This analytical rule looks for rundll32.exe or regsvr32.exe being spawned by abnormal processes: wscript.exe, powershell.exe, cmd.exe, pwsh.exe, cscript.exe.
+        Blog: https://threathunt.blog/running-live-malware-for-threat-hunting-purposes/
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+        ips:
+        - id: ip1
+          addressColumn: LocalIP
+        - id: ip2
+          addressColumn: RemoteIP
+      tactics:
+      - tactic: DefenseEvasion
+        techniques:
+        - technique: T1218
+          subTechniques:
+          - T1218.010
+          - T1218.011

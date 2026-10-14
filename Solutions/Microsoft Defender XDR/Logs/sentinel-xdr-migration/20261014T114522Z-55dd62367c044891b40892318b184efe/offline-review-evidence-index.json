@@ -1,0 +1,58 @@
+{
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "status": "completed-bounded-offline-review",
+  "artifacts": [
+    {
+      "path": "authoring-review-config.json",
+      "sha256": "2628f82cdc6c9f59d7e4850eb498e2f4fea77ee3867e44b3377fcc734c4c5504"
+    },
+    {
+      "path": "offline-review-baseline.json",
+      "sha256": "967a9109427eb824e1bf31e06958e5e5d465e6473097370a06db11aef6f22f68"
+    },
+    {
+      "path": "offline-review-conversion-batch.json",
+      "sha256": "7d02022bcd83b961951207bcbc476a4fb947188110d80cf78d903c6b28911fb3"
+    },
+    {
+      "path": "offline-review-application-receipt.json",
+      "sha256": "581f1ae58bd0894e71484ad44c2e8c99be2a2ab22943279e2cea2f5e61734bf8"
+    },
+    {
+      "path": "offline-review-manual-authoring-receipt.json",
+      "sha256": "406ea98ea19c838f4221c7115b4957e6be2d795e05b485ce8f10d3a3d3e5357c"
+    },
+    {
+      "path": "offline-review-remaining-decisions.json",
+      "sha256": "f6298ec03e8efdc5f1d7df1bd6934d2c4ebe5c186aa15eec8c9c59f1f676bcf9"
+    },
+    {
+      "path": "offline-workbook-dependency-plan.json",
+      "sha256": "5ed38e0252e36540fbfdf0b434e7fe1f7c900195d78379dfe31c94628238f370"
+    },
+    {
+      "path": "offline-workbook-review/workbook-review-receipt.json",
+      "sha256": "47915ffbabf0a8e0f9e43263d9d6d248f7c4490e9fb533e97b3f42a31e200f13"
+    },
+    {
+      "path": "offline-workbook-review/conversion-config.json",
+      "sha256": "e59d41a08b40bd0f59d94b493c30b8a7e97f291ee542e473e876960a7e32527f"
+    },
+    {
+      "path": "consolidated-review-packet.json",
+      "sha256": "d6e44d0db480593fc535c9ca8642b409ba72e3e9319ec9801622922609766331"
+    },
+    {
+      "path": "consolidated-review-response.json",
+      "sha256": "9345f539fed90f50ecf82d40556469b6e144874cf041b0dc486d8af3115ef60f"
+    }
+  ],
+  "conversionJson": "migration-report.json",
+  "conversionHtml": "transformation-report.html",
+  "conversionScope": "last single rule only, not full inventory; predates final manual edits",
+  "runtimeReports": {
+    "providerSpecificJson": null,
+    "providerSpecificHtml": null,
+    "reason": "Not authorized or executed; no runtime-ready claim."
+  }
+}

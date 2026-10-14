@@ -1,0 +1,130 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceProcessEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceProcessEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceProcessEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 32b29155-3fd3-4a9e-a0ca-a67e2593b60b
+    path: Analytic Rules/Ransomware/DEV-0270/DisableSecurityServiceViaRegistry.yaml
+    version: 1.0.0
+    querySha256: 27a3990a04c4f54f8c81d1ce0a529c9409d04bf4914465ebcf7f2637e206ee82
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      service windows differ; no explicit event-time bound proves equivalence to Defender ingestion-time evaluation. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Account.FullName value is retained as customDetails.AccountFullName from query column `AccountUpn`, but its target output
+      binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.AccountFullName column `AccountUpn` requires runtime output-schema binding verification
+    - Process.ProcessId value is retained as customDetails.ProcessProcessId from query column `ProcessId`, but its target
+      output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.ProcessProcessId column `ProcessId` requires runtime output-schema binding verification
+    - Process.CommandLine value is retained as customDetails.ProcessCommandLine from query column `ProcessCommandLine`, but
+      its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.ProcessCommandLine column `ProcessCommandLine` requires runtime output-schema binding verification
+    - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
+      and the service drops all custom details if exceeded
+    informational:
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    errors: []
+    originalTactics:
+    - DefenseEvasion
+    originalTechniques:
+    - T1562
+    reviewScope:
+      sourceDocumentSha256: 5d99f80ab76ac454d9108fc2fa1bb0d03aebe048b746d2b75fc05a5210d4c603
+      targetQuerySha256: c157754b1ce0a72d8f2c2bbff6972a5708792dc5f4ef9fa9f649fe040f8657bb
+    reviewDecisions:
+    - reason: Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish
+        an event-time column
+      decision: accepted
+      sourceDocumentSha256: 5d99f80ab76ac454d9108fc2fa1bb0d03aebe048b746d2b75fc05a5210d4c603
+      targetQuerySha256: c157754b1ce0a72d8f2c2bbff6972a5708792dc5f4ef9fa9f649fe040f8657bb
+    supplementalEntityDetails:
+    - entityType: Account
+      entityIndex: 2
+      identifier: FullName
+      sourceColumn: AccountUpn
+      column: AccountUpn
+      status: runtime-binding-pending
+      customDetailKey: AccountFullName
+    - entityType: Process
+      entityIndex: 3
+      identifier: ProcessId
+      sourceColumn: ProcessId
+      column: ProcessId
+      status: runtime-binding-pending
+      customDetailKey: ProcessProcessId
+    - entityType: Process
+      entityIndex: 3
+      identifier: CommandLine
+      sourceColumn: ProcessCommandLine
+      column: ProcessCommandLine
+      status: runtime-binding-pending
+      customDetailKey: ProcessCommandLine
+    acceptedReviewReasons:
+    - Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an
+      event-time column
+properties:
+  id: xdr-32b29155-3fd3-4a9e-a0ca-a67e2593b60b
+  displayName: Disabling Security Services via Registry
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents
+      | where InitiatingProcessCommandLine has_all(@'"reg"', 'add', @'"HKLM\SOFTWARE\Policies\', '/v','/t', 'REG_DWORD', '/d', '/f')
+        and InitiatingProcessCommandLine has_any('DisableRealtimeMonitoring', 'UseTPMKey', 'UseTPMKeyPIN', 'UseAdvancedStartup',
+        'EnableBDEWithNoTPM', 'RecoveryKeyMessageSource')
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Disabling Security Services via Registry
+      description: This query checks for processes modifying the registry to disable security features. This is a common technique
+        used by threat actors for defence evasion.
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+        accounts:
+        - id: account1
+          nameColumn: AccountName
+          ntDomainColumn: AccountDomain
+      tactics:
+      - tactic: DefenseEvasion
+        techniques:
+        - technique: T1562
+      customDetails:
+        AccountFullName: AccountUpn
+        ProcessProcessId: ProcessId
+        ProcessCommandLine: ProcessCommandLine

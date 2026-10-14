@@ -1,0 +1,125 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceProcessEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceProcessEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceProcessEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 174de33b-107b-4cd8-a85d-b4025a35453f
+    path: Analytic Rules/Execution/OfficeAppsLaunchingWscript.yaml
+    version: 1.0.0
+    querySha256: 3a8240af1bc6fe4aece7311f88b37d1244e2362d30a5919da4508f11035c8a79
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      service windows differ; no explicit event-time bound proves equivalence to Defender ingestion-time evaluation. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Process.ProcessId value is retained as customDetails.ProcessProcessId from query column `ProcessId`, but its target
+      output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.ProcessProcessId column `ProcessId` requires runtime output-schema binding verification
+    - Process.CommandLine value is retained as customDetails.ProcessCommandLine from query column `ProcessCommandLine`, but
+      its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.ProcessCommandLine column `ProcessCommandLine` requires runtime output-schema binding verification
+    - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
+      and the service drops all custom details if exceeded
+    informational:
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    - All source MITRE tactics are preserved in source order in authored YAML. V3.1 ARM packaging carries only the first tactic
+      and its compatible techniques; this classification loss is not validated parity. Direct Graph deployment requires a
+      single tactic.
+    errors: []
+    originalTactics:
+    - Execution
+    - Collection
+    - CommandAndControl
+    originalTechniques:
+    - T1059
+    - T1105
+    - T1203
+    reviewScope:
+      sourceDocumentSha256: d3d5177bfe606140e1f84256f7e8875ebdcdb33fb878f00413620c426cfe4ccd
+      targetQuerySha256: 63ffacd59620727dede1091320211b338f1112f1da58f192e4bfed7febe351b6
+    reviewDecisions:
+    - reason: Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish
+        an event-time column
+      decision: accepted
+      sourceDocumentSha256: d3d5177bfe606140e1f84256f7e8875ebdcdb33fb878f00413620c426cfe4ccd
+      targetQuerySha256: 63ffacd59620727dede1091320211b338f1112f1da58f192e4bfed7febe351b6
+    supplementalEntityDetails:
+    - entityType: Process
+      entityIndex: 2
+      identifier: ProcessId
+      sourceColumn: ProcessId
+      column: ProcessId
+      status: runtime-binding-pending
+      customDetailKey: ProcessProcessId
+    - entityType: Process
+      entityIndex: 2
+      identifier: CommandLine
+      sourceColumn: ProcessCommandLine
+      column: ProcessCommandLine
+      status: runtime-binding-pending
+      customDetailKey: ProcessCommandLine
+    acceptedReviewReasons:
+    - Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an
+      event-time column
+properties:
+  id: xdr-174de33b-107b-4cd8-a85d-b4025a35453f
+  displayName: Office Apps Launching Wscipt
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents
+      | where InitiatingProcessFileName in~ ('winword.exe', 'excel.exe', 'outlook.exe')
+      | where FileName =~ "wscript.exe" and ProcessCommandLine has ".jse"
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Office Apps Launching Wscipt
+      description: Detects Word, Excel or Outlook launching wscript.exe to execute a JScript Encoded file. This behavior is associated with malicious Office macros and Trickbot activity.
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: Execution
+        techniques:
+        - technique: T1059
+        - technique: T1203
+      - tactic: Collection
+      - tactic: CommandAndControl
+        techniques:
+        - technique: T1105
+      customDetails:
+        ProcessProcessId: ProcessId
+        ProcessCommandLine: ProcessCommandLine

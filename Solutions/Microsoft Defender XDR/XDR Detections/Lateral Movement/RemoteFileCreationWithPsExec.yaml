@@ -1,0 +1,113 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceFileEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceFileEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceFileEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 35ab0d58-baab-4154-87ed-fa2f69797e9e
+    path: Analytic Rules/Lateral Movement/RemoteFileCreationWithPsExec.yaml
+    version: 1.0.0
+    querySha256: 4ee27ae62266a83eab8b875f2f3f662ba6fd4d31c1d8d25ab64b468bfd22b419
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; effective event
+      windows source=3600s, target=3600s; event-time window constrained to original Sentinel lookback. The XDR service window
+      remains 14400s and is not identical to the Sentinel service window; late-ingestion risk remains and cadence/service-window
+      parity is not established. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    informational:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; effective event
+      windows source=3600s, target=3600s; event-time window constrained to original Sentinel lookback. The XDR service window
+      remains 14400s and is not identical to the Sentinel service window; late-ingestion risk remains and cadence/service-window
+      parity is not established. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    errors: []
+    originalTactics:
+    - LateralMovement
+    originalTechniques:
+    - T1570
+    reviewScope:
+      sourceDocumentSha256: 98b35020a9ce11c394c27ebce6fe7a44e3bb68de647bcff309043e812248a488
+      targetQuerySha256: e5ba2ca49e92126387043b29f018a1d1235006989dd4e3728e13c63b5e0e0ecd
+    eventTimeWindow:
+      status: constrained
+      originalSentinelLookbackSeconds: 3600
+      effectiveEventWindowSeconds: 3600
+      xdrServiceWindowSeconds: 14400
+      sourceTimeColumn: TimeGenerated
+      targetTimeColumn: Timestamp
+      filterInjected: true
+      rationale: A conservative single-native-table pipeline proof established the source and target input and time-column
+        binding. The target Timestamp filter is placed immediately after the table input and before all filters, projections,
+        and aggregations.
+      lateIngestionRisk: 'Late-ingestion risk: events ingested after their Timestamp falls outside this constrained event-time
+        window can be missed; runtime qualification is required.'
+properties:
+  id: xdr-35ab0d58-baab-4154-87ed-fa2f69797e9e
+  displayName: Remote File Creation with PsExec
+  status: disabled
+  queryCondition:
+    queryText: |-
+      // Find PsExec creating multiple files on remote machines in a 10-minute window
+      DeviceFileEvents | where Timestamp >= ago(1h)
+      // Looking for PsExec by accepteula command flag
+      | where InitiatingProcessCommandLine has "accepteula"
+      // Remote machines and file is exe
+      | where FolderPath has "\\\\" and FileName endswith ".exe"
+      | extend Exe = countof(InitiatingProcessCommandLine, ".exe")
+      // Checking to see if command line has 2 .exe or .bat
+      | where InitiatingProcessCommandLine !has ".ps1" and Exe > 1 or
+      InitiatingProcessCommandLine has ".bat"
+      // Exclusions: Remove the following line to widen scope of AHQ
+      | where not(InitiatingProcessCommandLine has_any("batch", "auditpol",
+      "script", "scripts", "illusive", "rebootrequired"))
+      | summarize FileCount = dcount(FolderPath), make_set(SHA1, 100000), make_set(FolderPath, 100000),
+      make_set(FileName, 100000), make_set(InitiatingProcessCommandLine, 100000) by DeviceId, DeviceName,
+      TimeWindow=bin(Timestamp, 10m), InitiatingProcessFileName
+      | where FileCount > 4
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Remote File Creation with PsExec
+      description: Detects PsExec-like command activity creating more than four distinct remote executable paths in ten-minute bins, after configured exclusions. This behavior can indicate ransomware propagation.
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: LateralMovement
+        techniques:
+        - technique: T1570

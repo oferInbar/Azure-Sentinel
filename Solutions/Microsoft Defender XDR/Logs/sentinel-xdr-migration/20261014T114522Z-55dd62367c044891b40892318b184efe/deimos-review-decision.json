@@ -1,0 +1,30 @@
+{
+  "kind": "authoring-human-review-decision",
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "sourceRuleId": "c25a8cd4-5b4a-45a8-9ba0-3b753a652f6b",
+  "sourcePath": "Analytic Rules/Campaign/Jupyter-Solarmaker/DeimosComponentExecution.yaml",
+  "targetPath": "XDR Detections/Campaign/Jupyter-Solarmaker/DeimosComponentExecution.yaml",
+  "approvalReference": "User response to the Deimos-only guided review form in Copilot session 5d48e2ad-f67d-4314-b990-7eb2db60a695",
+  "timingDecision": "Accept PT1H with Defender-managed 4-hour lookback; add no time filter",
+  "eventContextDecision": "Keep the source projection and record the event-context limitation",
+  "reviewScope": {
+    "sourceDocumentSha256": "74252ed0d044d9402ee904a834fc267bb0ebc5c59f1327ce1ac2623a01a31fce",
+    "targetQuerySha256": "bf1d401d4e61700d07c4634087f3a0656a534fc223b0190eb7e14d80d7b77386"
+  },
+  "limitations": [
+    "Hourly Defender execution uses a fixed four-hour ingestion-based lookback, not the Sentinel one-hour query period; timing parity is not established.",
+    "The unchanged query projection omits Timestamp, DeviceId and ReportId. Accurate event timing, device-group scope and process-tree enrichment are not established by this authoring review.",
+    "All source tactics remain in YAML; the current packaging boundary emits only the first tactic."
+  ],
+  "scope": {
+    "onlySelectedRuleReviewUpdate": true,
+    "preserveQueryAndProjection": true,
+    "preserveSourceContent": true,
+    "preserveIdentityAndDisabledStatus": true,
+    "otherRulesApproved": false,
+    "runtimeValidationPerformed": false,
+    "packagingApproved": false,
+    "cloudOperationsApproved": false,
+    "alertParityVerified": false
+  }
+}

@@ -1,0 +1,124 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceProcessEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceProcessEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceProcessEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: fa2f7d8a-6726-465a-aa72-6f6e3d4c99d7
+    path: Analytic Rules/Discovery/SuspiciousCommandInitiatedByWebServerProcess.yaml
+    version: 1.0.0
+    querySha256: 02862ad63e5b79165f4fd21ff1483b26a8bc79085bca29f4f68ecde296b68e75
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native
+      service windows differ; no explicit event-time bound proves equivalence to Defender ingestion-time evaluation. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    informational:
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    - All source MITRE tactics are preserved in source order in authored YAML. V3.1 ARM packaging carries only the first tactic
+      and its compatible techniques; this classification loss is not validated parity. Direct Graph deployment requires a
+      single tactic.
+    errors: []
+    originalTactics:
+    - Execution
+    - DefenseEvasion
+    - Discovery
+    originalTechniques:
+    - T1059
+    - T1574
+    - T1087
+    - T1082
+    reviewScope:
+      sourceDocumentSha256: c10c07d9c5debb231da3c703e96d825aded3da5425814ae1d557ad98ef39e83b
+      targetQuerySha256: 2838ab56335d208630edf2f671baa2353f5b8b82a034887f0c1b5b145045d1b6
+    reviewDecisions:
+    - reason: Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish
+        an event-time column
+      decision: accepted
+      sourceDocumentSha256: c10c07d9c5debb231da3c703e96d825aded3da5425814ae1d557ad98ef39e83b
+      targetQuerySha256: 2838ab56335d208630edf2f671baa2353f5b8b82a034887f0c1b5b145045d1b6
+    acceptedReviewReasons:
+    - Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an
+      event-time column
+properties:
+  id: xdr-fa2f7d8a-6726-465a-aa72-6f6e3d4c99d7
+  displayName: Detect Suspicious Commands Initiated by Webserver Processes
+  status: disabled
+  queryCondition:
+    queryText: |-
+      // Suspicious commands launched by web server processes
+      DeviceProcessEvents
+      | where (((InitiatingProcessParentFileName in("w3wp.exe", "beasvc.exe",
+          "httpd.exe") or InitiatingProcessParentFileName startswith "tomcat")
+          or InitiatingProcessFileName in("w3wp.exe", "beasvc.exe", "httpd.exe") or
+          InitiatingProcessFileName startswith "tomcat"))
+          and FileName in~('cmd.exe', 'powershell.exe')
+      | where ProcessCommandLine contains '%temp%'
+          or ProcessCommandLine has 'wget'
+          or ProcessCommandLine has 'whoami'
+          or ProcessCommandLine has 'certutil'
+          or ProcessCommandLine has 'systeminfo'
+          or ProcessCommandLine has 'ping'
+          or ProcessCommandLine has 'ipconfig'
+          or ProcessCommandLine has 'timeout'
+      | summarize
+          take_any(FileName),
+          make_set(ProcessCommandLine, 100000),
+          take_any(InitiatingProcessFileName),
+          take_any(InitiatingProcessParentFileName)
+          by DeviceId, DeviceName
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Detect Suspicious Commands Initiated by Webserver Processes
+      description: |-
+        This query was originally published in the threat analytics report, Operation Soft Cell.
+        Operation Soft Cell is a series of campaigns targeting users' call logs at telecommunications providers throughout the world. These attacks date from as early as 2012.
+        Operation Soft Cell operators sometimes use legitimate web server processes to launch commands, especially for network discovery and user/owner discovery. The following query detects activity of this kind.
+        Reference - https://www.cybereason.com/blog/operation-soft-cell-a-worldwide-campaign-against-telecommunications-providers
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: Execution
+        techniques:
+        - technique: T1059
+      - tactic: DefenseEvasion
+        techniques:
+        - technique: T1574
+      - tactic: Discovery
+        techniques:
+        - technique: T1087
+        - technique: T1082

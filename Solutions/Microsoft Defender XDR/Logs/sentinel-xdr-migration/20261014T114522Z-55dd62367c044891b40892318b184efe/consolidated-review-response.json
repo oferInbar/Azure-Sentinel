@@ -1,0 +1,49 @@
+{
+  "kind": "human-review-response",
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "profile": "authoring",
+  "reviewPacket": "consolidated-review-packet.json",
+  "reviewPacketSha256": "d6e44d0db480593fc535c9ca8642b409ba72e3e9319ec9801622922609766331",
+  "status": "recorded-not-yet-applied",
+  "isValidationOrAcceptanceReceipt": false,
+  "feedback": {
+    "hourlyTiming": "Accept timing only; keep hourly execution and unchanged queries",
+    "dailyTiming": "Accept timing only; keep daily execution and unchanged queries",
+    "hostMappings": "Accept the provisional representation; retain binding and correlation warnings",
+    "unresolvedBindings": "explain the asim problem. what asim functions are used? what makes you think asim functions aren;t supported?",
+    "phishingMetadata": true,
+    "workbooks": [
+      "Endpoint - 21 query surfaces",
+      "Identity - 22 query surfaces",
+      "Office 365 - 247 query surfaces"
+    ],
+    "office365Dependencies": "Accept the four documented tables as native MDO inputs; preserve names and unresolved technical checks",
+    "descriptions": "Approve all seven replacements",
+    "exceptions": ""
+  },
+  "interpretation": {
+    "acceptedTimingScopes": {
+      "hourlyRules": 10,
+      "dailyRules": 8,
+      "frequencyAndQueriesMustRemainUnchanged": true,
+      "doesNotClearTableBindingsOrRuntimeFailures": true
+    },
+    "acceptedHostRepresentationScopes": {
+      "provisionalMappings": 21,
+      "doesNotAcceptMissingWebpOutputBinding": true,
+      "retainBindingAndCorrelationWarnings": true
+    },
+    "generatedPhishingConnectorCorrectionApproved": true,
+    "keepAllThreeWorkbooksInAuthoringScope": true,
+    "individualWorkbookQueryDependenciesNotBlanketApproved": true,
+    "fourDocumentedNativeMdoTableClassificationsApproved": true,
+    "sevenDescriptionReplacementsApproved": true,
+    "unresolvedBindingDisposition": "not-approved-question-pending",
+    "asimCompatibilityClaimRequiresExplanationAndEvidence": true,
+    "existingEightTimingApprovalsMustRemainUnchanged": true,
+    "existingTargetVersion": "3.2.1",
+    "sentinelSourceContentMustRemainUnchanged": true,
+    "noCloudQueriesWritesOrPackagingAuthorized": true,
+    "noToolkitImplementationChangesAuthorizedByThisReview": true
+  }
+}

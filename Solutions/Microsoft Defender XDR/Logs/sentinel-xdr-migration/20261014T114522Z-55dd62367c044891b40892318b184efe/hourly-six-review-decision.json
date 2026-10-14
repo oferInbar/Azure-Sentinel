@@ -1,0 +1,31 @@
+{
+  "kind": "authoring-human-review-decision",
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "approvalReference": "User selected all six named rules in the hourly timing review form in Copilot session 5d48e2ad-f67d-4314-b990-7eb2db60a695",
+  "acceptedSourceRuleIds": [
+    "2c81c0a0-9823-4a14-b21a-2b4acd3335d2",
+    "c332b840-61e4-462e-a201-0e2d69bad45d",
+    "5bdc1504-880c-4b30-a39c-7c746535928d",
+    "174de33b-107b-4cd8-a85d-b4025a35453f",
+    "506f4d6b-3864-4bb1-8f75-a13fb066f97a",
+    "32b29155-3fd3-4a9e-a0ca-a67e2593b60b"
+  ],
+  "hashScopedConfiguration": "authoring-review-config.json",
+  "decision": "Accept PT1H with Defender-managed four-hour ingestion-based lookback, with no added time filter or query change",
+  "limitations": [
+    "This timing decision does not establish parity with the Sentinel one-hour period.",
+    "Supplemental custom-detail bindings still require runtime-schema verification and must fit the combined four-KB limit; they do not prove entity correlation.",
+    "All source tactics remain in YAML; the current packaging boundary emits only the first tactic.",
+    "The converter truncates three long descriptions mid-sentence. Timing approval does not approve those descriptions as release-ready."
+  ],
+  "scope": {
+    "preserveQueryScheduleAndAlertPayload": true,
+    "preserveSourceContent": true,
+    "preserveIdentityVersionAndDisabledStatus": true,
+    "otherRulesApproved": false,
+    "runtimeValidationPerformed": false,
+    "packagingApproved": false,
+    "cloudOperationsApproved": false,
+    "alertParityVerified": false
+  }
+}

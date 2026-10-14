@@ -1,0 +1,45 @@
+{
+  "solution": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR",
+  "scope": {
+    "kind": "rule",
+    "ruleIds": [
+      "506f4d6b-3864-4bb1-8f75-a13fb066f97a"
+    ],
+    "sourceTotal": 40,
+    "selectedTotal": 1
+  },
+  "outputDirectory": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/XDR Detections",
+  "reportDirectory": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "manifest": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe/manifest.json",
+  "transformationReport": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Logs/sentinel-xdr-migration/20261014T114522Z-55dd62367c044891b40892318b184efe/transformation-report.html",
+  "total": 1,
+  "converted": 1,
+  "excluded": 0,
+  "needsReview": 0,
+  "reviewRequired": 0,
+  "deploymentReady": 1,
+  "conflicts": 0,
+  "results": [
+    {
+      "source": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/Analytic Rules/Exploits/MosaicLoader.yaml",
+      "output": "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-3-2-1/Solutions/Microsoft Defender XDR/XDR Detections/Exploits/MosaicLoader.yaml",
+      "displayName": "MosaicLoader",
+      "status": "converted",
+      "reviewRequired": false,
+      "reviewReasons": [],
+      "warnings": [
+        "Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; source and native service windows differ; no explicit event-time bound proves equivalence to Defender ingestion-time evaluation. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback",
+        "RegistryValue.Value value is retained as customDetails.RegistryValueValue from query column `RegistryValueData`, but its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation",
+        "Supplemental customDetails.RegistryValueValue column `RegistryValueData` requires runtime output-schema binding verification",
+        "Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified and the service drops all custom details if exceeded"
+      ],
+      "errors": [],
+      "informational": [
+        "Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`; the query explicitly decomposes that same full name. No fullNameColumn is emitted"
+      ],
+      "directGraphDeploymentReady": true,
+      "sourceRelativePath": "Analytic Rules/Exploits/MosaicLoader.yaml",
+      "outputRelativePath": "XDR Detections/Exploits/MosaicLoader.yaml"
+    }
+  ]
+}

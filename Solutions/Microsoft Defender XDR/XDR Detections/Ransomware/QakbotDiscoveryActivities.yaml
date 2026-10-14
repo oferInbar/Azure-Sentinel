@@ -1,0 +1,119 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceProcessEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceProcessEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceProcessEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: ba9db6b2-3d05-42ae-8aee-3a15bbe29f27
+    path: Analytic Rules/Ransomware/QakbotDiscoveryActivities.yaml
+    version: 1.0.0
+    querySha256: 41a2dc7f06b9af8b72829893c0a3928a8edb62d807c78f850cb2007c5a2df598
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; effective event
+      windows source=3600s, target=3600s; event-time window constrained to original Sentinel lookback. The XDR service window
+      remains 14400s and is not identical to the Sentinel service window; late-ingestion risk remains and cadence/service-window
+      parity is not established. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    informational:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; effective event
+      windows source=3600s, target=3600s; event-time window constrained to original Sentinel lookback. The XDR service window
+      remains 14400s and is not identical to the Sentinel service window; late-ingestion risk remains and cadence/service-window
+      parity is not established. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    - All source MITRE tactics are preserved in source order in authored YAML. V3.1 ARM packaging carries only the first tactic
+      and its compatible techniques; this classification loss is not validated parity. Direct Graph deployment requires a
+      single tactic.
+    errors: []
+    originalTactics:
+    - DefenseEvasion
+    - Discovery
+    - Execution
+    originalTechniques:
+    - T1140
+    - T1010
+    - T1059
+    reviewScope:
+      sourceDocumentSha256: 72e5dd494bb195ee32307d83f154e1155fc1894b2243a3130e55d005860acdcd
+      targetQuerySha256: 41e482bf8b647b613621a1606f96b69ad08a69e27c8f24c7b4d63c035b26ebd4
+    eventTimeWindow:
+      status: constrained
+      originalSentinelLookbackSeconds: 3600
+      effectiveEventWindowSeconds: 3600
+      xdrServiceWindowSeconds: 14400
+      sourceTimeColumn: TimeGenerated
+      targetTimeColumn: Timestamp
+      filterInjected: true
+      rationale: A conservative single-native-table pipeline proof established the source and target input and time-column
+        binding. The target Timestamp filter is placed immediately after the table input and before all filters, projections,
+        and aggregations.
+      lateIngestionRisk: 'Late-ingestion risk: events ingested after their Timestamp falls outside this constrained event-time
+        window can be missed; runtime qualification is required.'
+properties:
+  id: xdr-ba9db6b2-3d05-42ae-8aee-3a15bbe29f27
+  displayName: Qakbot Discovery Activies
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents | where Timestamp >= ago(1h)
+      | where InitiatingProcessFileName in~('mobsync.exe','explorer.exe')
+      | where (FileName =~ 'net.exe' and InitiatingProcessCommandLine has_all('view','/all'))
+           or (FileName =~ 'whoami.exe' and InitiatingProcessCommandLine has '/all')
+           or (FileName =~ 'nslookup.exe' and InitiatingProcessCommandLine has_all('querytype=ALL','timeout=10'))
+           or (FileName =~ 'netstat.exe' and InitiatingProcessCommandLine has '-nao')
+           or (FileName =~ 'arp.exe' and InitiatingProcessCommandLine has '-a')
+           or (FileName =~ 'ping.exe' and InitiatingProcessCommandLine has '-t' and InitiatingProcessCommandLine endswith '127.0.0.1')
+      | summarize DiscoveryCommands = dcount(InitiatingProcessCommandLine), make_set(InitiatingProcessFileName), make_set(FileName), make_set(InitiatingProcessCommandLine) by DeviceId, DeviceName, bin(Timestamp, 5m)
+      | where DiscoveryCommands >= 3
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Qakbot Discovery Activies
+      description: This query searches for injected processes launching discovery activity. Qakbot has been observed leading
+        to ransomware in numerous instances. It looks for discovery commands such as net.exe, whoami.exe, nslookup.exe, netstat.exe,
+        arp.exe, and ping.exe.
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: DefenseEvasion
+        techniques:
+        - technique: T1140
+      - tactic: Discovery
+        techniques:
+        - technique: T1010
+      - tactic: Execution
+        techniques:
+        - technique: T1059

@@ -1,0 +1,133 @@
+{
+  "schemaVersion": "1.2.0",
+  "solution": ".",
+  "workflowStatus": "blocked",
+  "createdAt": "2026-10-14T11:45:22.583481+00:00",
+  "updatedAt": "2026-10-14T14:47:58.365074+00:00",
+  "context": {
+    "tenantId": null,
+    "subscriptionId": null,
+    "workspaceResourceId": null,
+    "workspaceCustomerId": null,
+    "targetContextLocked": false,
+    "versionBump": "none",
+    "targetVersion": "3.2.1",
+    "workflowProfile": "authoring",
+    "profileSelectionConfirmed": true,
+    "workbookCapabilityVersion": 1,
+    "armValidationMethod": "lab-deployment"
+  },
+  "stages": {
+    "discovery": {
+      "name": "discovery",
+      "status": "passed",
+      "attempts": 1,
+      "startedAt": "2026-10-14T11:49:05.362513+00:00",
+      "completedAt": "2026-10-14T11:49:23.001867+00:00",
+      "message": "Offline discovery found 40 Analytic Rules and 3 workbooks with 290 query surfaces; no cloud operations.",
+      "artifacts": {},
+      "evidence": [
+        "/Users/oferinbar/.copilot/session-state/5d48e2ad-f67d-4314-b990-7eb2db60a695/files/defender-xdr-discovery.json"
+      ]
+    },
+    "conversion": {
+      "name": "conversion",
+      "status": "running",
+      "attempts": 1,
+      "startedAt": "2026-10-14T11:49:30.759122+00:00",
+      "completedAt": null,
+      "message": null,
+      "artifacts": {},
+      "evidence": []
+    },
+    "validation": {
+      "name": "validation",
+      "status": "pending",
+      "attempts": 0,
+      "startedAt": null,
+      "completedAt": null,
+      "message": null,
+      "artifacts": {},
+      "evidence": []
+    },
+    "packaging": {
+      "name": "packaging",
+      "status": "pending",
+      "attempts": 0,
+      "startedAt": null,
+      "completedAt": null,
+      "message": null,
+      "artifacts": {},
+      "evidence": []
+    },
+    "deployment": {
+      "name": "deployment",
+      "status": "notRequired",
+      "attempts": 0,
+      "startedAt": null,
+      "completedAt": null,
+      "message": "not required for the authoring workflow",
+      "artifacts": {},
+      "evidence": []
+    },
+    "mockIngestion": {
+      "name": "mockIngestion",
+      "status": "notRequired",
+      "attempts": 0,
+      "startedAt": null,
+      "completedAt": null,
+      "message": "not required for the authoring workflow",
+      "artifacts": {},
+      "evidence": []
+    },
+    "alertParity": {
+      "name": "alertParity",
+      "status": "notRequired",
+      "attempts": 0,
+      "startedAt": null,
+      "completedAt": null,
+      "message": "not required for the authoring workflow",
+      "artifacts": {},
+      "evidence": []
+    },
+    "report": {
+      "name": "report",
+      "status": "pending",
+      "attempts": 0,
+      "startedAt": null,
+      "completedAt": null,
+      "message": null,
+      "artifacts": {},
+      "evidence": []
+    }
+  },
+  "workbooks": {
+    "schemaVersion": "1.0.0",
+    "inventory": [
+      {
+        "path": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "sha256": "c78f1eb16db8df47a263a39839809e2d98feb3cfb1dc5bcdc7da5c8863aff74a"
+      },
+      {
+        "path": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "sha256": "45a02cbd2d0a3a4e0afb535dc2611623bb4da4ebc855a97aadc5012dfcba5068"
+      },
+      {
+        "path": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "sha256": "19bad5117876f5ea343e61de59a5c3bded01b6f1269d8d4e0fd17312d77140c3"
+      }
+    ],
+    "inventorySha256": "380f82436a052f026cb121a173c4240d2fd28ff9583f126b3285d4591805895f",
+    "selection": {
+      "included": [
+        "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "Workbooks/MicrosoftDefenderForIdentity.json",
+        "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json"
+      ],
+      "excluded": []
+    },
+    "selectionSha256": "9df2a1f85f37dfc178c256da652552d21d8400572d06d5560d9aec84c6cbdf61",
+    "selectionExplicit": false
+  },
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe"
+}

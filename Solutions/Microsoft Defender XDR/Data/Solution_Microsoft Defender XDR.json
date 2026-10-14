@@ -448,5 +448,10 @@
   "TemplateSpec": true,
   "StaticDataConnectorIds": [
     "MicrosoftThreatProtection"
+  ],
+  "XDR Workbooks": [
+    "XDR Workbooks/MicrosoftDefenderForEndPoint.json",
+    "XDR Workbooks/MicrosoftDefenderForIdentity.json",
+    "XDR Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json"
   ]
 }

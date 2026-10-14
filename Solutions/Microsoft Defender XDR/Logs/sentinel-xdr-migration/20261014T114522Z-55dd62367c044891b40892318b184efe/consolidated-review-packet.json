@@ -1,0 +1,143 @@
+{
+  "kind": "human-review-packet",
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "profile": "authoring",
+  "targetVersion": "3.2.1",
+  "status": "awaiting-human-feedback",
+  "isValidationOrAcceptanceReceipt": false,
+  "artifacts": {
+    "officialReport": {
+      "path": "migration-report.json",
+      "sha256": "b7582991487917058f23d33565213b78fb538d5477f792e9da64287de99ce2c9",
+      "caveat": "Conversion summaries remain scoped to the last single-rule conversion; solution-wide pending-review counts below come from the current detection YAML."
+    },
+    "detectionDependencyPlan": {
+      "path": "../../../../../../defender-xdr-detection-dependency-plan.json",
+      "sha256": "0f4d64eceea5ef43de1f37d36e25b2a8e1c484a25d206e76d36c6daf5307453f",
+      "bindings": "Each record retains its exact original and converted query hashes, table proposals and uncertainty."
+    },
+    "workbookDependencyPlan": {
+      "path": "../../../../../../defender-xdr-workbook-dependency-plan.json",
+      "sha256": "7bd3b6134b199efb491f29e9cd541bde596a4e9e3779601a008ef01d829d163e",
+      "bindings": "Each of 290 records retains workbook identity/hash, query pointer/hash and raw proposal. Scanner false positives are not accepted prerequisites."
+    },
+    "previousDecisions": {
+      "path": "authoring-review-config.json",
+      "sha256": "2e1d9a9608d0603aea3e9647cd338be9bc7cf5bce5ad976557b7518fa89fc4eb",
+      "preserveCurrentDecisions": 8
+    }
+  },
+  "currentScope": {
+    "detectionDrafts": 40,
+    "pendingConversionReview": 26,
+    "allDetectionsDisabled": true,
+    "workbooks": 3,
+    "workbookQueries": 290,
+    "sourceContentMustRemainUnchanged": true
+  },
+  "pendingDetectionPaths": [
+    "AVSpringShell.yaml",
+    "AVTarrask.yaml",
+    "AVdetectionsrelatedtoUkrainebasedthreats.yaml",
+    "Campaign/Macaw Ransomware/ImminentRansomware.yaml",
+    "Command and Control/C2-NamedPipe.yaml",
+    "Credential Access/DoppelPaymerProcDump.yaml",
+    "Defense Evasion/Regsvr32Rundll32ImageLoadsAbnormalExtension.yaml",
+    "Defense Evasion/Regsvr32Rundll32WithAnomalousParentProcess.yaml",
+    "Execution/BITSAdminActivity.yaml",
+    "Execution/PotentialKerberoastActivities.yaml",
+    "Exfiltration/FilesCopiedToUSBDrives.yaml",
+    "Impact/AnomalousVoulmeOfFileDeletion.yaml",
+    "Lateral Movement/RemoteFileCreationWithPsExec.yaml",
+    "Lateral Movement/ServiceAccountsPerformingRemotePS.yaml",
+    "Persistence/AccountCreation.yaml",
+    "Persistence/LocalAdminGroupChanges.yaml",
+    "Persistence/RareProcessAsService.yaml",
+    "PossiblePhishingwithCSL&NetworkSession.yaml",
+    "PossibleWebpBufferOverflow.yaml",
+    "PotentialBuildProcessCompromiseMDE.yaml",
+    "Ransomware/PotentialCobaltStrikeRansomwareActivity.yaml",
+    "Ransomware/ShadowCopyDeletion.yaml",
+    "SUNSPOTHashes.yaml",
+    "SolarWinds_SUNBURST_&_SUPERNOVA_File-IOCs.yaml",
+    "SolarWinds_SUNBURST_Network-IOCs.yaml",
+    "SolarWinds_TEARDROP_Process-IOCs.yaml"
+  ],
+  "findings": {
+    "remainingTiming": {
+      "nativeOnlyProposals": 18,
+      "nativeHourlyLookbackHours": 4,
+      "nativeDailyLookbackDays": 30,
+      "preserveCurrentQueryFilters": true,
+      "mixedOrSentinelTimingDeferred": [
+        "AVSpringShell.yaml",
+        "AVTarrask.yaml",
+        "Impact/AnomalousVoulmeOfFileDeletion.yaml",
+        "PossiblePhishingwithCSL&NetworkSession.yaml"
+      ],
+      "caveat": "Regex lineage and an accepted service-window difference do not prove table binding, event-time equivalence, aggregation parity or runtime correctness."
+    },
+    "hostMappings": {
+      "provisionalMappings": 21,
+      "retainAvailableOriginalFullValuesAsCustomDetails": true,
+      "missingOutputValueDeferred": "PossibleWebpBufferOverflow.yaml",
+      "caveat": "Custom details do not restore entity identity or correlation; runtime output binding and size limits remain unverified."
+    },
+    "tableBinding": {
+      "ambiguousMappingRules": 21,
+      "retainUnresolvedFlagsUntilSupportedResolution": true,
+      "additionalFindings": [
+        "LocalAdminGroupChanges and PotentialCobaltStrikeRansomwareActivity carry time-column/mixed-workload warnings even though static dependency proposals identify native tables.",
+        "SUNSPOTHashes has an isfuzzy-union binding finding."
+      ]
+    },
+    "technicalFailures": [
+      "ImminentRansomware depends on _ASim_ProcessEvent; workspace functions cannot simply be installed for Custom Detections.",
+      "PossiblePhishingwithCSL&NetworkSession also uses _Im_NetworkSession, which the conservative dependency plan does not fully represent.",
+      "The source Phishing rule's AWSS3 declaration uses datatypes instead of dataTypes for AWSVPCFlow. The generated connector metadata is structurally invalid; accepting a review cannot remove this error.",
+      "PossibleWebpBufferOverflow has an unresolved output-binding finding for DeviceName; retaining a provisional mapping is not a resolution."
+    ],
+    "workbooks": {
+      "Workbooks/MicrosoftDefenderForEndPoint.json": 21,
+      "Workbooks/MicrosoftDefenderForIdentity.json": 22,
+      "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json": 247,
+      "scopeHelpersAreNotTelemetry": true,
+      "neverInstallAsSavedSearches": ["materialize", "union"],
+      "documentedNativeMdoTables": [
+        "MessageEvents",
+        "MessageUrlInfo",
+        "MessagePostDeliveryEvents",
+        "FileMaliciousContentInfo"
+      ],
+      "caveat": "These four tables are documented native Defender for Office 365 inputs, not missing workspace functions. Current scanner/planner classifications still require supported resolution; documentation does not prove tenant availability or runtime compatibility."
+    },
+    "versions": {
+      "currentDetectionVersion": "3.1.0",
+      "proposedDetectionVersion": "3.2.1",
+      "preserveActualSourceVersions": true
+    },
+    "descriptionReplacements": {
+      "1be34fb9-f81b-47ae-84fb-465e6686d76c": "Detects command-line patterns associated with dumping LSASS memory, including ProcDump filenames and LSASS memory-dump flags. This activity can indicate credential theft associated with DoppelPaymer.",
+      "c332b840-61e4-462e-a201-0e2d69bad45d": "Detects ProcDump filenames or LSASS memory-dump command-line flags associated with credential dumping. This activity was reported in attacks exploiting Exchange Server vulnerabilities.",
+      "5bdc1504-880c-4b30-a39c-7c746535928d": "Detects PsExec-origin PowerShell commands that stop services and contain both SQL and Exchange tokens. This activity can precede human-operated ransomware execution.",
+      "47c02e21-3949-4e05-a28e-576cd75ff6f6": "Detects cmd-launched ping activity with calc.exe, loopback and delay tokens associated with Qakbot self-deletion.",
+      "174de33b-107b-4cd8-a85d-b4025a35453f": "Detects Word, Excel or Outlook launching wscript.exe to execute a JScript Encoded file. This behavior is associated with malicious Office macros and Trickbot activity.",
+      "35ab0d58-baab-4154-87ed-fa2f69797e9e": "Detects PsExec-like command activity creating more than four distinct remote executable paths in ten-minute bins, after configured exclusions. This behavior can indicate ransomware propagation.",
+      "d29cc957-0ddb-4d00-8d6f-ad1bb345ff9a": "Uses server logon telemetry to identify accounts without interactive logons, then detects Remote PowerShell commands from those accounts, excluding configured commands and accounts."
+    }
+  },
+  "documentationEvidence": [
+    "https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback",
+    "https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-messageevents-table",
+    "https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-messageurlinfo-table",
+    "https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-messagepostdeliveryevents-table",
+    "https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-filemaliciouscontentinfo-table"
+  ],
+  "notAuthorizedByThisReview": [
+    "toolkit implementation changes",
+    "authentication or environment queries",
+    "deployment, activation or ingestion",
+    "packaging or publication",
+    "clearing technical failures without evidence"
+  ]
+}

@@ -1,0 +1,158 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceProcessEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceProcessEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceProcessEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 450f4e56-5bba-4070-b9d9-9204ba9d777d
+    path: Analytic Rules/Persistence/AccountCreation.yaml
+    version: 1.0.0
+    querySha256: 4c5c2b03102df6eee80d0fbac1ef966a317285974385a4966a30df7766519cb6
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: needsReview
+    reviewRequired: true
+    reviewReasons:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - catalog column mappings were not applied because table/alias scope is ambiguous
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=unknown/unconfigured;
+      mixed, Sentinel-only, or unknown query surface; no custom lookback is configured in the payload. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - Host.FullName value is retained as customDetails.HostFullName from query column `DeviceName`, but its target output
+      binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.HostFullName column `DeviceName` requires runtime output-schema binding verification
+    - Process.ProcessId value is retained as customDetails.ProcessProcessId from query column `ProcessId`, but its target
+      output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.ProcessProcessId column `ProcessId` requires runtime output-schema binding verification
+    - Process.CommandLine value is retained as customDetails.ProcessCommandLine from query column `ProcessCommandLine`, but
+      its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.ProcessCommandLine column `ProcessCommandLine` requires runtime output-schema binding verification
+    - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
+      and the service drops all custom details if exceeded
+    informational: []
+    errors: []
+    originalTactics:
+    - Persistence
+    originalTechniques:
+    - T1136
+    reviewScope:
+      sourceDocumentSha256: 31f05e41d6e760349c18fcdd7fb7bfb656cbe96cc630a8b53d46476cd641a541
+      targetQuerySha256: aef48d7bec099706bbdd586ce8c3bf7d55e0e9612959393a887f67950f75596c
+    reviewDecisions:
+    - reason: Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs
+        cannot be proven equivalent
+      decision: accepted
+      sourceDocumentSha256: 31f05e41d6e760349c18fcdd7fb7bfb656cbe96cc630a8b53d46476cd641a541
+      targetQuerySha256: aef48d7bec099706bbdd586ce8c3bf7d55e0e9612959393a887f67950f75596c
+    - reason: 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented
+        by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also
+        retained in customDetails when the query output binding is available; this assumption does not prove entity parity'
+      decision: accepted
+      sourceDocumentSha256: 31f05e41d6e760349c18fcdd7fb7bfb656cbe96cc630a8b53d46476cd641a541
+      targetQuerySha256: aef48d7bec099706bbdd586ce8c3bf7d55e0e9612959393a887f67950f75596c
+    supplementalEntityDetails:
+    - entityType: Host
+      entityIndex: 1
+      identifier: FullName
+      sourceColumn: DeviceName
+      column: DeviceName
+      status: runtime-binding-pending
+      customDetailKey: HostFullName
+    - entityType: Process
+      entityIndex: 2
+      identifier: ProcessId
+      sourceColumn: ProcessId
+      column: ProcessId
+      status: runtime-binding-pending
+      customDetailKey: ProcessProcessId
+    - entityType: Process
+      entityIndex: 2
+      identifier: CommandLine
+      sourceColumn: ProcessCommandLine
+      column: ProcessCommandLine
+      status: runtime-binding-pending
+      customDetailKey: ProcessCommandLine
+    acceptedReviewReasons:
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot
+      be proven equivalent
+properties:
+  id: xdr-450f4e56-5bba-4070-b9d9-9204ba9d777d
+  displayName: Account Creation
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents
+      // Pro-tip:
+      // There are many different ways to run a process from a file - e.g. by using full path, env. variables, ~1 annotation, more...
+      // So, to find executions of a known filename, better filter on the filename (and possibly on folder path) than on the commandline.
+      | where FileName in~ ("net.exe", "net1.exe")
+      // Parse the user name from the commandline.
+      // To have case-insensitive parsing use the i flag, to have non-greedy match (e.g. CreatedUser as short as possible), specify U flag:
+      // "kind=regex flags=i"
+      | parse kind=regex flags=iU ProcessCommandLine with * "user " CreatedUser " " * "/ad"
+      // Filter rows where user could not be parsed - e.g. because it was not a user command, or the /add commandline switch was not specified.
+      | where isnotempty(CreatedUser)
+      // Every net.exe executed will run net1.exe with the same commandline.
+      // in this where clause we remove such rows, as they duplicate the number of results we have without adding any value.
+      | where not (FileName =~ "net1.exe" and InitiatingProcessFileName =~ "net.exe" and replace("net", "net1", InitiatingProcessCommandLine) =~ ProcessCommandLine)
+      // If /domain is specified, so the user is created on the domain controller.
+      // Also, any prefix that's longer than 1 char will also do the same, e.g. /do, /dom, /doma, ....
+      | extend CreatedOnLocalMachine=(ProcessCommandLine !contains "/do")
+      | where ProcessCommandLine !contains "/add" or (CreatedOnLocalMachine == 0 and ProcessCommandLine !contains "/domain")
+      | summarize MachineCount=dcount(DeviceName) by CreatedUser, CreatedOnLocalMachine, InitiatingProcessFileName, FileName, ProcessId, ProcessCommandLine, InitiatingProcessCommandLine, DeviceId, DeviceName
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: Account Creation
+      description: |-
+        User accounts may be created to achieve persistence on a machine.
+        Read more here: https://attack.mitre.org/wiki/Technique/T1136.
+        Tags: #CreateAccount.
+        Query #1: Query for users being created using "net user" command.
+        "net user" commands are noisy, so needs to be joined with another signal -.
+        E.g. in this example we look for use of uncommon & undocumented commandline switches (e.g. /ad instead of /add).
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: Persistence
+        techniques:
+        - technique: T1136
+      customDetails:
+        HostFullName: DeviceName
+        ProcessProcessId: ProcessId
+        ProcessCommandLine: ProcessCommandLine

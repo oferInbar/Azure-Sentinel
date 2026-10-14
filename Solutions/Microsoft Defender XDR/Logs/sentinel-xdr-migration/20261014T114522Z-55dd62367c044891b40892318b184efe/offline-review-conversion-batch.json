@@ -1,0 +1,127 @@
+{
+  "scope": "24 selected rules, not solution conversion coverage",
+  "configSha256": "2628f82cdc6c9f59d7e4850eb498e2f4fea77ee3867e44b3377fcc734c4c5504",
+  "receipts": [
+    {
+      "ruleId": "3bd33158-3f0b-47e3-a50f-7c20a1b88038",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-3bd33158-3f0b-47e3-a50f-7c20a1b88038.json"
+    },
+    {
+      "ruleId": "1785d372-b9fe-4283-96a6-3a1d83cabfd1",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-1785d372-b9fe-4283-96a6-3a1d83cabfd1.json"
+    },
+    {
+      "ruleId": "b6685757-3ed1-4b05-a5bd-2cacadc86c2a",
+      "exitCode": 0,
+      "receipt": "offline-review-convert-b6685757-3ed1-4b05-a5bd-2cacadc86c2a.json"
+    },
+    {
+      "ruleId": "bb46dd86-e642-48a4-975c-44f5ac2b5033",
+      "exitCode": 0,
+      "receipt": "offline-review-convert-bb46dd86-e642-48a4-975c-44f5ac2b5033.json"
+    },
+    {
+      "ruleId": "7ce00cba-f76f-4026-ab7f-7e4f1b67bd18",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-7ce00cba-f76f-4026-ab7f-7e4f1b67bd18.json"
+    },
+    {
+      "ruleId": "1be34fb9-f81b-47ae-84fb-465e6686d76c",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-1be34fb9-f81b-47ae-84fb-465e6686d76c.json"
+    },
+    {
+      "ruleId": "36fbd4e7-5630-4414-aa42-702a7fdded21",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-36fbd4e7-5630-4414-aa42-702a7fdded21.json"
+    },
+    {
+      "ruleId": "2624fc55-0998-4897-bb48-1c6422befce4",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-2624fc55-0998-4897-bb48-1c6422befce4.json"
+    },
+    {
+      "ruleId": "2a1dc4c2-a8d6-4a0e-8539-9b971c851195",
+      "exitCode": 0,
+      "receipt": "offline-review-convert-2a1dc4c2-a8d6-4a0e-8539-9b971c851195.json"
+    },
+    {
+      "ruleId": "12134de5-361b-427c-a1a0-d43f40a593c4",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-12134de5-361b-427c-a1a0-d43f40a593c4.json"
+    },
+    {
+      "ruleId": "3ab04acf-e0e7-4f7c-8995-748ab4c848c2",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-3ab04acf-e0e7-4f7c-8995-748ab4c848c2.json"
+    },
+    {
+      "ruleId": "d29cc957-0ddb-4d00-8d6f-ad1bb345ff9a",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-d29cc957-0ddb-4d00-8d6f-ad1bb345ff9a.json"
+    },
+    {
+      "ruleId": "450f4e56-5bba-4070-b9d9-9204ba9d777d",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-450f4e56-5bba-4070-b9d9-9204ba9d777d.json"
+    },
+    {
+      "ruleId": "63aa43c2-e88e-4102-aea5-0432851c541a",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-63aa43c2-e88e-4102-aea5-0432851c541a.json"
+    },
+    {
+      "ruleId": "91a451e3-178f-41b2-9e5d-da97d75b9971",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-91a451e3-178f-41b2-9e5d-da97d75b9971.json"
+    },
+    {
+      "ruleId": "6c3a1258-bcdd-4fcd-b753-1a9bc826ce12",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-6c3a1258-bcdd-4fcd-b753-1a9bc826ce12.json"
+    },
+    {
+      "ruleId": "26e81021-2de6-4442-a74a-a77885e96911",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-26e81021-2de6-4442-a74a-a77885e96911.json"
+    },
+    {
+      "ruleId": "1bf6e165-5e32-420e-ab4f-0da8558a8be2",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-1bf6e165-5e32-420e-ab4f-0da8558a8be2.json"
+    },
+    {
+      "ruleId": "4bd9ce9d-8586-4beb-8fdb-bd018cacbe7d",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-4bd9ce9d-8586-4beb-8fdb-bd018cacbe7d.json"
+    },
+    {
+      "ruleId": "28c63a44-2d35-48b7-831b-3ed24af17c7e",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-28c63a44-2d35-48b7-831b-3ed24af17c7e.json"
+    },
+    {
+      "ruleId": "53e936c6-6c30-4d12-8343-b8a0456e8429",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-53e936c6-6c30-4d12-8343-b8a0456e8429.json"
+    },
+    {
+      "ruleId": "a3c144f9-8051-47d4-ac29-ffb0c312c910",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-a3c144f9-8051-47d4-ac29-ffb0c312c910.json"
+    },
+    {
+      "ruleId": "ce1e7025-866c-41f3-9b08-ec170e05e73e",
+      "exitCode": 1,
+      "receipt": "offline-review-convert-ce1e7025-866c-41f3-9b08-ec170e05e73e.json"
+    },
+    {
+      "ruleId": "738702fd-0a66-42c7-8586-e30f0583f8fe",
+      "exitCode": 0,
+      "receipt": "offline-review-convert-738702fd-0a66-42c7-8586-e30f0583f8fe.json"
+    }
+  ],
+  "decisionOnlyInvariantChecks": "passed"
+}

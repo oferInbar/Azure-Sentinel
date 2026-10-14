@@ -1,0 +1,1725 @@
+{
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "status": "bounded-review-complete-workflow-still-blocked",
+  "requiresNoNewPerItemPromptForCompletedScope": true,
+  "detectionReviewReasonCounts": {
+    "catalog column mappings were not applied because table/alias scope is ambiguous": 21,
+    "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent": 4,
+    "query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation": 3,
+    "Best-effort entity mapping requires review: Host.FullName column `DeviceName` is not available in the query output, so no supported host-name mapping or supplemental customDetails binding can be made": 1,
+    "isfuzzy unions can still fail semantic binding in Advanced Hunting": 1
+  },
+  "exactRemainingDetectionFindings": [
+    {
+      "path": "AVSpringShell.yaml",
+      "id": "3bd33158-3f0b-47e3-a50f-7c20a1b88038",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous",
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent"
+      ],
+      "errors": []
+    },
+    {
+      "path": "AVTarrask.yaml",
+      "id": "1785d372-b9fe-4283-96a6-3a1d83cabfd1",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous",
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Command and Control/C2-NamedPipe.yaml",
+      "id": "7ce00cba-f76f-4026-ab7f-7e4f1b67bd18",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Credential Access/DoppelPaymerProcDump.yaml",
+      "id": "1be34fb9-f81b-47ae-84fb-465e6686d76c",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Defense Evasion/Regsvr32Rundll32ImageLoadsAbnormalExtension.yaml",
+      "id": "36fbd4e7-5630-4414-aa42-702a7fdded21",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Defense Evasion/Regsvr32Rundll32WithAnomalousParentProcess.yaml",
+      "id": "2624fc55-0998-4897-bb48-1c6422befce4",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Execution/PotentialKerberoastActivities.yaml",
+      "id": "12134de5-361b-427c-a1a0-d43f40a593c4",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Exfiltration/FilesCopiedToUSBDrives.yaml",
+      "id": "3ab04acf-e0e7-4f7c-8995-748ab4c848c2",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Impact/AnomalousVoulmeOfFileDeletion.yaml",
+      "id": "e5f8e196-3544-4a8b-96a9-17c1b6a49710",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous",
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Lateral Movement/RemoteFileCreationWithPsExec.yaml",
+      "id": "35ab0d58-baab-4154-87ed-fa2f69797e9e",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Lateral Movement/ServiceAccountsPerformingRemotePS.yaml",
+      "id": "d29cc957-0ddb-4d00-8d6f-ad1bb345ff9a",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Persistence/AccountCreation.yaml",
+      "id": "450f4e56-5bba-4070-b9d9-9204ba9d777d",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Persistence/LocalAdminGroupChanges.yaml",
+      "id": "63aa43c2-e88e-4102-aea5-0432851c541a",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation",
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Persistence/RareProcessAsService.yaml",
+      "id": "91a451e3-178f-41b2-9e5d-da97d75b9971",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "PossiblePhishingwithCSL&NetworkSession.yaml",
+      "id": "6c3a1258-bcdd-4fcd-b753-1a9bc826ce12",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation",
+        "catalog column mappings were not applied because table/alias scope is ambiguous",
+        "Original Sentinel lookback is shorter than the native XDR service window, but source and target table inputs cannot be proven equivalent"
+      ],
+      "errors": [
+        "requiredDataConnectors[5]: 'dataTypes' is a required property"
+      ]
+    },
+    {
+      "path": "PossibleWebpBufferOverflow.yaml",
+      "id": "26e81021-2de6-4442-a74a-a77885e96911",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous",
+        "Best-effort entity mapping requires review: Host.FullName column `DeviceName` is not available in the query output, so no supported host-name mapping or supplemental customDetails binding can be made"
+      ],
+      "errors": []
+    },
+    {
+      "path": "PotentialBuildProcessCompromiseMDE.yaml",
+      "id": "1bf6e165-5e32-420e-ab4f-0da8558a8be2",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Ransomware/PotentialCobaltStrikeRansomwareActivity.yaml",
+      "id": "4bd9ce9d-8586-4beb-8fdb-bd018cacbe7d",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "query mixes native Defender and Sentinel workload tables; time columns were preserved and require runtime validation"
+      ],
+      "errors": []
+    },
+    {
+      "path": "Ransomware/ShadowCopyDeletion.yaml",
+      "id": "28c63a44-2d35-48b7-831b-3ed24af17c7e",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "SUNSPOTHashes.yaml",
+      "id": "53e936c6-6c30-4d12-8343-b8a0456e8429",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "isfuzzy unions can still fail semantic binding in Advanced Hunting",
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "SolarWinds_SUNBURST_&_SUPERNOVA_File-IOCs.yaml",
+      "id": "a3c144f9-8051-47d4-ac29-ffb0c312c910",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    },
+    {
+      "path": "SolarWinds_SUNBURST_Network-IOCs.yaml",
+      "id": "ce1e7025-866c-41f3-9b08-ec170e05e73e",
+      "reviewRequired": true,
+      "status": "needsReview",
+      "reviewReasons": [
+        "catalog column mappings were not applied because table/alias scope is ambiguous"
+      ],
+      "errors": []
+    }
+  ],
+  "independentUnverifiedCompatibility": [
+    {
+      "rule": "Campaign/Macaw Ransomware/ImminentRansomware.yaml",
+      "function": "_ASim_ProcessEvent",
+      "kind": "builtinASIM",
+      "status": "unverified; entity representation acceptance does not approve ASIM"
+    },
+    {
+      "rule": "PossiblePhishingwithCSL&NetworkSession.yaml",
+      "function": "_Im_NetworkSession",
+      "kind": "builtinASIM",
+      "status": "unverified; imported-workspace-function restriction is not blanket builtin rejection"
+    }
+  ],
+  "workbooks": {
+    "keptInScope": 3,
+    "queryInventory": 290,
+    "staticTableOnlyResolutionsRecorded": 24,
+    "deferredOtherQueryRecords": 266,
+    "remainingDependencySets": 3,
+    "missingCatalogTechnicalBlockers": 17,
+    "nativeMdoClassificationApproval": {
+      "MessageEvents": "mdo",
+      "MessageUrlInfo": "mdo",
+      "MessagePostDeliveryEvents": "mdo",
+      "FileMaliciousContentInfo": "mdo"
+    },
+    "materializedGeneratedWorkbookChanges": 0,
+    "planSha256": "f0b4859aaf930986cfa3f99811429cca88579fd02f5d27331e6d4d65f90999ab",
+    "unresolved": [
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "reason": "Dependency review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "reason": "Dependency review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "reason": "Dependency review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/4/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/4/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/4/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/4/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/4/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/4/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/4/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/4/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/5/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/5/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/5/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/5/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/5/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/6/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/6/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/6/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/6/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/6/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/6/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/7/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForEndPoint.json",
+        "path": "/items/7/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/1/content/parameters/1/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/4/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/4/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/4/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/4/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/4/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/4/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/4/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/4/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/4/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/5/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/5/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/5/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/5/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/5/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/6/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/6/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/7/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/7/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/7/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/8/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForIdentity.json",
+        "path": "/items/8/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/1/content/parameters/0/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/1/content/parameters/1/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/1/content/parameters/2/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/1/content/parameters/3/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/0/content/items/1/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/0/content/items/1/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/0/content/items/2/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/0/content/items/3/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/0/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/1/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/1/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/1/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/1/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/2/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/2/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/2/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/3/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/3/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/3/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/4/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/3/content/items/4/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/1/content/items/9/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/2/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/3/content/items/4/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/6/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/6/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/6/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/6/content/items/9/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/6/content/items/10/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/7/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/7/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/7/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/7/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/7/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/8/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/8/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/10/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/11/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/11/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/11/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/11/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/11/content/items/10/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/12/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/12/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/12/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/12/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/12/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/13/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/13/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/15/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/16/content/items/1/content/items/0/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/16/content/items/1/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/16/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/17/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/17/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/17/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/17/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/17/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/17/content/items/10/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/17/content/items/11/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/18/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/18/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/20/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/10/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/12/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/13/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/15/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/16/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/18/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/21/content/items/20/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/22/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/22/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/22/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/22/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/22/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/22/content/items/9/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/22/content/items/11/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/23/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/23/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/25/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/26/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/26/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/26/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/26/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/27/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/27/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/27/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/27/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/27/content/items/10/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/27/content/items/11/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/27/content/items/13/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/28/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/28/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/28/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/30/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/31/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/31/content/items/5/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/31/content/items/6/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/32/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/32/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/32/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/32/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/33/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/33/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/33/content/items/5/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/33/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/33/content/items/9/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/33/content/items/11/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/33/content/items/13/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/33/content/items/15/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/34/content/items/1/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/34/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/34/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/34/content/items/7/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/35/content/items/2/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/35/content/items/5/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/35/content/items/6/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/35/content/items/8/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/35/content/items/10/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/35/content/items/12/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/35/content/items/14/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/37/content/items/1/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/37/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/37/content/items/5/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/37/content/items/7/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/38/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/38/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/38/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/38/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/38/content/items/9/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/38/content/items/12/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/38/content/items/13/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/38/content/items/16/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/38/content/items/17/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/39/content/items/2/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/39/content/items/4/content/query",
+        "reason": "Table is not in the mapping catalog (custom/unsupported); cannot convert."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/41/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/41/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/41/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/42/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/42/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/42/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/42/content/items/9/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/42/content/items/10/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/42/content/items/12/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/42/content/items/15/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/42/content/items/16/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/44/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/44/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/44/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/44/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/44/content/items/9/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/45/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/45/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/45/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/46/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/46/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/46/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/47/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/47/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/47/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/48/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/48/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/50/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/50/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/50/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/50/content/items/9/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/50/content/items/10/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/50/content/items/12/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/50/content/items/14/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/9/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/12/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/13/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/15/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/17/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/19/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/21/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/23/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/25/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/27/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/51/content/items/29/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/53/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/53/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/53/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/53/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/53/content/items/9/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/53/content/items/11/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/53/content/items/13/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/53/content/items/16/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/53/content/items/17/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/54/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/54/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/54/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/54/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/54/content/items/10/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/54/content/items/12/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/54/content/items/14/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/54/content/items/16/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/54/content/items/18/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/54/content/items/20/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/56/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/57/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/59/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/59/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/59/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/60/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/60/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/60/content/items/6/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/60/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/60/content/items/9/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/60/content/items/11/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/60/content/items/12/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/60/content/items/14/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/60/content/items/15/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/62/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/62/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/62/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/62/content/items/6/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/62/content/items/6/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/62/content/items/6/content/items/5/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/63/content/items/2/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/63/content/items/4/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/63/content/items/7/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/63/content/items/8/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/63/content/items/9/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/64/content/items/1/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "path": "/items/64/content/items/3/content/query",
+        "reason": "Query review deferred."
+      },
+      {
+        "workbook": "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json",
+        "reason": "Reviewed workloads do not cover all output tables."
+      }
+    ],
+    "scopeHelperAndOperatorDisposition": "Resources remains an ARG scope helper; materialize and union are operators, not saved-search/parser dependencies; no approvals or rewrites to other aliases/providers."
+  },
+  "maintainerRequirements": [
+    {
+      "operation": "Materialize four approved MDO classifications into generated workbooks",
+      "status": "blocked-not-attempted",
+      "reason": "Supported static review emitted 24 exact-query resolutions. 17 retain missing-mapping-catalog technical blockers. 266 other queries and all 3 workbook dependency sets remain unresolved. Generated workbook content remains unchanged.",
+      "maintainerRequirement": "Support the documented native MDO table names in the immutable mapping catalog. No toolkit patch or alternate conversion route attempted."
+    }
+  ],
+  "genuinelyRemainingDecisions": [
+    "Resolve or explicitly retain the 21 ambiguous table/alias bindings without rewriting queries under this approval.",
+    "Four mixed/Sentinel timing reasons remain outside approved timing scope.",
+    "Review mixed/time-column findings for LocalAdminGroupChanges, Phishing and PotentialCobaltStrikeRansomwareActivity, plus SUNSPOTHashes isfuzzy binding.",
+    "PossibleWebpBufferOverflow missing DeviceName output remains unresolved; provisional mappings acceptance excludes it.",
+    "ASIM builtin compatibility remains unknown for ImminentRansomware and Phishing, with no rewrite/exclude/accept approval.",
+    "Review remaining workbook inputs/providers/placeholders and dependency sets; keeping all three workbooks is not approval of their 290 queries."
+  ],
+  "technicalEvidenceNotWaivable": "Generated Phishing key correction applied; original source and historical conversion error retained. No runtime or structural qualification was attempted. Missing MDO mapping-catalog support is a maintainer requirement, not user acceptance."
+}

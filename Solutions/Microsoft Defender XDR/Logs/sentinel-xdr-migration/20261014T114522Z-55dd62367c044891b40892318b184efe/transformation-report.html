@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sentinel to XDR transformation report</title>
+  <script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+  <style>
+:root {
+  color-scheme: light;
+  --cp-bg: #f7f4ef;
+  --cp-bg-elevated: #fcfbf8;
+  --cp-surface: #ffffff;
+  --cp-surface-soft: #f5f5f5;
+  --cp-border: #dedede;
+  --cp-border-strong: #919191;
+  --cp-text: #242424;
+  --cp-text-muted: #5c5c5c;
+  --cp-text-soft: #6f6f6f;
+  --cp-accent: #b11f4b;
+  --cp-accent-hover: #9a1a41;
+  --cp-accent-soft: rgba(177, 31, 75, 0.08);
+  --cp-accent-fg: #ffffff;
+  --cp-success: #16a34a;
+  --cp-danger: #dc2626;
+  --cp-warning: #f59e0b;
+  --cp-link: #0078d4;
+  --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+  --cp-overlay: rgba(255, 255, 255, 0.8);
+  --cp-panel: rgba(255, 255, 255, 0.86);
+  --cp-panel-strong: rgba(255, 255, 255, 0.96);
+  --cp-sheen: rgba(255, 255, 255, 0.55);
+  --cp-highlight: rgba(177, 31, 75, 0.12);
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --cp-bg: #3d3b3a;
+  --cp-bg-elevated: #343231;
+  --cp-surface: #292929;
+  --cp-surface-soft: #2e2e2e;
+  --cp-border: #474747;
+  --cp-border-strong: #5f5f5f;
+  --cp-text: #dedede;
+  --cp-text-muted: #919191;
+  --cp-text-soft: #b0b0b0;
+  --cp-accent: #fd8ea1;
+  --cp-accent-hover: #fb7b91;
+  --cp-accent-soft: rgba(253, 142, 161, 0.14);
+  --cp-accent-fg: #1a1a1a;
+  --cp-success: #4ade80;
+  --cp-danger: #f87171;
+  --cp-warning: #fbbf24;
+  --cp-link: #4da6ff;
+  --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+  --cp-overlay: rgba(41, 41, 41, 0.88);
+  --cp-panel: rgba(41, 41, 41, 0.72);
+  --cp-panel-strong: rgba(41, 41, 41, 0.96);
+  --cp-sheen: rgba(255, 255, 255, 0.04);
+  --cp-highlight: rgba(253, 142, 161, 0.12);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--cp-bg); color: var(--cp-text);
+  font-family: "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif; }
+main { max-width: 1560px; margin: auto; padding: 24px; }
+h1 { margin: 8px 0; } h2 { font-size: 1.2rem; }
+a { color: var(--cp-link); } .muted { color: var(--cp-text-muted); }
+.panel { background: var(--cp-surface); border: 1px solid var(--cp-border);
+  border-radius: 16px; padding: 20px; margin: 16px 0; }
+.stages, .chips, .categories, .metrics { display: flex; flex-wrap: wrap; gap: 8px; }
+.stages { list-style: none; padding: 0; }
+.stage, .badge { border: 1px solid var(--cp-border); padding: 4px 8px; border-radius: .625rem; }
+.badge { display: inline-block; margin: 4px 0; font-size: .85rem; }
+.failed { border-left: 4px solid var(--cp-danger); }
+.review, .unconfirmed, .blocked { border-left: 4px solid var(--cp-warning); }
+.ready, .passed { border-left: 4px solid var(--cp-success); }
+.finding-error { border-left: 4px solid var(--cp-danger); }
+.finding-review { border-left: 4px solid var(--cp-accent); }
+.finding-warning { border-left: 4px solid var(--cp-link); }
+.finding-blocked { border-left: 4px solid var(--cp-warning); }
+.finding-info { border-left: 4px solid var(--cp-border-strong); }
+.metrics span { padding: 8px 12px; background: var(--cp-surface-soft); border-radius: .625rem; }
+fieldset { border: 0; padding: 0; margin: 16px 0; }
+legend { font-weight: 600; margin-bottom: 8px; }
+label.chip { border: 1px solid var(--cp-border); padding: 8px 12px;
+  border-radius: .625rem; cursor: pointer; background: var(--cp-surface); }
+label.chip:has(input:checked) { border-color: var(--cp-accent); background: var(--cp-accent-soft); }
+input { accent-color: var(--cp-accent); }
+input[type=search] { display: block; margin-top: 8px; width: min(100%, 640px); }
+input[type=search], button { font: inherit; padding: 8px 12px; border: 1px solid var(--cp-border-strong);
+  border-radius: .625rem; background: var(--cp-surface); color: var(--cp-text); }
+select { font: inherit; padding: 8px; max-width: 100%; background: var(--cp-surface); color: var(--cp-text);
+  border: 1px solid var(--cp-border-strong); border-radius: .625rem; }
+button:disabled { color: var(--cp-text-muted); cursor: not-allowed; }
+.chart-layout { display: flex; flex-wrap: wrap; align-items: center; gap: 24px; }
+.donut { width: 220px; max-width: 100%; height: 220px; }
+.donut circle { fill: none; stroke-width: 5; }
+.donut-track { stroke: var(--cp-border); }
+.donut-green { stroke: var(--cp-success); }
+.donut-yellow { stroke: var(--cp-warning); }
+.donut-red { stroke: var(--cp-danger); }
+.donut-gray { stroke: var(--cp-text-muted); }
+.donut text { text-anchor: middle; fill: var(--cp-text); font-size: 3px; }
+.donut .chart-total { font-size: 6px; font-weight: 600; }
+.chart-legend { display: grid; gap: 8px; }
+.chart-legend button { text-align: left; }
+[data-chart-filter][aria-pressed=true] { outline: 2px solid var(--cp-accent); outline-offset: 2px; }
+.swatch { display: inline-block; width: 12px; height: 12px; margin-right: 8px; border-radius: 50%; }
+.swatch-green { background: var(--cp-success); }
+.swatch-yellow { background: var(--cp-warning); }
+.swatch-red { background: var(--cp-danger); }
+.swatch-gray { background: var(--cp-text-muted); }
+.findings-pie { width: 160px; height: 160px; max-width: 100%; }
+.pie-error { fill: var(--cp-danger); }
+.pie-attention { fill: var(--cp-warning); }
+.pie-info { fill: var(--cp-link); }
+.pie-empty { fill: var(--cp-border); }
+.swatch-info { background: var(--cp-link); }
+[data-findings-chart-filter][aria-pressed=true] { outline: 2px solid var(--cp-accent); outline-offset: 2px; }
+button, summary { cursor: pointer; } button:hover { border-color: var(--cp-accent); }
+:focus-visible { outline: 3px solid var(--cp-accent); outline-offset: 3px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; background: var(--cp-surface); }
+th, td { text-align: left; vertical-align: top; padding: 12px; border-bottom: 1px solid var(--cp-border); }
+thead th { position: sticky; top: 0; background: var(--cp-bg-elevated); z-index: 1; }
+th:first-child { min-width: 220px; } td { overflow-wrap: anywhere; }
+tbody.rule > tr:first-child > th { font-weight: normal; width: 30%; }
+.detail-cell { background: var(--cp-bg-elevated); }
+summary { padding: 8px 0; font-weight: 600; }
+pre, code { font-family: Consolas, "Courier New", Courier, monospace; }
+code { overflow-wrap: anywhere; word-break: normal; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto;
+  background: var(--cp-surface-soft); border: 1px solid var(--cp-border); padding: 12px; border-radius: .625rem; }
+.query-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.issue-list { padding-left: 24px; } .issue-list li { padding: 8px 0; }
+.flow-scroll { overflow-x: auto; padding: 8px 0 12px; }
+.subway { display: block; width: 100%; min-width: 1160px; height: auto; }
+.subway.qualification { min-width: 2110px; }
+.subway .route { fill: none; stroke: var(--cp-border-strong); stroke-width: 4; }
+.subway .route-prefix.active { stroke: var(--cp-accent); }
+.subway .route-authoring.active { stroke: var(--cp-accent); }
+.subway .route-qualification { stroke-dasharray: 8 7; }
+.subway .route-qualification.active { stroke: var(--cp-accent); stroke-dasharray: none; }
+.subway .route-external { stroke-dasharray: 3 8; }
+.subway .route-label { fill: var(--cp-text-muted); font-size: 14px; }
+.subway .station-marker { fill: var(--cp-surface); stroke: var(--cp-border-strong); stroke-width: 4; }
+.subway .station-glyph { fill: var(--cp-text); font-size: 13px; font-weight: 700; text-anchor: middle; }
+.subway .station-name { fill: var(--cp-text); font-size: 15px; font-weight: 600; text-anchor: middle; }
+.subway .station-status { fill: var(--cp-text-muted); font-size: 12px; text-anchor: middle; }
+.subway .branch-heading { fill: var(--cp-text); font-size: 14px; font-weight: 600; }
+.subway .flow-link { cursor: pointer; }
+.subway .flow-link .station-name { text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+.subway .flow-link:hover .station-name,
+.subway .flow-link:focus-visible .station-name { text-decoration-style: solid; fill: var(--cp-accent); }
+.subway .flow-link:hover .station-marker,
+.subway .flow-link:focus-visible .station-marker { stroke: var(--cp-accent); stroke-width: 6; }
+.subway .flow-link:focus { outline: none; }
+.flow-evidence-entry { border-top: 1px solid var(--cp-border); padding: 12px 0; scroll-margin-top: 16px; }
+.flow-evidence-entry h3 { margin: 4px 0 8px; }
+.flow-evidence-entry:target { border-left: 4px solid var(--cp-accent); padding-left: 12px; }
+.flow-evidence-entry ul { overflow-wrap: anywhere; }
+.flow-artifact-links { display: flex; flex-wrap: wrap; gap: 8px 16px; padding-left: 20px; }
+.flow-artifact-links a { overflow-wrap: anywhere; }
+.subway.compact { min-width: 1160px; }
+.subway .flow-station.state-completed .station-marker { stroke: var(--cp-success); }
+.subway .flow-station.state-running .station-marker { stroke: var(--cp-accent); }
+.subway .flow-station.state-blocked .station-marker,
+.subway .flow-station.state-failed .station-marker { stroke: var(--cp-danger); }
+.subway .flow-station.state-stale .station-marker { stroke: var(--cp-warning); stroke-dasharray: 5 3; }
+.subway .flow-station.state-unknown .station-marker,
+.subway .flow-station.state-pending .station-marker,
+.subway .flow-station.state-not-required .station-marker { stroke: var(--cp-border-strong); stroke-dasharray: 5 3; }
+.subway .state-completed .station-glyph { fill: var(--cp-success); }
+.subway .state-running .station-glyph { fill: var(--cp-accent); }
+.subway .state-blocked .station-glyph, .subway .state-failed .station-glyph { fill: var(--cp-danger); }
+.subway .state-stale .station-glyph { fill: var(--cp-warning); }
+.subway .flow-link:hover .station-marker,
+.subway .flow-link:focus-visible .station-marker { stroke: var(--cp-accent); stroke-width: 6; }
+.flow-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 0; list-style: none; }
+.flow-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.flow-key { width: 12px; height: 12px; border: 2px solid var(--cp-border-strong); border-radius: 50%; }
+.flow-key.completed { border-color: var(--cp-success); }
+.flow-key.running { border-color: var(--cp-accent); }
+.flow-key.blocked, .flow-key.failed { border-color: var(--cp-danger); }
+.flow-key.stale { border-color: var(--cp-warning); border-style: dashed; }
+.flow-key.pending, .flow-key.not-required, .flow-key.unknown { border-style: dashed; }
+.flow-mode { display: inline-block; border: 1px solid var(--cp-border-strong); border-radius: .625rem; padding: 4px 8px; }
+.planning-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.planning-card { min-width: 0; align-self: start; background: var(--cp-bg-elevated); border: 1px solid var(--cp-border); border-radius: .625rem; padding: 12px; }
+.planning-card h3 { margin-top: 0; }
+.planning-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); align-items: start; gap: 10px; margin: 16px 0; }
+.planning-summary-card { min-width: 0; align-self: start; display: grid; gap: 6px; padding: 12px; background: var(--cp-bg-elevated); border: 1px solid var(--cp-border); border-radius: .625rem; }
+.planning-summary-card span { overflow-wrap: anywhere; word-break: normal; }
+.planning-layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); align-items: start; gap: 12px; }
+.target-data { display: grid; gap: 8px; margin: 8px 0; }
+.target-data > div { min-width: 0; }
+.target-data dt { font-weight: 600; }
+.target-data dd { margin: 2px 0 0; overflow-wrap: anywhere; word-break: normal; }
+.planning-inventory { width: 100%; margin-top: 12px; }
+.component-plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); align-items: start; gap: 10px; }
+.component-coverage-summary { margin: 8px 0; padding-left: 20px; overflow-wrap: anywhere; }
+.planning-table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
+.resource-inventory { width: 100%; min-width: 940px; table-layout: fixed; border-collapse: collapse; }
+.resource-inventory th, .resource-inventory td { border-bottom: 1px solid var(--cp-border); padding: 8px; text-align: left; vertical-align: top; }
+.resource-inventory th { white-space: nowrap; }
+.resource-inventory th:nth-child(1) { width: 34%; }
+.resource-inventory th:nth-child(2) { width: 20%; }
+.resource-inventory th:nth-child(3) { width: 9%; }
+.resource-inventory th:nth-child(4) { width: 24%; }
+.resource-inventory th:nth-child(5) { width: 13%; }
+.resource-inventory td:first-child code { overflow-wrap: break-word; word-break: normal; }
+.resource-inventory td:nth-child(2), .resource-inventory td:nth-child(3), .resource-inventory td:nth-child(5) { white-space: nowrap; }
+[hidden] { display: none !important; }
+@media(max-width: 760px) { .planning-layout, .planning-summary-grid { grid-template-columns: 1fr; } }
+@media(max-width: 760px) { main { padding: 12px; } .panel { padding: 12px; }
+  .query-pair { grid-template-columns: 1fr; } }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 24px 0; }
+.card { background: var(--cp-surface); border: 1px solid var(--cp-border); border-radius: 16px; padding: 16px; }
+.card strong { display: block; font-size: 2rem; margin-top: 4px; }
+.status { display: inline-block; border: 1px solid var(--cp-border); border-radius: .625rem; padding: 4px 8px; font-weight: 600; }
+.converted { border-left: 4px solid var(--cp-success); }
+.needsReview { border-left: 4px solid var(--cp-accent); }
+.conflict { border-left: 4px solid var(--cp-danger); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sentinel to XDR transformation report</h1>
+  <div class="muted">. - Generated 2026-10-14 14:47:58 UTC</div>
+  <p>Rule-scoped conversion only: 738702fd-0a66-42c7-8586-e30f0583f8fe. Unselected drafts were not converted. Counts apply only to the selected rule; this is not full-solution conversion, structural validation, or packaging readiness.</p>
+  <section class="cards">
+    <div class="card">Rules attempted<strong>1</strong></div>
+    <div class="card">Converted<strong>1</strong></div>
+    <div class="card">Excluded<strong>0</strong></div>
+    <div class="card">Review required<strong>0</strong></div>
+    <div class="card">Conflicts<strong>0</strong></div>
+    <div class="card">Rules with information<strong>1</strong></div>
+  </section>
+  <p>Information is nonblocking conversion context, separate from warnings, human-review decisions, and errors. It never changes conversion status or readiness.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Rule</th><th>Status</th><th>Errors</th><th>Reviews</th><th>Warnings</th><th>Information — nonblocking</th></tr></thead>
+      <tbody>
+            <tr>
+              <td><strong>TEARDROP memory-only dropper</strong><br><span class="muted">Analytic Rules/SolarWinds_TEARDROP_Process-IOCs.yaml -&gt; XDR Detections/SolarWinds_TEARDROP_Process-IOCs.yaml</span></td>
+              <td><span class="status converted">converted</span>
+              </td>
+              <td><span class="muted">—</span></td>
+              <td><span class="muted">—</span></td>
+              <td><ul><li>Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=2592000s; source and native service windows differ; no explicit event-time bound proves equivalence to Defender ingestion-time evaluation. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback</li><li>Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained in customDetails when the query output binding is available; this assumption does not prove entity parity</li><li>converter cannot map FileHash.Algorithm/Value: requires a query-proven constant SHA1 or SHA256 algorithm and an available hash value column; MD5, unknown algorithms and linked file/process references are not inferred</li><li>Host.FullName value is retained as customDetails.HostFullName from query column `DeviceName`, but its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation</li><li>Supplemental customDetails.HostFullName column `DeviceName` requires runtime output-schema binding verification</li><li>Account.FullName value is retained as customDetails.AccountFullName from query column `InitiatingProcessAccountUpn`, but its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation</li><li>Supplemental customDetails.AccountFullName column `InitiatingProcessAccountUpn` requires runtime output-schema binding verification</li><li>FileHash.Value value is retained as customDetails.FileHashValue from query column `InitiatingProcessSHA1`, but its target output binding requires runtime-schema verification; custom details do not restore entity identity or correlation</li><li>Supplemental customDetails.FileHashValue column `InitiatingProcessSHA1` requires runtime output-schema binding verification</li><li>Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified and the service drops all custom details if exceeded</li></ul></td>
+              <td><ul><li>FileHash.Algorithm mismatch is informational because its original value is preserved as customDetails.FileHashAlgorithm from query column `HashAlgorithm`; supplemental details do not restore entity identity, correlation, or alert parity</li><li>All source MITRE tactics are preserved in source order in authored YAML. V3.1 ARM packaging carries only the first tactic and its compatible techniques; this classification loss is not validated parity. Direct Graph deployment requires a single tactic.</li></ul></td>
+            </tr>
+            </tbody>
+    </table>
+  </div>
+</main>
+</body>
+</html>

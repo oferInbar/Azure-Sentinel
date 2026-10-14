@@ -1,0 +1,123 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceProcessEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceProcessEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceProcessEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 7d0d3050-8dac-4b83-bfae-902f7dc0c21c
+    path: Analytic Rules/Ransomware/LaZagneCredTheft.yaml
+    version: 1.0.0
+    querySha256: 9161e3a49d4d8ab46fd96bd42c91b95cac6d0bdd520a93da170a607200b4aa3e
+    schedule:
+      queryFrequency: 1h
+      queryPeriod: 1h
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; effective event
+      windows source=3600s, target=3600s; event-time window constrained to original Sentinel lookback. The XDR service window
+      remains 14400s and is not identical to the Sentinel service window; late-ingestion risk remains and cadence/service-window
+      parity is not established. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
+      and the service drops all custom details if exceeded
+    informational:
+    - 'Schedule assessment: source frequency=1h, lookback=1h; target frequency=PT1H, native lookback=14400s; effective event
+      windows source=3600s, target=3600s; event-time window constrained to original Sentinel lookback. The XDR service window
+      remains 14400s and is not identical to the Sentinel service window; late-ingestion risk remains and cadence/service-window
+      parity is not established. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - Host.FullName `DeviceName` is safely represented by retained nameColumn `HostName` and dnsDomainColumn `DnsDomain`;
+      the query explicitly decomposes that same full name. No fullNameColumn is emitted
+    - Process.ProcessId mismatch is informational because its original value is preserved as customDetails.ProcessProcessId
+      from query column `ProcessId`; supplemental details do not restore entity identity, correlation, or alert parity
+    - Process.CommandLine mismatch is informational because its original value is preserved as customDetails.ProcessCommandLine
+      from query column `ProcessCommandLine`; supplemental details do not restore entity identity, correlation, or alert parity
+    errors: []
+    originalTactics:
+    - CredentialAccess
+    originalTechniques:
+    - T1003
+    reviewScope:
+      sourceDocumentSha256: f6ab05263970bdb075f3638c3290aa5b4ff770b0a58fa5491b76d32f31f183ff
+      targetQuerySha256: f96642438715f62ef936edd0c7ff623038647914b47d83541e4e323b21794627
+    eventTimeWindow:
+      status: constrained
+      originalSentinelLookbackSeconds: 3600
+      effectiveEventWindowSeconds: 3600
+      xdrServiceWindowSeconds: 14400
+      sourceTimeColumn: TimeGenerated
+      targetTimeColumn: Timestamp
+      filterInjected: true
+      rationale: A conservative single-native-table pipeline proof established the source and target input and time-column
+        binding. The target Timestamp filter is placed immediately after the table input and before all filters, projections,
+        and aggregations.
+      lateIngestionRisk: 'Late-ingestion risk: events ingested after their Timestamp falls outside this constrained event-time
+        window can be missed; runtime qualification is required.'
+    supplementalEntityDetails:
+    - entityType: Process
+      entityIndex: 2
+      identifier: ProcessId
+      sourceColumn: ProcessId
+      column: ProcessId
+      status: available
+      customDetailKey: ProcessProcessId
+    - entityType: Process
+      entityIndex: 2
+      identifier: CommandLine
+      sourceColumn: ProcessCommandLine
+      column: ProcessCommandLine
+      status: available
+      customDetailKey: ProcessCommandLine
+properties:
+  id: xdr-7d0d3050-8dac-4b83-bfae-902f7dc0c21c
+  displayName: LaZagne Credential Theft
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceProcessEvents | where Timestamp >= ago(1h)
+      | where FileName =~ 'reg.exe'
+      | where ProcessCommandLine has_all('save','hklm','sam')
+      | project DeviceId, DeviceName, Timestamp, InitiatingProcessId, InitiatingProcessFileName, ProcessId, FileName, ProcessCommandLine
+      | extend HostName = iff(DeviceName has '.', substring(DeviceName, 0, indexof(DeviceName, '.')), DeviceName)
+      | extend DnsDomain = iff(DeviceName has '.', substring(DeviceName, indexof(DeviceName, '.') + 1), "")
+  schedule:
+    frequency: PT1H
+  detectionAction:
+    alertTemplate:
+      title: LaZagne Credential Theft
+      description: LaZagne is a popular open-source tool used to recover passwords stored on a local computer. It has been
+        used in ransomware attacks to steal credentials and escalate privileges. This query looks for the execution of LaZagne.
+      severity: medium
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: DnsDomain
+      tactics:
+      - tactic: CredentialAccess
+        techniques:
+        - technique: T1003
+      customDetails:
+        ProcessProcessId: ProcessId
+        ProcessCommandLine: ProcessCommandLine

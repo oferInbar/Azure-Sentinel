@@ -1,0 +1,170 @@
+schemaVersion: 1.0.0
+version: 3.2.1
+kind: CustomDetection
+resourceType: Microsoft.Security/detectionRules
+apiVersion: 2026-06-01-preview
+requiredDataConnectors:
+- connectorId: MicrosoftThreatProtection
+  dataTypes:
+  - DeviceEvents
+contentProvenance:
+  requiredWorkloads:
+  - workload: mde
+    dataTypes:
+    - DeviceEvents
+  requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+    - DeviceEvents
+  dependencyReviewRequired: false
+  source:
+    platform: Microsoft Sentinel
+    kind: AnalyticsRule
+    id: 738702fd-0a66-42c7-8586-e30f0583f8fe
+    path: Analytic Rules/SolarWinds_TEARDROP_Process-IOCs.yaml
+    version: 1.0.6
+    querySha256: 428d57432679a31b217ed920634d7f2cc3cd8b62444a7de1726acfbc97d814f8
+    schedule:
+      queryFrequency: 1d
+      queryPeriod: 1d
+  conversion:
+    tool: sentinel-to-xdr-migration
+    version: 0.1.0
+    status: converted
+    reviewRequired: false
+    reviewReasons: []
+    requiredWorkloads:
+    - sentinel
+    warnings:
+    - 'Schedule assessment: source frequency=1d, lookback=1d; target frequency=P1D, native lookback=2592000s; source and native
+      service windows differ; no explicit event-time bound proves equivalence to Defender ingestion-time evaluation. See https://learn.microsoft.com/en-us/defender-xdr/custom-detection-rules#lookback'
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - 'converter cannot map FileHash.Algorithm/Value: requires a query-proven constant SHA1 or SHA256 algorithm and an available
+      hash value column; MD5, unknown algorithms and linked file/process references are not inferred'
+    - Host.FullName value is retained as customDetails.HostFullName from query column `DeviceName`, but its target output
+      binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.HostFullName column `DeviceName` requires runtime output-schema binding verification
+    - Account.FullName value is retained as customDetails.AccountFullName from query column `InitiatingProcessAccountUpn`,
+      but its target output binding requires runtime-schema verification; custom details do not restore entity identity or
+      correlation
+    - Supplemental customDetails.AccountFullName column `InitiatingProcessAccountUpn` requires runtime output-schema binding
+      verification
+    - FileHash.Value value is retained as customDetails.FileHashValue from query column `InitiatingProcessSHA1`, but its target
+      output binding requires runtime-schema verification; custom details do not restore entity identity or correlation
+    - Supplemental customDetails.FileHashValue column `InitiatingProcessSHA1` requires runtime output-schema binding verification
+    - Custom-detail values must remain within the documented combined 4 KB per-alert limit; runtime values are unverified
+      and the service drops all custom details if exceeded
+    informational:
+    - FileHash.Algorithm mismatch is informational because its original value is preserved as customDetails.FileHashAlgorithm
+      from query column `HashAlgorithm`; supplemental details do not restore entity identity, correlation, or alert parity
+    - All source MITRE tactics are preserved in source order in authored YAML. V3.1 ARM packaging carries only the first tactic
+      and its compatible techniques; this classification loss is not validated parity. Direct Graph deployment requires a
+      single tactic.
+    errors: []
+    originalTactics:
+    - Execution
+    - Persistence
+    - DefenseEvasion
+    originalTechniques:
+    - T1543
+    - T1059
+    - T1027
+    reviewScope:
+      sourceDocumentSha256: f0d862869c67862613a83cb921b56ee1f7d8ec42e910b176ec2a836ee94c8f0f
+      targetQuerySha256: 78e512f7245efb889bdcbb99aef43c424a8075d825d2221e0e987635735a3680
+    reviewDecisions:
+    - reason: Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish
+        an event-time column
+      decision: accepted
+      sourceDocumentSha256: f0d862869c67862613a83cb921b56ee1f7d8ec42e910b176ec2a836ee94c8f0f
+      targetQuerySha256: 78e512f7245efb889bdcbb99aef43c424a8075d825d2221e0e987635735a3680
+    - reason: 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented
+        by hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also
+        retained in customDetails when the query output binding is available; this assumption does not prove entity parity'
+      decision: accepted
+      sourceDocumentSha256: f0d862869c67862613a83cb921b56ee1f7d8ec42e910b176ec2a836ee94c8f0f
+      targetQuerySha256: 78e512f7245efb889bdcbb99aef43c424a8075d825d2221e0e987635735a3680
+    supplementalEntityDetails:
+    - entityType: Host
+      entityIndex: 1
+      identifier: FullName
+      sourceColumn: DeviceName
+      column: DeviceName
+      status: runtime-binding-pending
+      customDetailKey: HostFullName
+    - entityType: Account
+      entityIndex: 2
+      identifier: FullName
+      sourceColumn: InitiatingProcessAccountUpn
+      column: InitiatingProcessAccountUpn
+      status: runtime-binding-pending
+      customDetailKey: AccountFullName
+    - entityType: FileHash
+      entityIndex: 3
+      identifier: Algorithm
+      sourceColumn: HashAlgorithm
+      column: HashAlgorithm
+      status: available
+      customDetailKey: FileHashAlgorithm
+    - entityType: FileHash
+      entityIndex: 3
+      identifier: Value
+      sourceColumn: InitiatingProcessSHA1
+      column: InitiatingProcessSHA1
+      status: runtime-binding-pending
+      customDetailKey: FileHashValue
+    acceptedReviewReasons:
+    - 'Best-effort entity mapping requires review: source Host.FullName column `DeviceName` is provisionally represented by
+      hosts.nameColumn `HostName`; confirm that this column is the intended host identifier. The original value is also retained
+      in customDetails when the query output binding is available; this assumption does not prove entity parity'
+    - Original Sentinel lookback is shorter than the native XDR service window, but the source query does not establish an
+      event-time column
+properties:
+  id: xdr-738702fd-0a66-42c7-8586-e30f0583f8fe
+  displayName: TEARDROP memory-only dropper
+  status: disabled
+  queryCondition:
+    queryText: |-
+      DeviceEvents
+      | where ActionType has "ExploitGuardNonMicrosoftSignedBlocked"
+      | where InitiatingProcessFileName has "svchost.exe" and FileName has "NetSetupSvc.dll"
+      | extend HashAlgorithm = "SHA1"
+      | extend HostName = tostring(split(DeviceName, ".")[0]), DomainIndex = toint(indexof(DeviceName, '.'))
+      | extend HostNameDomain = iff(DomainIndex != -1, substring(DeviceName, DomainIndex + 1), DeviceName)
+  schedule:
+    frequency: P1D
+  detectionAction:
+    alertTemplate:
+      title: TEARDROP memory-only dropper
+      description: |-
+        Identifies SolarWinds TEARDROP memory-only dropper IOCs in Window's defender Exploit Guard activity
+        References:
+        - https://www.fireeye.com/blog/threat-research/2020/12/evasive-attacker-leverages-solarwinds-supply-chain-compromises-with-sunburst-backdoor.html
+        - https://gist.github.com/olafhartong/71ffdd4cab4b6acd5cbcd1a0691ff82f
+      severity: high
+      entityMappings:
+        hosts:
+        - id: host1
+          nameColumn: HostName
+          dnsDomainColumn: HostNameDomain
+        accounts:
+        - id: account1
+          nameColumn: InitiatingProcessAccountName
+          upnSuffixColumn: InitiatingProcessAccountDomain
+      tactics:
+      - tactic: Execution
+        techniques:
+        - technique: T1059
+      - tactic: Persistence
+        techniques:
+        - technique: T1543
+      - tactic: DefenseEvasion
+        techniques:
+        - technique: T1027
+      customDetails:
+        HostFullName: DeviceName
+        AccountFullName: InitiatingProcessAccountUpn
+        FileHashAlgorithm: HashAlgorithm
+        FileHashValue: InitiatingProcessSHA1

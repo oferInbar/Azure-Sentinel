@@ -1,0 +1,19 @@
+{
+  "runId": "20261014T114522Z-55dd62367c044891b40892318b184efe",
+  "completedAtUtc": "2026-10-14T13:17:47.862027+00:00",
+  "approvedRulesApplied": 6,
+  "changedContentFiles": [
+    "XDR Detections/Campaign/Sysrv-botnet/MaliciousCMDExecutionByJava.yaml",
+    "XDR Detections/Credential Access/LSASSCredDumpProcdump.yaml",
+    "XDR Detections/Defense Evasion/DoppelpaymerStopService.yaml",
+    "XDR Detections/Execution/OfficeAppsLaunchingWscript.yaml",
+    "XDR Detections/Exploits/MosaicLoader.yaml",
+    "XDR Detections/Ransomware/DEV-0270/DisableSecurityServiceViaRegistry.yaml"
+  ],
+  "sourceAndUnselectedContentUnchanged": true,
+  "queriesSchedulesIdentityVersionsAndAlertPayloadsUnchanged": true,
+  "warningsAndRemainingLimitationsPreserved": true,
+  "allTargetsDisabled": true,
+  "wholeSolutionReady": false,
+  "runtimeValidated": false
+}
