@@ -50,44 +50,29 @@ themselves establish a toolkit fix is required.
 - **Validate XDR Detections and Defender Workbooks in `.script/local-validation/`.**
   Added `validate-xdr-content.py` and `xdr-detection` / `xdr-workbook`
   validators to `build-and-validate.ps1` with explicit `SKIP` visibility.
+- **Verify ARM templates through lab deployment by default (`lab-deployment`) with
+  preflight preapproval.** Defaulted ARM validation to `lab-deployment` for
+  Authoring and Qualification (with explicit `arm-ttk` selection supported in
+  Authoring), added preflight preapproval prompts stating `X Sentinel rules,
+  Y workbooks, and Z custom detections`, recorded target/SHA-256 deployment
+  validation findings (`functionalQualificationVerified: false`,
+  `alertParityVerified: false`), and surfaced `SKIP (lab-deployment selected as
+  ARM validation route)` in `build-and-validate.ps1`.
+- **Reconcile Qualification readiness and private configuration/support exports.**
+  Added `assess_qualification_readiness` (separating `authorizationChecks`,
+  `deploymentPermissionReadiness`, and `ingestionPermissionReadiness`) and
+  `audit_private_config_and_support_export` to verify secret/private-target
+  hygiene before export.
+- **Add operator visibility, scheduled migration status reminders, single-owner
+  execution leases, and safe approval forwarding.** Added
+  `workflow-status-reminder` (with `suppressedNoChange`, workflow diagram, and
+  batch duration explanation), `workflow-execution-owner`
+  (`duplicate_executor_blocked` lease protection), and
+  `workflow-forward-approval` (hash-bound `(runId, operation, approvedBy,
+  forwardedToOwnerId, exactScope, approvalSha256)` forwarding).
 
 ## Candidate follow-ups
 
-- **Reconcile Qualification readiness.** Review existing authorization and
-  access checks, then separately assess deployment and ingestion permission
-  readiness before proposing new implementation.
-- **Review private configuration and support exports.** Reconcile existing
-  target-configuration and support-export handling before making claims about
-  exposure or adding controls.
-- **Improve operator visibility.** Consider concise progress and preflight
-  reporting, a workflow diagram, watchdog summaries, and suppression of
-  no-change notices.
-- **Add scheduled migration status reminders.** Consider a scheduled agent
-  that reminds the top coordinator to surface what is being worked on, what
-  comes next, and why a step is taking longer, including larger detection
-  batches. For example: "Applying your decisions to the XDR detections before
-  validation." Bind updates to actual workflow and subagent evidence; never
-  invent progress, completion estimates, or approvals. Coordinate with the
-  existing single-owner watchdog, avoid repetitive notices, and do not create
-  a second workflow executor. Review the cadence and design separately before
-  implementing an agent or enabling a schedule.
-- **Forward explicit approval safely.** Route chat approval to the accountable
-  owner while preserving the exact approved operation, scope, and bindings.
-- **Clarify execution ownership.** Use appropriate delegation with one owner
-  and no duplicate executors for the same operation.
-- **Change the validation tools to verify ARM templates through lab deployment.**
-  Make deployment of the generated `mainTemplate` to an explicitly approved
-  non-production lab the default ARM validation route for both Authoring and
-  Qualification, skipping ARM-TTK on that route and using deployment results
-  to verify ARM template deployment validity. Allow Authoring to select
-  ARM-TTK instead of lab deployment verification. Save deployment findings,
-  including failures and target/artifact bindings, as workflow evidence.
-  Ask in advance during preflight for preapproval to deploy the solution ARM
-  templates to the selected lab, stating the expected content items:
-  X Sentinel rules, Y workbooks, and Z custom detections.
-  Deployment verification alone does not establish functional/runtime
-  qualification or alert parity.
-
-Any future environment write remains separately gated by explicit approval
-immediately before the exact operation. No cloud action is authorized by this
-roadmap.
+No open candidate follow-ups remain for V1 PREVIEW. Any future environment
+write remains separately gated by explicit approval immediately before the
+exact operation. No cloud action is authorized by this roadmap.

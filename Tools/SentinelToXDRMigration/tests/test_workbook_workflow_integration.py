@@ -788,3 +788,233 @@ def test_workbook_report_keeps_excluded_inventory_outside_rule_coverage(solution
     assert report["rules"] == []
     assert report["workbooks"]["inventoryCount"] == 1
     assert report["workbooks"]["sources"][0]["selected"] is True
+
+
+def test_lab_deployment_preflight_prompt_and_expected_content_counts(solution):
+    rules = solution / "Analytic Rules"
+    rules.mkdir()
+    (rules / "rule1.yaml").write_text(RULE)
+    state = initialize(solution)
+    content_pass(solution)
+    data_path = solution / "Data/Solution_Fixture.json"
+    data = json.loads(data_path.read_bytes())
+    data["Analytic Rules"] = ["Analytic Rules/rule1.yaml"]
+    data["XDR Detections"] = [
+        p.relative_to(solution).as_posix()
+        for p in sorted((solution / "XDR Detections").glob("*.yaml"))
+    ]
+    data_path.write_text(json.dumps(data))
+
+    counts = integration.expected_content_counts(solution, state)
+    assert counts["sentinelRulesCount"] == 1
+    assert counts["sentinelWorkbooksCount"] == 1
+    assert counts["defenderWorkbooksCount"] == 1
+    assert counts["workbooksCount"] == 2
+    assert counts["workbooksBreakdown"] == {"sentinel": 1, "defender": 1}
+    assert counts["customDetectionsCount"] == 1
+
+    preflight_info = integration.plan_lab_deployment_preflight(solution)
+    assert preflight_info["armValidationMethod"] == "lab-deployment"
+    assert preflight_info["defaultArmValidationMethod"] == "lab-deployment"
+    assert preflight_info["skipsArmTtk"] is True
+    assert preflight_info["functionalQualificationVerified"] is False
+    assert preflight_info["alertParityVerified"] is False
+    assert preflight_info["labDeploymentPreflightPrompt"] == (
+        "Requesting preflight preapproval to deploy the solution ARM templates to the "
+        "selected non-production lab to verify ARM template deployment validity "
+        "(expected content items: 1 Sentinel rules, 2 workbooks, and 1 custom detections). "
+        "Deployment verification alone does not establish functional/runtime qualification or alert parity."
+    )
+    persisted = json.loads((report_directory(solution) / "arm-deployment-preflight.json").read_bytes())
+    assert persisted["labDeploymentPreflightPrompt"] == preflight_info["labDeploymentPreflightPrompt"]
+    assert persisted["expectedContentCounts"] == counts
+    status = workflow.workflow_status(solution)
+    assert status["workbookSummary"]["expectedContentCounts"] == counts
+    assert status["workbookSummary"]["labDeploymentPreflightPrompt"] == preflight_info["labDeploymentPreflightPrompt"]
+
+
+def test_default_lab_deployment_vs_explicit_arm_ttk_and_durable_deployment_findings(ready_candidate):
+    root, package, candidate = ready_candidate
+    assert integration.default_arm_validation_method("authoring") == "lab-deployment"
+    assert integration.default_arm_validation_method("qualification") == "lab-deployment"
+    assert candidate["expectedContentCounts"]["workbooksCount"] == 2
+    assert "expected content items: 0 Sentinel rules, 2 workbooks, and 0 custom detections" in candidate["labDeploymentPreflightPrompt"]
+
+    plan = integration.plan_candidate(root, target=TARGET, selected_flags={"DeployDefenderWorkbook": True})
+    assert (report_directory(root) / "arm-deployment-preflight.json").is_file()
+    integration.review_scope(
+        root, actor="owner", reference="scope-review", approved=True,
+        expected_plan_sha256=plan["planSha256"],
+    )
+    failing_runner = mock.Mock(
+        return_value=(
+            1,
+            {"id": "fixture-failed-deployment", "properties": {"provisioningState": "Failed"}},
+            "DeploymentFailed: InvalidTemplateDeployment",
+        )
+    )
+    failed_result = integration.execute_candidate(
+        root,
+        expected_plan_sha256=plan["planSha256"],
+        actor="owner",
+        reference="execute-failure-test",
+        confirmation=validation.LAB_ARM_CONFIRMATION,
+        identity_check=lambda target: ACCESS,
+        command_runner=failing_runner,
+    )
+    assert failed_result["status"] == "failed"
+    assert failed_result["functionalQualificationVerified"] is False
+    assert failed_result["alertParityVerified"] is False
+    assert failed_result["artifactBindings"]["candidateSha256"] == candidate["candidateSha256"]
+    assert failed_result["artifactBindings"]["planSha256"] == plan["planSha256"]
+    assert failed_result["artifactBindings"]["mainTemplateSha256"] == plan["mainTemplateSha256"]
+    assert any("DeploymentFailed" in item["message"] for item in failed_result["findings"])
+
+    evidence_path = report_directory(root) / "arm-deployment-validation-evidence.json"
+    assert evidence_path.is_file()
+    durable = json.loads(evidence_path.read_bytes())
+    assert durable["outcome"] == "failed"
+    assert durable["functionalQualificationVerified"] is False
+    assert durable["alertParityVerified"] is False
+    assert durable["target"] == plan["target"]
+    assert durable["artifactBindings"]["packageArtifactsSha256"] == package["packageArtifactsSha256"]
+    state = workflow._load(root)[1]
+    assert state["stages"]["packaging"]["artifacts"]["labArmDeploymentOutcome"] == "failed"
+    assert state["stages"]["packaging"]["artifacts"]["functionalQualificationVerified"] == "false"
+    assert state["stages"]["packaging"]["artifacts"]["alertParityVerified"] == "false"
+
+
+def test_assess_qualification_readiness_separates_deployment_and_ingestion(solution):
+    state = workflow.initialize_workflow(
+        solution,
+        workflow_profile="qualification",
+        workbook_capability_version=1,
+        version_bump="none",
+        tenant_id=TARGET["tenantId"],
+        subscription_id=TARGET["subscriptionId"],
+        workspace_resource_id=TARGET["workspaceResourceId"],
+        workspace_customer_id=TARGET["workspaceCustomerId"],
+    )
+    run_dir = report_directory(solution)
+    # Initial state without consent or preflight receipts
+    initial_readiness = integration.assess_qualification_readiness(solution, run_id=state["runId"])
+    assert initial_readiness["status"] == "blocked"
+    assert initial_readiness["deploymentAndIngestionSeparated"] is True
+    assert initial_readiness["authorizationChecks"]["targetLocked"]["status"] == "ready"
+    assert initial_readiness["authorizationChecks"]["runtimeQueryConsent"]["status"] == "missing"
+    assert initial_readiness["authorizationChecks"]["armPreflightReadConsent"]["status"] == "missing"
+    assert initial_readiness["authorizationChecks"]["deploymentConsent"]["status"] == "missing"
+    assert initial_readiness["deploymentPermissionReadiness"]["status"] == "not-evaluated"
+    assert initial_readiness["ingestionPermissionReadiness"]["status"] == "not-evaluated"
+
+    # Populate consents and ready ARM preflight, but leave DCR/ingestion blocked
+    (run_dir / "runtime-query-consent.json").write_text(json.dumps({
+        "status": "approved",
+        "withdrawn": False,
+        "approvedFamilies": ["sentinelSourceQueryFamily", "defenderXdrQueryFamily"],
+    }))
+    (run_dir / "arm-preflight-consent.json").write_text(json.dumps({
+        "status": "approved",
+        "revoked": False,
+    }))
+    (run_dir / "arm-validation-consent.json").write_text(json.dumps({
+        "status": "approved",
+        "withdrawn": False,
+        "deploymentOnly": True,
+    }))
+    (run_dir / "arm-preflight-result.json").write_text(json.dumps({
+        "status": "ready",
+        "tenantMatches": True,
+        "subscriptionMatches": True,
+        "workspaceMatches": True,
+        "nonProduction": True,
+        "armDeploymentAllowed": True,
+        "disabledContentVerified": True,
+        "ownershipVerified": True,
+        "extensionResourceWriteAllowed": False,
+        "checks": {
+            "extensionResourceWriteAllowed": {"status": "not-required", "required": False},
+        },
+        "reasons": [],
+    }))
+    (run_dir / "qualification-dcr-preflight.json").write_text(json.dumps({
+        "status": "blocked",
+        "summary": {"total": 1, "ready": 0, "blocked": 1},
+        "candidates": [{
+            "table": "Syslog",
+            "tableSchemaCompatibility": {"status": "compatible"},
+            "resourceProvisioningAuthorization": {"status": "ready"},
+            "ingestionAuthorization": {"status": "denied", "requiredAction": "Microsoft.Insights/Telemetry/Write"},
+        }],
+        "blockers": ["Logs Ingestion permission Microsoft.Insights/Telemetry/Write is denied"],
+    }))
+
+    split_readiness = integration.assess_qualification_readiness(solution, run_id=state["runId"])
+    assert split_readiness["authorizationChecks"]["status"] == "ready"
+    assert split_readiness["deploymentPermissionReadiness"]["status"] == "ready"
+    assert split_readiness["deploymentPermissionReadiness"]["ready"] is True
+    assert split_readiness["deploymentPermissionReadiness"]["impliesIngestionReadiness"] is False
+    assert split_readiness["ingestionPermissionReadiness"]["status"] == "blocked"
+    assert split_readiness["ingestionPermissionReadiness"]["ready"] is False
+    assert split_readiness["ingestionPermissionReadiness"]["dcrAndDceReadiness"]["status"] == "ready"
+    assert split_readiness["ingestionPermissionReadiness"]["logsIngestionReadiness"]["status"] == "blocked"
+    assert split_readiness["status"] == "blocked"
+
+    # Now mark Logs Ingestion ready and verify overall readiness
+    (run_dir / "qualification-dcr-preflight.json").write_text(json.dumps({
+        "status": "ready",
+        "summary": {"total": 1, "ready": 1, "blocked": 0},
+        "candidates": [{
+            "table": "Syslog",
+            "tableSchemaCompatibility": {"status": "compatible"},
+            "resourceProvisioningAuthorization": {"status": "ready"},
+            "ingestionAuthorization": {"status": "ready", "requiredAction": "Microsoft.Insights/Telemetry/Write"},
+        }],
+        "blockers": [],
+    }))
+    full_readiness = integration.assess_qualification_readiness(solution, run_id=state["runId"])
+    assert full_readiness["status"] == "ready"
+    assert full_readiness["deploymentPermissionReadiness"]["ready"] is True
+    assert full_readiness["ingestionPermissionReadiness"]["ready"] is True
+
+
+def test_audit_private_config_and_support_export(solution):
+    from sentinel_xdr_migration.evidence import export_evidence
+
+    (solution / ".env").write_text(
+        f"AZURE_TENANT_ID={TARGET['tenantId']}\n"
+        f"SENTINEL_WORKSPACE_RESOURCE_ID={TARGET['workspaceResourceId']}\n",
+        encoding="utf-8",
+    )
+    state = workflow.initialize_workflow(
+        solution,
+        workflow_profile="qualification",
+        workbook_capability_version=1,
+        version_bump="none",
+        tenant_id=TARGET["tenantId"],
+        subscription_id=TARGET["subscriptionId"],
+        workspace_resource_id=TARGET["workspaceResourceId"],
+        workspace_customer_id=TARGET["workspaceCustomerId"],
+    )
+    export_evidence(solution)
+
+    clean_audit = integration.audit_private_config_and_support_export(solution, run_id=state["runId"])
+    assert clean_audit["status"] == "isolated"
+    assert clean_audit["privateConfigIsolatedToLocalUnexportedConfig"] is True
+    assert clean_audit["supportExportsRedacted"] is True
+    assert clean_audit["exposureClaimVerified"] is False
+    assert clean_audit["localConfig"]["envFilePresent"] is True
+    assert ".env" in clean_audit["localConfig"]["localUnexportedArtifacts"]
+    assert clean_audit["supportExports"]["checkedFiles"]
+    assert clean_audit["supportExports"]["exposures"] == []
+
+    # Simulate an unredacted private identifier leak in support export
+    summary_md = solution / "Evidence" / state["runId"] / "summary.md"
+    summary_md.write_text(summary_md.read_text(encoding="utf-8") + f"\nLeaked tenant: {TARGET['tenantId']}\n", encoding="utf-8")
+    leaked_audit = integration.audit_private_config_and_support_export(solution, run_id=state["runId"])
+    assert leaked_audit["status"] == "exposed-in-support-export"
+    assert leaked_audit["privateConfigIsolatedToLocalUnexportedConfig"] is False
+    assert leaked_audit["supportExportsRedacted"] is False
+    assert leaked_audit["exposureClaimVerified"] is True
+    assert any(item["identifierKind"] == "tenantId" for item in leaked_audit["supportExports"]["exposures"])
+

@@ -1182,7 +1182,7 @@ if (-not $SkipValidation) {
             Step = 3; Name = "ARM-TTK"; Status = "skipped"
             Passed = 0; Failed = 0; Skipped = 1; FileCount = 0
             Duration = [TimeSpan]::Zero
-            SkipReason = "Replaced only by pending approved lab deployment validation; not acceptance"
+            SkipReason = "SKIP (lab-deployment selected as ARM validation route); replaced only by pending approved lab deployment validation; not acceptance"
         })
     }
     elseif (Test-Path $packageDir) {

@@ -7239,3 +7239,711 @@ def build_consolidated_review_packet(
 
 
 plan_consolidated_review = build_consolidated_review_packet
+
+STATUS_REMINDER_CURSOR_FILE = "status-reminder-cursor.json"
+EXECUTION_OWNERSHIP_FILE = "execution-ownership.json"
+FORWARDED_APPROVALS_FILE = "forwarded-approvals.json"
+LARGE_DETECTION_BATCH_THRESHOLD = 15
+LARGE_WORKBOOK_QUERY_BATCH_THRESHOLD = 50
+
+
+def _build_workflow_diagram(state: dict[str, Any], next_stage: str | None) -> str:
+    stages = state.get("stages") or {}
+    packaging_stage = stages.get("packaging") or {}
+    packaging_artifacts = packaging_stage.get("artifacts") or {}
+    candidate_generated = (
+        packaging_artifacts.get("packageLifecycleStatus") == "candidate-generated"
+    )
+    running = [
+        name for name in STAGES if (stages.get(name) or {}).get("status") == "running"
+    ]
+    focus = running[0] if running else next_stage
+
+    diagram_nodes = [
+        ("discovery", "Discovery"),
+        ("conversion", "Conversion"),
+        ("validation", "Validation"),
+        ("candidatePackaging", "Candidate Packaging"),
+        ("armValidation", "ARM Validation"),
+        ("acceptedPackaging", "Accepted Packaging"),
+        ("report", "Report"),
+    ]
+    active_key: str | None = None
+    if focus in {"discovery", "conversion", "validation", "report"}:
+        active_key = focus
+    elif focus in {"packaging", "workflow-arm-candidate", "deployment", "mockIngestion", "alertParity"}:
+        if candidate_generated or focus in {"workflow-arm-candidate", "deployment"}:
+            active_key = "armValidation"
+        elif (packaging_stage.get("status") or "") == "passed":
+            active_key = "acceptedPackaging"
+        else:
+            active_key = "candidatePackaging"
+    elif state.get("workflowStatus") == "completed":
+        active_key = "report"
+    elif candidate_generated:
+        active_key = "armValidation"
+
+    rendered: list[str] = []
+    for key, label in diagram_nodes:
+        if key == active_key:
+            rendered.append(f"[> {label} <]")
+        else:
+            rendered.append(f"[{label}]")
+    return " -> ".join(rendered)
+
+
+def _describe_current_activity(
+    state: dict[str, Any],
+    next_stage: str | None,
+    recommendation: dict[str, Any],
+) -> str:
+    stages = state.get("stages") or {}
+    running = [
+        name for name in STAGES if (stages.get(name) or {}).get("status") == "running"
+    ]
+    active_stage = running[0] if running else next_stage
+    top_blockers = recommendation.get("topBlockers") or []
+    blocker_categories = {item.get("category") for item in top_blockers if isinstance(item, dict)}
+
+    if blocker_categories & {"detectionReview", "dependencyReview", "workbookReview", "technicalFailure"}:
+        return "Applying reviewed decisions or converting detections before validation."
+    if active_stage == "discovery":
+        return "Inspecting solution source inventory and validating content structure before conversion."
+    if active_stage == "conversion":
+        return "Applying reviewed decisions or converting detections before validation."
+    if active_stage == "validation":
+        return "Validating converted XDR detections and workbooks before candidate packaging."
+    if active_stage in {"packaging", "workflow-arm-candidate"}:
+        packaging_artifacts = ((stages.get("packaging") or {}).get("artifacts")) or {}
+        if packaging_artifacts.get("packageLifecycleStatus") == "candidate-generated":
+            return "Validating candidate V3.1 package and ARM template readiness before accepted packaging."
+        return "Building and verifying the V3.1 solution package."
+    if active_stage == "deployment":
+        return "Deploying disabled detections and approved solution resources to the locked lab target."
+    if active_stage == "mockIngestion":
+        return "Ingesting reviewed mock telemetry into the locked lab workspace."
+    if active_stage == "alertParity":
+        return "Verifying alert parity between Sentinel Analytic Rules and Defender XDR Custom Detections."
+    if active_stage == "report":
+        return "Generating the consolidated solution migration report."
+    if state.get("workflowStatus") == "completed":
+        return "Migration workflow completed; all required stages passed."
+    return "Reviewing current workflow gates and blocker evidence before the next stage."
+
+
+def _build_duration_explanation(
+    analytic_rule_count: int,
+    xdr_detection_count: int,
+    workbook_count: int,
+    workbook_query_count: int,
+) -> tuple[str, bool]:
+    large_rules = analytic_rule_count >= LARGE_DETECTION_BATCH_THRESHOLD
+    large_queries = workbook_query_count >= LARGE_WORKBOOK_QUERY_BATCH_THRESHOLD
+    is_large = large_rules or large_queries
+    if large_rules and large_queries:
+        return (
+            f"Large migration batch in progress: processing {analytic_rule_count} source analytic rules "
+            f"({xdr_detection_count} converted XDR detections) and {workbook_query_count} workbook queries "
+            f"across {workbook_count} workbooks; no completion time is estimated.",
+            True,
+        )
+    if large_rules:
+        return (
+            f"Large detection batch in progress: processing {analytic_rule_count} source analytic rules "
+            f"({xdr_detection_count} converted XDR detections); no completion time is estimated.",
+            True,
+        )
+    if large_queries:
+        return (
+            f"Large workbook query batch in progress: processing {workbook_query_count} workbook queries "
+            f"across {workbook_count} workbooks; no completion time is estimated.",
+            True,
+        )
+    return (
+        f"Processing {analytic_rule_count} source analytic rules ({xdr_detection_count} converted XDR "
+        f"detections) and {workbook_query_count} workbook queries across {workbook_count} workbooks; "
+        "no completion time is estimated.",
+        False,
+    )
+
+
+def build_migration_status_reminder(
+    solution_path: str | Path,
+    *,
+    run_id: str | None = None,
+    persist_cursor: bool = True,
+) -> dict[str, Any]:
+    """Build a deterministic, evidence-bound status reminder with no-change suppression."""
+    from .workbooks import inventory_workbooks
+
+    root = Path(solution_path).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"solution folder does not exist: {root}")
+
+    from contextlib import nullcontext
+
+    run_ctx = using_run(root, run_id) if run_id else nullcontext()
+    with run_ctx:
+        state_path, state = _load(root)
+        status = workflow_status(root)
+        actual_run_id = str(status.get("runId") or state_path.parent.name)
+
+        has_rule_folder = any(
+            (root / name).exists() or (root / name).is_symlink()
+            for name in ("Analytic Rules", "Analytics Rules")
+        )
+        try:
+            analytic_rule_count = len(analytic_rule_files(root)) if has_rule_folder else 0
+        except (OSError, ValueError):
+            analytic_rule_count = 0
+
+        detections_dir = root / "XDR Detections"
+        try:
+            xdr_detection_count = (
+                len(xdr_detection_files(detections_dir))
+                if detections_dir.is_dir()
+                else 0
+            )
+        except (OSError, ValueError):
+            xdr_detection_count = 0
+
+        try:
+            wb_inventory = inventory_workbooks(root)
+        except (OSError, ValueError):
+            wb_inventory = []
+        workbook_count = len(wb_inventory)
+        workbook_query_count = sum(
+            len(wb.get("queries") or [])
+            for wb in wb_inventory
+            if isinstance(wb, dict)
+        )
+
+        recommendation = status["nextStepRecommendation"]
+        blocker_count = int(recommendation.get("blockerCount") or 0)
+        blocker_labels = list(recommendation.get("blockerLabels") or [])
+        next_stage = status.get("next")
+
+        stage_statuses = {
+            stage_name: {
+                "status": (status["stages"].get(stage_name) or {}).get("status"),
+                "attempts": (status["stages"].get(stage_name) or {}).get("attempts", 0),
+                "message": (status["stages"].get(stage_name) or {}).get("message"),
+            }
+            for stage_name in STAGES
+        }
+        fingerprint_payload = {
+            "runId": actual_run_id,
+            "workflowStatus": status.get("workflowStatus"),
+            "nextStage": next_stage,
+            "stages": stage_statuses,
+            "itemCounts": {
+                "analyticRules": analytic_rule_count,
+                "xdrDetections": xdr_detection_count,
+                "workbooks": workbook_count,
+                "workbookQueries": workbook_query_count,
+            },
+            "blockerCount": blocker_count,
+            "blockerLabels": blocker_labels,
+            "packageFreshnessStatus": (status.get("packageFreshness") or {}).get("status"),
+        }
+        state_fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+        cursor_path = state_path.parent / STATUS_REMINDER_CURSOR_FILE
+        previous_fingerprint: str | None = None
+        if cursor_path.is_file():
+            try:
+                cursor_doc = json.loads(cursor_path.read_text(encoding="utf-8-sig"))
+                if isinstance(cursor_doc, dict):
+                    previous_fingerprint = str(
+                        cursor_doc.get("stateFingerprint")
+                        or cursor_doc.get("lastStateFingerprint")
+                        or ""
+                    ) or None
+            except (OSError, json.JSONDecodeError):
+                previous_fingerprint = None
+
+        suppressed_no_change = previous_fingerprint == state_fingerprint
+        now = _utc_now()
+        if persist_cursor and not suppressed_no_change:
+            with _run_writer_lock(state_path.parent):
+                _atomic_json(
+                    cursor_path,
+                    {
+                        "schemaVersion": "1.0.0",
+                        "runId": actual_run_id,
+                        "stateFingerprint": state_fingerprint,
+                        "lastStateFingerprint": state_fingerprint,
+                        "updatedAtUtc": now,
+                    },
+                )
+
+        current_activity = _describe_current_activity(state, next_stage, recommendation)
+        duration_explanation, is_large_batch = _build_duration_explanation(
+            analytic_rule_count,
+            xdr_detection_count,
+            workbook_count,
+            workbook_query_count,
+        )
+        workflow_diagram = _build_workflow_diagram(state, next_stage)
+        watchdog_coordination = {
+            "readOnlyObserver": True,
+            "createsExecutor": False,
+            "singleOwnerRespected": True,
+        }
+
+        return {
+            "schemaVersion": "1.0.0",
+            "kind": "migration-status-reminder",
+            "solution": str(root),
+            "solutionName": root.name,
+            "runId": actual_run_id,
+            "workflowStatus": status.get("workflowStatus"),
+            "stateFingerprint": state_fingerprint,
+            "previousStateFingerprint": previous_fingerprint,
+            "suppressedNoChange": suppressed_no_change,
+            "cursorPath": str(cursor_path),
+            "currentActivity": current_activity,
+            "expectedNextStep": recommendation["summary"],
+            "nextStepRecommendation": recommendation,
+            "durationExplanation": duration_explanation,
+            "isLargeBatch": is_large_batch,
+            "itemCounts": {
+                "analyticRules": analytic_rule_count,
+                "xdrDetections": xdr_detection_count,
+                "workbooks": workbook_count,
+                "workbookQueries": workbook_query_count,
+            },
+            "blockerCount": blocker_count,
+            "workflowDiagram": workflow_diagram,
+            "watchdogCoordination": watchdog_coordination,
+        }
+
+
+def claim_execution_ownership(
+    solution_path: str | Path,
+    owner_id: str | None = None,
+    operation: str | None = None,
+    *,
+    scope: dict[str, Any] | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Claim or renew single-owner execution lease for (runId, operation) in execution-ownership.json."""
+    if not isinstance(owner_id, str) or not owner_id.strip():
+        raise ValueError("ownerId must be a non-empty string")
+    if not isinstance(operation, str) or not operation.strip():
+        raise ValueError("operation must be a non-empty string")
+    if scope is not None and not isinstance(scope, dict):
+        raise ValueError("scope must be a JSON object when provided")
+
+    owner_clean = owner_id.strip()
+    operation_clean = operation.strip()
+    normalized_scope = dict(scope or {})
+    root = Path(solution_path).expanduser().resolve()
+
+    from contextlib import nullcontext
+
+    run_ctx = using_run(root, run_id) if run_id else nullcontext()
+    with run_ctx:
+        state_path, state = _load(root)
+        actual_run_id = str(state.get("runId") or state_path.parent.name)
+        ownership_path = state_path.parent / EXECUTION_OWNERSHIP_FILE
+        with _run_writer_lock(state_path.parent):
+            doc: dict[str, Any] = {}
+            if ownership_path.is_file():
+                try:
+                    loaded = json.loads(ownership_path.read_text(encoding="utf-8-sig"))
+                    if isinstance(loaded, dict):
+                        doc = loaded
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ValueError(f"invalid execution ownership file: {ownership_path}: {exc}") from exc
+
+            leases = dict(doc.get("leases") or {})
+            history = list(doc.get("history") or [])
+            existing = leases.get(operation_clean)
+            if (
+                isinstance(existing, dict)
+                and existing.get("status") == "active"
+                and existing.get("ownerId") != owner_clean
+            ):
+                raise ValueError(
+                    f"duplicate_executor_blocked: operation {operation_clean!r} in run "
+                    f"{actual_run_id!r} is already owned by {existing.get('ownerId')!r}; "
+                    f"conflicting claim by {owner_clean!r} rejected"
+                )
+
+            now = _utc_now()
+            renewed_count = (
+                int(existing.get("renewedCount", 0)) + 1
+                if isinstance(existing, dict)
+                and existing.get("status") == "active"
+                and existing.get("ownerId") == owner_clean
+                else 0
+            )
+            claimed_at = (
+                str(existing.get("claimedAtUtc") or now)
+                if renewed_count > 0 and isinstance(existing, dict)
+                else now
+            )
+            lease_record = {
+                "runId": actual_run_id,
+                "ownerId": owner_clean,
+                "operation": operation_clean,
+                "scope": normalized_scope,
+                "status": "active",
+                "claimedAtUtc": claimed_at,
+                "updatedAtUtc": now,
+                "releasedAtUtc": None,
+                "renewedCount": renewed_count,
+                "singleOwnerEnforced": True,
+            }
+            leases[operation_clean] = lease_record
+            history.append({
+                "event": "renewed" if renewed_count > 0 else "claimed",
+                "runId": actual_run_id,
+                "ownerId": owner_clean,
+                "operation": operation_clean,
+                "scope": normalized_scope,
+                "timestampUtc": now,
+            })
+            updated_doc = {
+                "schemaVersion": "1.0.0",
+                "runId": actual_run_id,
+                "solution": str(root),
+                "ownerId": owner_clean,
+                "operation": operation_clean,
+                "scope": normalized_scope,
+                "claimedAtUtc": claimed_at,
+                "updatedAtUtc": now,
+                "status": "active",
+                "leases": leases,
+                "history": history,
+            }
+            _atomic_json(ownership_path, updated_doc)
+            return {
+                **lease_record,
+                "ownershipPath": str(ownership_path),
+            }
+
+
+def release_execution_ownership(
+    solution_path: str | Path,
+    owner_id: str | None = None,
+    operation: str | None = None,
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Release an active single-owner execution lease held by owner_id for (runId, operation)."""
+    if not isinstance(owner_id, str) or not owner_id.strip():
+        raise ValueError("ownerId must be a non-empty string")
+    if not isinstance(operation, str) or not operation.strip():
+        raise ValueError("operation must be a non-empty string")
+
+    owner_clean = owner_id.strip()
+    operation_clean = operation.strip()
+    root = Path(solution_path).expanduser().resolve()
+
+    from contextlib import nullcontext
+
+    run_ctx = using_run(root, run_id) if run_id else nullcontext()
+    with run_ctx:
+        state_path, state = _load(root)
+        actual_run_id = str(state.get("runId") or state_path.parent.name)
+        ownership_path = state_path.parent / EXECUTION_OWNERSHIP_FILE
+        with _run_writer_lock(state_path.parent):
+            if not ownership_path.is_file():
+                raise ValueError(
+                    f"execution ownership file does not exist for run {actual_run_id!r}"
+                )
+            doc = json.loads(ownership_path.read_text(encoding="utf-8-sig"))
+            if not isinstance(doc, dict):
+                raise ValueError(f"invalid execution ownership file: {ownership_path}")
+            leases = dict(doc.get("leases") or {})
+            history = list(doc.get("history") or [])
+            existing = leases.get(operation_clean)
+            if not isinstance(existing, dict) or existing.get("status") != "active":
+                raise ValueError(
+                    f"no active execution ownership lease for operation {operation_clean!r} in run {actual_run_id!r}"
+                )
+            if existing.get("ownerId") != owner_clean:
+                raise ValueError(
+                    f"duplicate_executor_blocked: operation {operation_clean!r} in run "
+                    f"{actual_run_id!r} is owned by {existing.get('ownerId')!r}; "
+                    f"release by {owner_clean!r} rejected"
+                )
+            now = _utc_now()
+            released_record = {
+                **existing,
+                "status": "released",
+                "releasedAtUtc": now,
+                "updatedAtUtc": now,
+            }
+            leases[operation_clean] = released_record
+            history.append({
+                "event": "released",
+                "runId": actual_run_id,
+                "ownerId": owner_clean,
+                "operation": operation_clean,
+                "scope": existing.get("scope") or {},
+                "timestampUtc": now,
+            })
+            updated_doc = {
+                **doc,
+                "ownerId": owner_clean,
+                "operation": operation_clean,
+                "status": "released",
+                "updatedAtUtc": now,
+                "leases": leases,
+                "history": history,
+            }
+            _atomic_json(ownership_path, updated_doc)
+            return {
+                **released_record,
+                "ownershipPath": str(ownership_path),
+            }
+
+
+def _compute_forwarded_approval_sha256(
+    *,
+    run_id: str,
+    operation: str,
+    approved_by: str,
+    forwarded_to_owner_id: str,
+    exact_scope: dict[str, Any],
+) -> str:
+    payload = {
+        "runId": run_id,
+        "operation": operation,
+        "approvedBy": approved_by,
+        "forwardedToOwnerId": forwarded_to_owner_id,
+        "exactScope": exact_scope,
+    }
+    canonical_bytes = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(canonical_bytes).hexdigest()
+
+
+def forward_explicit_approval(
+    solution_path: str | Path,
+    *,
+    operation: str,
+    approved_by: str,
+    forwarded_to_owner_id: str,
+    exact_scope: dict[str, Any],
+    run_id: str | None = None,
+    reference: str | None = None,
+) -> dict[str, Any]:
+    """Bind runId, operation, approvedBy, forwardedToOwnerId, and exactScope into forwarded-approvals.json."""
+    if not isinstance(operation, str) or not operation.strip():
+        raise ValueError("operation must be a non-empty string")
+    if not isinstance(approved_by, str) or not approved_by.strip():
+        raise ValueError("approvedBy must be a non-empty string")
+    if not isinstance(forwarded_to_owner_id, str) or not forwarded_to_owner_id.strip():
+        raise ValueError("forwardedToOwnerId must be a non-empty string")
+    if not isinstance(exact_scope, dict) or not exact_scope:
+        raise ValueError("exactScope must be a non-empty JSON object")
+
+    operation_clean = operation.strip()
+    approver_clean = approved_by.strip()
+    owner_clean = forwarded_to_owner_id.strip()
+    scope_copy = json.loads(json.dumps(exact_scope))
+    root = Path(solution_path).expanduser().resolve()
+
+    from contextlib import nullcontext
+
+    run_ctx = using_run(root, run_id) if run_id else nullcontext()
+    with run_ctx:
+        state_path, state = _load(root)
+        actual_run_id = str(state.get("runId") or state_path.parent.name)
+        ownership_path = state_path.parent / EXECUTION_OWNERSHIP_FILE
+        receipt_path = state_path.parent / FORWARDED_APPROVALS_FILE
+        with _run_writer_lock(state_path.parent):
+            if ownership_path.is_file():
+                ownership_doc = json.loads(ownership_path.read_text(encoding="utf-8-sig"))
+                if isinstance(ownership_doc, dict):
+                    active_lease = (ownership_doc.get("leases") or {}).get(operation_clean)
+                    if (
+                        isinstance(active_lease, dict)
+                        and active_lease.get("status") == "active"
+                        and active_lease.get("ownerId") != owner_clean
+                    ):
+                        raise ValueError(
+                            f"duplicate_executor_blocked: cannot forward approval for operation "
+                            f"{operation_clean!r} to {owner_clean!r} while active execution lease "
+                            f"is held by {active_lease.get('ownerId')!r}"
+                        )
+
+            approval_sha256 = _compute_forwarded_approval_sha256(
+                run_id=actual_run_id,
+                operation=operation_clean,
+                approved_by=approver_clean,
+                forwarded_to_owner_id=owner_clean,
+                exact_scope=scope_copy,
+            )
+            now = _utc_now()
+            record: dict[str, Any] = {
+                "schemaVersion": "1.0.0",
+                "runId": actual_run_id,
+                "operation": operation_clean,
+                "approvedBy": approver_clean,
+                "forwardedToOwnerId": owner_clean,
+                "exactScope": scope_copy,
+                "approvalSha256": approval_sha256,
+                "reference": reference,
+                "forwardedAtUtc": now,
+                "status": "active",
+            }
+            doc: dict[str, Any] = {}
+            if receipt_path.is_file():
+                try:
+                    loaded = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+                    if isinstance(loaded, dict):
+                        doc = loaded
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ValueError(f"invalid forwarded approvals file: {receipt_path}: {exc}") from exc
+
+            approvals = dict(doc.get("approvals") or {})
+            history = list(doc.get("history") or [])
+            approvals[operation_clean] = record
+            history.append(record)
+            updated_doc = {
+                "schemaVersion": "1.0.0",
+                "runId": actual_run_id,
+                "solution": str(root),
+                "operation": operation_clean,
+                "approvedBy": approver_clean,
+                "forwardedToOwnerId": owner_clean,
+                "exactScope": scope_copy,
+                "approvalSha256": approval_sha256,
+                "forwardedAtUtc": now,
+                "approvals": approvals,
+                "history": history,
+            }
+            _atomic_json(receipt_path, updated_doc)
+            return {
+                **record,
+                "receiptPath": str(receipt_path),
+            }
+
+
+def verify_forwarded_approval(
+    solution_path: str | Path,
+    *,
+    owner_id: str | None = None,
+    forwarded_to_owner_id: str | None = None,
+    operation: str,
+    exact_scope: dict[str, Any],
+    approval_sha256: str | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Verify byte-for-byte that recipient ownerId, runId, operation, and exactScope match approvalSha256."""
+    recipient = owner_id if owner_id is not None else forwarded_to_owner_id
+    if not isinstance(recipient, str) or not recipient.strip():
+        raise ValueError("ownerId must be a non-empty string")
+    if not isinstance(operation, str) or not operation.strip():
+        raise ValueError("operation must be a non-empty string")
+    if not isinstance(exact_scope, dict) or not exact_scope:
+        raise ValueError("exactScope must be a non-empty JSON object")
+
+    recipient_clean = recipient.strip()
+    operation_clean = operation.strip()
+    root = Path(solution_path).expanduser().resolve()
+
+    from contextlib import nullcontext
+
+    run_ctx = using_run(root, run_id) if run_id else nullcontext()
+    with run_ctx:
+        state_path, state = _load(root)
+        actual_run_id = str(state.get("runId") or state_path.parent.name)
+        receipt_path = state_path.parent / FORWARDED_APPROVALS_FILE
+        if not receipt_path.is_file():
+            raise ValueError(
+                f"forwarded approval receipt does not exist: {receipt_path}"
+            )
+        doc = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+        if not isinstance(doc, dict):
+            raise ValueError(f"invalid forwarded approvals file: {receipt_path}")
+        approvals = doc.get("approvals") or {}
+        stored = approvals.get(operation_clean)
+        if not isinstance(stored, dict):
+            raise ValueError(
+                f"no forwarded approval recorded for operation {operation_clean!r} in run {actual_run_id!r}"
+            )
+
+        stored_run_id = str(stored.get("runId") or "")
+        stored_operation = str(stored.get("operation") or "")
+        stored_approved_by = str(stored.get("approvedBy") or "")
+        stored_owner = str(stored.get("forwardedToOwnerId") or "")
+        stored_scope = stored.get("exactScope")
+        stored_sha = str(stored.get("approvalSha256") or "")
+
+        if not isinstance(stored_scope, dict):
+            raise ValueError("stored forwarded approval has invalid exactScope")
+
+        recomputed_stored_sha = _compute_forwarded_approval_sha256(
+            run_id=stored_run_id,
+            operation=stored_operation,
+            approved_by=stored_approved_by,
+            forwarded_to_owner_id=stored_owner,
+            exact_scope=stored_scope,
+        )
+        if recomputed_stored_sha != stored_sha:
+            raise ValueError(
+                "forwarded_approval_tampered: stored receipt hash does not match its recorded payload"
+            )
+        if stored_run_id != actual_run_id:
+            raise ValueError(
+                f"forwarded_approval_run_mismatch: receipt belongs to run {stored_run_id!r}, not {actual_run_id!r}"
+            )
+        if stored_operation != operation_clean:
+            raise ValueError(
+                f"forwarded_approval_operation_mismatch: receipt binds {stored_operation!r}, not {operation_clean!r}"
+            )
+        if stored_owner != recipient_clean:
+            raise ValueError(
+                f"forwarded_approval_owner_mismatch: approval was forwarded to {stored_owner!r}, "
+                f"not {recipient_clean!r}"
+            )
+
+        stored_scope_bytes = json.dumps(
+            stored_scope, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        requested_scope_bytes = json.dumps(
+            exact_scope, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        if stored_scope_bytes != requested_scope_bytes:
+            raise ValueError(
+                "forwarded_approval_scope_mismatch: requested scope differs from the approved exactScope"
+            )
+
+        candidate_sha = _compute_forwarded_approval_sha256(
+            run_id=actual_run_id,
+            operation=operation_clean,
+            approved_by=stored_approved_by,
+            forwarded_to_owner_id=recipient_clean,
+            exact_scope=exact_scope,
+        )
+        if candidate_sha != stored_sha:
+            raise ValueError(
+                "forwarded_approval_hash_mismatch: computed approvalSha256 does not match receipt"
+            )
+        if approval_sha256 is not None and approval_sha256.strip() != stored_sha:
+            raise ValueError(
+                f"forwarded_approval_hash_mismatch: expected {approval_sha256.strip()!r}, "
+                f"receipt has {stored_sha!r}"
+            )
+
+        return {
+            "verified": True,
+            "status": "verified",
+            "runId": actual_run_id,
+            "operation": operation_clean,
+            "approvedBy": stored_approved_by,
+            "forwardedToOwnerId": stored_owner,
+            "exactScope": stored_scope,
+            "approvalSha256": stored_sha,
+            "receiptPath": str(receipt_path),
+        }
+

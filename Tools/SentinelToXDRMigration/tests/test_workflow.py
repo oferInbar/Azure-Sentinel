@@ -4228,6 +4228,258 @@ class WorkflowTests(unittest.TestCase):
         written_packet = json.loads(output_file.read_text(encoding="utf-8"))
         self.assertEqual(packet["packetSha256"], written_packet["packetSha256"])
 
+    def test_status_reminder_emits_diagram_batch_explanation_and_suppresses_no_change(self) -> None:
+        from sentinel_xdr_migration.workflow import build_migration_status_reminder
+
+        self._ensure_solution_release()
+        self._create_source_rules(count=15)
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+        )
+        run_id = initialized["runId"]
+        with using_run(self.solution, run_id):
+            start_workflow_stage(self.solution, "discovery")
+            complete_workflow_stage(self.solution, "discovery", status="passed")
+            start_workflow_stage(self.solution, "conversion")
+
+            first = build_migration_status_reminder(self.solution, run_id=run_id)
+            self.assertFalse(first["suppressedNoChange"])
+            self.assertIsNone(first["previousStateFingerprint"])
+            self.assertEqual(64, len(first["stateFingerprint"]))
+            self.assertIn(
+                "Applying reviewed decisions or converting detections before validation",
+                first["currentActivity"],
+            )
+            self.assertIn("[> Conversion <]", first["workflowDiagram"])
+            self.assertIn("[Discovery]", first["workflowDiagram"])
+            self.assertIsNotNone(first["durationExplanation"])
+            self.assertIn("15 source analytic rules", first["durationExplanation"])
+            self.assertEqual(
+                {
+                    "readOnlyObserver": True,
+                    "createsExecutor": False,
+                    "singleOwnerRespected": True,
+                },
+                first["watchdogCoordination"],
+            )
+            self.assertEqual(15, first["itemCounts"]["analyticRules"])
+
+            # Repeat call without state change suppresses repetitive notice
+            second = build_migration_status_reminder(self.solution, run_id=run_id)
+            self.assertTrue(second["suppressedNoChange"])
+            self.assertEqual(first["stateFingerprint"], second["stateFingerprint"])
+            self.assertEqual(first["stateFingerprint"], second["previousStateFingerprint"])
+
+            # State change unsuppresses reminder and updates diagram
+            complete_workflow_stage(self.solution, "conversion", status="passed")
+            start_workflow_stage(self.solution, "validation")
+            third = build_migration_status_reminder(self.solution, run_id=run_id)
+            self.assertFalse(third["suppressedNoChange"])
+            self.assertNotEqual(first["stateFingerprint"], third["stateFingerprint"])
+            self.assertEqual(first["stateFingerprint"], third["previousStateFingerprint"])
+            self.assertIn("[> Validation <]", third["workflowDiagram"])
+
+        # Verify CLI workflow-status-reminder subcommand
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            rc = cli_module.main([
+                "workflow-status-reminder",
+                "--solution", str(self.solution),
+                "--run-id", run_id,
+            ])
+        self.assertEqual(0, rc, stderr.getvalue())
+        cli_reminder = json.loads(stdout.getvalue())
+        self.assertTrue(cli_reminder["suppressedNoChange"])
+        self.assertEqual(third["stateFingerprint"], cli_reminder["stateFingerprint"])
+
+    def test_execution_ownership_enforces_single_owner_and_cli(self) -> None:
+        from sentinel_xdr_migration.workflow import (
+            claim_execution_ownership,
+            release_execution_ownership,
+        )
+
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+        )
+        run_id = initialized["runId"]
+
+        claimed = claim_execution_ownership(
+            self.solution,
+            owner_id="coordinator-alpha",
+            operation="convert-and-validate",
+            scope={"rules": 7, "workbooks": 1},
+            run_id=run_id,
+        )
+        self.assertEqual("active", claimed["status"])
+        self.assertTrue(claimed["singleOwnerEnforced"])
+        self.assertEqual("coordinator-alpha", claimed["ownerId"])
+        self.assertEqual(0, claimed["renewedCount"])
+
+        # Same owner renewing is permitted
+        renewed = claim_execution_ownership(
+            self.solution,
+            owner_id="coordinator-alpha",
+            operation="convert-and-validate",
+            scope={"rules": 7, "workbooks": 1},
+            run_id=run_id,
+        )
+        self.assertEqual("active", renewed["status"])
+        self.assertEqual(1, renewed["renewedCount"])
+
+        # Conflicting second owner attempting to claim or release the same operation is blocked
+        with self.assertRaisesRegex(ValueError, "duplicate_executor_blocked"):
+            claim_execution_ownership(
+                self.solution,
+                owner_id="duplicate-executor-beta",
+                operation="convert-and-validate",
+                run_id=run_id,
+            )
+        with self.assertRaisesRegex(ValueError, "duplicate_executor_blocked"):
+            release_execution_ownership(
+                self.solution,
+                owner_id="duplicate-executor-beta",
+                operation="convert-and-validate",
+                run_id=run_id,
+            )
+
+        # Original owner releases lease; another owner can now claim via CLI
+        released = release_execution_ownership(
+            self.solution,
+            owner_id="coordinator-alpha",
+            operation="convert-and-validate",
+            run_id=run_id,
+        )
+        self.assertEqual("released", released["status"])
+        self.assertIsNotNone(released["releasedAtUtc"])
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            rc = cli_module.main([
+                "workflow-execution-owner",
+                "--solution", str(self.solution),
+                "--run-id", run_id,
+                "--action", "claim",
+                "--owner-id", "coordinator-beta",
+                "--operation", "convert-and-validate",
+                "--scope", json.dumps({"rules": 7}),
+            ])
+        self.assertEqual(0, rc, stderr.getvalue())
+        cli_claimed = json.loads(stdout.getvalue())
+        self.assertEqual("active", cli_claimed["status"])
+        self.assertEqual("coordinator-beta", cli_claimed["ownerId"])
+
+    def test_forward_and_verify_explicit_approval_rejects_tampering_and_wrong_owner(self) -> None:
+        from sentinel_xdr_migration.workflow import (
+            forward_explicit_approval,
+            verify_forwarded_approval,
+        )
+
+        initialized = initialize_workflow(
+            self.solution,
+            workflow_profile="authoring",
+        )
+        run_id = initialized["runId"]
+        exact_scope = {
+            "validationMode": "lab-deployment",
+            "sentinelRuleCount": 7,
+            "workbookCount": 1,
+            "customDetectionCount": 7,
+            "packageInputSha256": "a" * 64,
+        }
+
+        forwarded = forward_explicit_approval(
+            self.solution,
+            operation="preflight-lab-deployment",
+            approved_by="operator-user",
+            forwarded_to_owner_id="solution-owner-1",
+            exact_scope=exact_scope,
+            run_id=run_id,
+            reference="chat-turn-42",
+        )
+        self.assertEqual("active", forwarded["status"])
+        approval_sha = forwarded["approvalSha256"]
+        self.assertEqual(64, len(approval_sha))
+
+        # Exact match passes verification
+        verified = verify_forwarded_approval(
+            self.solution,
+            owner_id="solution-owner-1",
+            operation="preflight-lab-deployment",
+            exact_scope=exact_scope,
+            approval_sha256=approval_sha,
+            run_id=run_id,
+        )
+        self.assertTrue(verified["verified"])
+        self.assertEqual(approval_sha, verified["approvalSha256"])
+
+        # Wrong owner rejected
+        with self.assertRaisesRegex(ValueError, "forwarded_approval_owner_mismatch"):
+            verify_forwarded_approval(
+                self.solution,
+                owner_id="wrong-owner-2",
+                operation="preflight-lab-deployment",
+                exact_scope=exact_scope,
+                approval_sha256=approval_sha,
+                run_id=run_id,
+            )
+
+        # Scope broadening / tampering rejected
+        tampered_scope = dict(exact_scope, customDetectionCount=8)
+        with self.assertRaisesRegex(ValueError, "forwarded_approval_scope_mismatch"):
+            verify_forwarded_approval(
+                self.solution,
+                owner_id="solution-owner-1",
+                operation="preflight-lab-deployment",
+                exact_scope=tampered_scope,
+                approval_sha256=approval_sha,
+                run_id=run_id,
+            )
+
+        # Altered hash rejected
+        with self.assertRaisesRegex(ValueError, "forwarded_approval_hash_mismatch"):
+            verify_forwarded_approval(
+                self.solution,
+                owner_id="solution-owner-1",
+                operation="preflight-lab-deployment",
+                exact_scope=exact_scope,
+                approval_sha256="f" * 64,
+                run_id=run_id,
+            )
+
+        # CLI forward + verify round-trip
+        cli_scope = {"target": "workbook-review", "count": 1}
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            rc_fwd = cli_module.main([
+                "workflow-forward-approval",
+                "--solution", str(self.solution),
+                "--run-id", run_id,
+                "--action", "forward",
+                "--operation", "workbook-dependency-apply",
+                "--approved-by", "operator-user",
+                "--owner-id", "solution-owner-1",
+                "--exact-scope", json.dumps(cli_scope),
+            ])
+        self.assertEqual(0, rc_fwd, stderr.getvalue())
+        cli_fwd_payload = json.loads(stdout.getvalue())
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            rc_ver = cli_module.main([
+                "workflow-forward-approval",
+                "--solution", str(self.solution),
+                "--run-id", run_id,
+                "--action", "verify",
+                "--operation", "workbook-dependency-apply",
+                "--owner-id", "solution-owner-1",
+                "--exact-scope", json.dumps(cli_scope),
+                "--approval-sha256", cli_fwd_payload["approvalSha256"],
+            ])
+        self.assertEqual(0, rc_ver, stderr.getvalue())
+        self.assertTrue(json.loads(stdout.getvalue())["verified"])
+
 
 if __name__ == "__main__":
     unittest.main()

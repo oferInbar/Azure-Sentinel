@@ -15,6 +15,13 @@ from .content_paths import content_path
 
 CAPABILITY_VERSION = 1
 ARM_VALIDATION_METHODS = ("arm-ttk", "lab-deployment")
+DEFAULT_ARM_VALIDATION_METHOD = "lab-deployment"
+
+
+def default_arm_validation_method(workflow_profile: str = "authoring") -> str:
+    if workflow_profile not in ("authoring", "qualification"):
+        raise ValueError(f"unsupported workflow profile: {workflow_profile}")
+    return DEFAULT_ARM_VALIDATION_METHOD
 
 
 def enabled(state: dict[str, Any]) -> bool:
@@ -513,7 +520,290 @@ def create_candidate(solution: str | Path, *, validation_receipt: str | Path | N
             "armCandidateSha256": hashlib.sha256(candidate_path.read_bytes()).hexdigest(),
         })
         workflow._write_unlocked(state_path, state)
-        return {**candidate, "candidatePath": str(candidate_path), "officialReport": official_report}
+        preflight_summary = build_lab_deployment_preflight_prompt(root, state=state)
+        return {
+            **candidate,
+            "candidatePath": str(candidate_path),
+            "officialReport": official_report,
+            "expectedContentCounts": preflight_summary["expectedContentCounts"],
+            "labDeploymentPreflightPrompt": preflight_summary["labDeploymentPreflightPrompt"],
+        }
+
+
+def expected_content_counts(
+    solution: str | Path,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compute expected content counts (Sentinel rules, workbooks breakdown, custom detections)."""
+    from .converter import analytic_rule_files, xdr_detection_files
+    from .packaging_selection import current_applied_package_selection
+
+    root = Path(solution).expanduser().resolve()
+    if state is None:
+        state = current_state(root)
+
+    data_doc: dict[str, Any] = {}
+    if (root / "Data").is_dir():
+        try:
+            _, data_doc = _data(root)
+        except Exception:
+            data_doc = {}
+
+    def _data_list(field_name: str) -> list[str] | None:
+        for key, value in data_doc.items():
+            if key.casefold() == field_name.casefold():
+                if isinstance(value, str):
+                    try:
+                        value = json.loads(value)
+                    except json.JSONDecodeError:
+                        return None
+                if isinstance(value, list):
+                    return [str(item).strip() for item in value if isinstance(item, str) and str(item).strip()]
+        return None
+
+    applied_selection = current_applied_package_selection(root)
+    selected_plan = applied_selection["plan"] if isinstance(applied_selection, dict) and isinstance(applied_selection.get("plan"), dict) else None
+
+    if selected_plan and isinstance(selected_plan.get("selectedAnalyticRules"), list):
+        sentinel_rules_count = len(selected_plan["selectedAnalyticRules"])
+    else:
+        data_rules = _data_list("Analytic Rules") or _data_list("Analytics Rules")
+        if data_rules is not None:
+            sentinel_rules_count = len(data_rules)
+        elif has_analytic_rules(root):
+            sentinel_rules_count = len(analytic_rule_files(root))
+        else:
+            sentinel_rules_count = 0
+
+    if selected_plan and isinstance(selected_plan.get("selectedXdrDetections"), list):
+        custom_detections_count = len(selected_plan["selectedXdrDetections"])
+    else:
+        data_xdr_det = _data_list("XDR Detections")
+        if data_xdr_det is not None:
+            custom_detections_count = len(data_xdr_det)
+        elif (root / "XDR Detections").is_dir():
+            custom_detections_count = len(xdr_detection_files(root))
+        else:
+            custom_detections_count = 0
+
+    data_wb = _data_list("Workbooks")
+    if data_wb is not None:
+        sentinel_workbooks_count = len(data_wb)
+    elif state and enabled(state):
+        sentinel_workbooks_count = len(state["workbooks"]["inventory"])
+    else:
+        try:
+            sentinel_workbooks_count = len(_inventory(root))
+        except Exception:
+            sentinel_workbooks_count = 0
+
+    data_xdr_wb = _data_list("XDR Workbooks")
+    if state and enabled(state):
+        defender_workbooks_count = len(state["workbooks"]["selection"]["included"])
+    elif data_xdr_wb is not None:
+        defender_workbooks_count = len(data_xdr_wb)
+    elif (root / "XDR Workbooks").is_dir():
+        defender_workbooks_count = sum(
+            1 for path in (root / "XDR Workbooks").rglob("*.json") if path.is_file()
+        )
+    else:
+        defender_workbooks_count = 0
+
+    workbooks_count = sentinel_workbooks_count + defender_workbooks_count
+    return {
+        "sentinelRulesCount": sentinel_rules_count,
+        "workbooksCount": workbooks_count,
+        "sentinelWorkbooksCount": sentinel_workbooks_count,
+        "defenderWorkbooksCount": defender_workbooks_count,
+        "workbooksBreakdown": {
+            "sentinel": sentinel_workbooks_count,
+            "defender": defender_workbooks_count,
+        },
+        "customDetectionsCount": custom_detections_count,
+    }
+
+
+def build_lab_deployment_preflight_prompt(
+    solution: str | Path,
+    *,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build preflight preapproval summary for deploying solution ARM templates to the lab."""
+    root = Path(solution).expanduser().resolve()
+    if state is None:
+        state = current_state(root)
+    counts = expected_content_counts(root, state=state)
+    x = counts["sentinelRulesCount"]
+    y = counts["workbooksCount"]
+    z = counts["customDetectionsCount"]
+    prompt = (
+        "Requesting preflight preapproval to deploy the solution ARM templates to the "
+        "selected non-production lab to verify ARM template deployment validity "
+        f"(expected content items: {x} Sentinel rules, {y} workbooks, and {z} custom detections). "
+        "Deployment verification alone does not establish functional/runtime qualification or alert parity."
+    )
+    method = (
+        (state or {}).get("context", {}).get("armValidationMethod")
+        or default_arm_validation_method((state or {}).get("context", {}).get("workflowProfile", "authoring"))
+    )
+    return {
+        "schemaVersion": 1,
+        "armValidationMethod": method,
+        "defaultArmValidationMethod": DEFAULT_ARM_VALIDATION_METHOD,
+        "skipsArmTtk": method == "lab-deployment",
+        "expectedContentCounts": counts,
+        "labDeploymentPreflightPrompt": prompt,
+        "functionalQualificationVerified": False,
+        "alertParityVerified": False,
+    }
+
+
+def plan_lab_deployment_preflight(
+    solution: str | Path,
+    *,
+    run_id: str | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Compute and optionally persist the lab deployment preflight preapproval artifact."""
+    from .artifacts import using_run
+
+    root = Path(solution).expanduser().resolve()
+    with using_run(root, run_id):
+        state = current_state(root)
+        payload = build_lab_deployment_preflight_prompt(root, state=state)
+        if state and state.get("runId"):
+            payload["runId"] = state["runId"]
+            if persist:
+                path = _write_run_json(root, "arm-deployment-preflight.json", payload)
+                payload["preflightPromptPath"] = path.relative_to(root).as_posix()
+        return payload
+
+
+def record_lab_deployment_validation_findings(
+    solution: str | Path,
+    result: dict[str, Any],
+    *,
+    candidate: dict[str, Any] | None = None,
+    plan: dict[str, Any] | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Record lab deployment validation findings (including failures and target/artifact bindings) as durable workflow evidence."""
+    from .artifacts import using_run
+    from . import workflow
+
+    root = Path(solution).expanduser().resolve()
+    with using_run(root, run_id):
+        state = current_state(root)
+        if candidate is None:
+            try:
+                candidate = _read_run_json(root, "arm-candidate.json")
+            except Exception:
+                candidate = {}
+        if plan is None:
+            try:
+                plan = _read_run_json(root, "arm-validation-plan.json")
+            except Exception:
+                plan = {}
+
+        status = str(result.get("status") or "unknown")
+        prov_state = str(result.get("provisioningState") or "").strip()
+        if status == "arm-accepted-contract-pending" or prov_state.casefold() == "succeeded":
+            outcome = "passed"
+        elif status in {"failed", "unknown"} or prov_state.casefold() in {"failed", "canceled"}:
+            outcome = "failed"
+        else:
+            outcome = "blocked"
+
+        findings: list[dict[str, Any]] = []
+        for reason in result.get("reasons") or []:
+            if isinstance(reason, str) and reason.strip():
+                findings.append({"kind": "scope-or-gate-blocker", "severity": "error", "message": reason.strip()})
+        identity_check = result.get("identityCheck")
+        if isinstance(identity_check, dict):
+            for reason in identity_check.get("reasons") or []:
+                if isinstance(reason, str) and reason.strip():
+                    findings.append({"kind": "identity-check", "severity": "error", "message": reason.strip()})
+        if isinstance(result.get("error"), str) and result["error"].strip():
+            findings.append({"kind": "deployment-execution", "severity": "error", "message": result["error"].strip()})
+        reconciliation = result.get("reconciliation")
+        if isinstance(reconciliation, dict) and reconciliation.get("status") not in (None, "passed"):
+            findings.append({
+                "kind": "reconciliation",
+                "severity": "error",
+                "message": f"reconciliation status: {reconciliation.get('status')}",
+            })
+        if outcome == "passed" and not findings:
+            findings.append({
+                "kind": "deployment-verification",
+                "severity": "info",
+                "message": "ARM incremental deployment succeeded in the selected non-production lab; deployment verification alone does not establish functional/runtime qualification or alert parity.",
+            })
+
+        pkg_identity = (
+            result.get("packageIdentity")
+            or (plan or {}).get("packageIdentity")
+            or (candidate or {}).get("packageIdentity")
+            or {}
+        )
+        artifact_bindings = {
+            "candidateSha256": result.get("candidateSha256") or (candidate or {}).get("candidateSha256"),
+            "planSha256": result.get("planSha256") or (plan or {}).get("planSha256"),
+            "mainTemplateSha256": result.get("mainTemplateSha256") or (plan or {}).get("mainTemplateSha256") or (candidate or {}).get("mainTemplateSha256"),
+            "packageArtifactsSha256": pkg_identity.get("packageArtifactsSha256") if isinstance(pkg_identity, dict) else None,
+            "packageReportSha256": pkg_identity.get("packageReportSha256") if isinstance(pkg_identity, dict) else None,
+            "packageInputSha256": pkg_identity.get("packageInputSha256") if isinstance(pkg_identity, dict) else None,
+            "artifactPaths": (plan or {}).get("artifactPaths") or (candidate or {}).get("artifactPaths") or {},
+            "selectedFlags": (plan or {}).get("selectedFlags") or {},
+            "parameters": result.get("parameters") or (plan or {}).get("parameters") or {},
+        }
+        target_binding = result.get("target") or (plan or {}).get("target") or (plan or {}).get("scope", {}).get("lab") or {}
+        preflight_summary = build_lab_deployment_preflight_prompt(root, state=state)
+        evidence_record = {
+            "schemaVersion": 1,
+            "runId": (state or {}).get("runId") or (candidate or {}).get("runId") or (plan or {}).get("runId"),
+            "armValidationMethod": "lab-deployment",
+            "status": status,
+            "outcome": outcome,
+            "writeAttempted": bool(result.get("writeAttempted", False)),
+            "deploymentName": result.get("deploymentName"),
+            "deploymentId": result.get("deploymentId"),
+            "provisioningState": result.get("provisioningState"),
+            "commandExitCode": result.get("commandExitCode"),
+            "target": target_binding,
+            "artifactBindings": artifact_bindings,
+            "expectedContentCounts": preflight_summary["expectedContentCounts"],
+            "labDeploymentPreflightPrompt": preflight_summary["labDeploymentPreflightPrompt"],
+            "findings": findings,
+            "attemptPath": result.get("attemptPath"),
+            "reconciliation": reconciliation if isinstance(reconciliation, dict) else None,
+            "functionalQualificationVerified": False,
+            "alertParityVerified": False,
+            "installationVerified": False,
+            "registrationVerified": False,
+            "uiVerified": False,
+            "parityVerified": False,
+            "accepted": False,
+        }
+        if state and state.get("runId"):
+            evidence_path = _write_run_json(root, "arm-deployment-validation-evidence.json", evidence_record)
+            rel_path = evidence_path.relative_to(root).as_posix()
+            evidence_record["evidencePath"] = rel_path
+            try:
+                with workflow._state_writer_lock(root) as state_path:
+                    latest_state = workflow._load(root)[1]
+                    pkg_stage = latest_state.get("stages", {}).get("packaging")
+                    if isinstance(pkg_stage, dict):
+                        pkg_artifacts = pkg_stage.setdefault("artifacts", {})
+                        if isinstance(pkg_artifacts, dict):
+                            pkg_artifacts["labArmDeploymentEvidence"] = rel_path
+                            pkg_artifacts["labArmDeploymentStatus"] = status
+                            pkg_artifacts["labArmDeploymentOutcome"] = outcome
+                            pkg_artifacts["functionalQualificationVerified"] = "false"
+                            pkg_artifacts["alertParityVerified"] = "false"
+                            workflow._write_unlocked(state_path, latest_state)
+            except Exception:
+                pass
+        return evidence_record
 
 
 def plan_candidate(solution: str | Path, *, target: dict[str, Any],
@@ -526,6 +816,8 @@ def plan_candidate(solution: str | Path, *, target: dict[str, Any],
     plan = (plan_workbook_contract_verification if contract_only else plan_lab_arm_validation)(
         context, candidate, target=target, selected_flags=selected_flags)
     _write_run_json(solution, "workbook-contract-plan.json" if contract_only else "arm-validation-plan.json", plan)
+    if not contract_only:
+        plan_lab_deployment_preflight(solution, persist=True)
     return plan
 
 
@@ -581,6 +873,17 @@ def execute_candidate(solution: str | Path, *, expected_plan_sha256: str, actor:
         identity_check=identity_check or (lambda target: production_identity_check(solution, target, profile=profile)),
         command_runner=command_runner or dispatch,
     )
+    findings_evidence = record_lab_deployment_validation_findings(
+        solution, result, candidate=candidate, plan=plan
+    )
+    result = {
+        **result,
+        "functionalQualificationVerified": False,
+        "alertParityVerified": False,
+        "artifactBindings": findings_evidence["artifactBindings"],
+        "findings": findings_evidence["findings"],
+        "evidencePath": findings_evidence.get("evidencePath"),
+    }
     _write_run_json(solution, "arm-validation-result.json", result)
     return result
 
@@ -595,6 +898,15 @@ def reconcile_attempt(solution: str | Path, *, attempt: str | Path,
     observation_path = content_path(root, observation)
     result = reconcile_lab_arm_attempt(attempt_path, observation=json.loads(observation_path.read_bytes()),
                                       actor=actor, reference=reference)
+    findings_evidence = record_lab_deployment_validation_findings(root, result)
+    result = {
+        **result,
+        "functionalQualificationVerified": False,
+        "alertParityVerified": False,
+        "artifactBindings": findings_evidence["artifactBindings"],
+        "findings": findings_evidence["findings"],
+        "evidencePath": findings_evidence.get("evidencePath"),
+    }
     _write_run_json(root, "arm-validation-result.json", result)
     return result
 
@@ -775,12 +1087,16 @@ def summary(solution: str | Path, state: dict[str, Any]) -> dict[str, Any] | Non
             contract_support = "verified"
         except (OSError, ValueError, KeyError, TypeError):
             issues.append("previous workbook acceptance evidence is no longer current")
+    preflight_summary = build_lab_deployment_preflight_prompt(solution, state=state)
     return {
         "inventoryCount": len(workbook_state["inventory"]),
         "selectedCount": len(workbook_state["selection"]["included"]),
         "excluded": workbook_state["selection"]["excluded"],
         "inventorySha256": workbook_state["inventorySha256"],
         "armValidationMethod": state["context"]["armValidationMethod"],
+        "defaultArmValidationMethod": DEFAULT_ARM_VALIDATION_METHOD,
+        "expectedContentCounts": preflight_summary["expectedContentCounts"],
+        "labDeploymentPreflightPrompt": preflight_summary["labDeploymentPreflightPrompt"],
         "contractSupport": contract_support,
         "issues": issues,
         "sources": [{
@@ -791,3 +1107,369 @@ def summary(solution: str | Path, state: dict[str, Any]) -> dict[str, Any] | Non
         "manifest": str(manifest_path) if manifest_path.is_file() else None,
         "qualificationSeparateFromArmAndDetectionParity": True,
     }
+
+
+def assess_qualification_readiness(
+    solution_path: str | Path,
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Inspect current workflow state, authorization/consent records, and preflight receipts.
+
+    Separately reports:
+    - authorizationChecks (target locked, runtime query consent, ARM preflight read consent, deployment consent)
+    - deploymentPermissionReadiness (ARM control-plane access, resource group/workspace write readiness, extension readiness)
+    - ingestionPermissionReadiness (DCR/DCE/Logs Ingestion readiness, kept strictly separate from deployment readiness)
+    """
+    from .artifacts import using_run
+    from .target_context import workspace_identity
+
+    root = Path(solution_path).expanduser().resolve()
+    with using_run(root, run_id):
+        state = current_state(root)
+        context = (state or {}).get("context") or {}
+        effective_run_id = (state or {}).get("runId") or run_id
+        run_dir = report_directory(root) if effective_run_id else None
+
+        def _read_optional_run_json(name: str) -> dict[str, Any] | None:
+            if run_dir is None:
+                return None
+            candidate_file = run_dir / name
+            if candidate_file.is_symlink() or not candidate_file.is_file():
+                return None
+            try:
+                loaded = json.loads(candidate_file.read_text(encoding="utf-8-sig"))
+                return loaded if isinstance(loaded, dict) else None
+            except Exception:
+                return None
+
+        target_fields = ("tenantId", "subscriptionId", "workspaceResourceId", "workspaceCustomerId")
+        missing_target = [key for key in target_fields if not context.get(key)]
+        target_locked = bool(context.get("targetContextLocked") is True and not missing_target)
+        resource_group = None
+        if context.get("workspaceResourceId"):
+            try:
+                resource_group = workspace_identity(str(context["workspaceResourceId"]))["resourceGroup"]
+            except Exception:
+                resource_group = None
+
+        runtime_consent = _read_optional_run_json("runtime-query-consent.json") or _read_optional_run_json(
+            "authoring-runtime-query-consent.json"
+        )
+        runtime_consent_status = (
+            "approved"
+            if isinstance(runtime_consent, dict)
+            and runtime_consent.get("status") in {"approved", "confirmed"}
+            and runtime_consent.get("withdrawn") is not True
+            and runtime_consent.get("revoked") is not True
+            else ("revoked" if isinstance(runtime_consent, dict) and (runtime_consent.get("withdrawn") or runtime_consent.get("revoked")) else "missing")
+        )
+
+        arm_preflight_consent = _read_optional_run_json("arm-preflight-consent.json")
+        arm_preflight_consent_status = (
+            "approved"
+            if isinstance(arm_preflight_consent, dict)
+            and arm_preflight_consent.get("status") == "approved"
+            and arm_preflight_consent.get("revoked") is not True
+            else (
+                "revoked"
+                if isinstance(arm_preflight_consent, dict)
+                and (arm_preflight_consent.get("status") == "revoked" or arm_preflight_consent.get("revoked") is True)
+                else "missing"
+            )
+        )
+
+        deployment_consent = _read_optional_run_json("arm-validation-consent.json")
+        deployment_consent_status = (
+            "approved"
+            if isinstance(deployment_consent, dict)
+            and deployment_consent.get("status") == "approved"
+            and deployment_consent.get("withdrawn") is not True
+            and deployment_consent.get("deploymentOnly") is True
+            else (
+                "withdrawn"
+                if isinstance(deployment_consent, dict)
+                and (deployment_consent.get("status") == "withdrawn" or deployment_consent.get("withdrawn") is True)
+                else "missing"
+            )
+        )
+
+        auth_ready = (
+            target_locked
+            and runtime_consent_status == "approved"
+            and arm_preflight_consent_status == "approved"
+            and deployment_consent_status == "approved"
+        )
+        authorization_checks = {
+            "status": "ready" if auth_ready else "blocked",
+            "targetLocked": {
+                "status": "ready" if target_locked else "blocked",
+                "locked": target_locked,
+                "missingFields": missing_target,
+                "resourceGroup": resource_group,
+            },
+            "runtimeQueryConsent": {
+                "status": runtime_consent_status,
+                "ready": runtime_consent_status == "approved",
+                "approvedFamilies": (runtime_consent or {}).get("approvedFamilies", []),
+            },
+            "armPreflightReadConsent": {
+                "status": arm_preflight_consent_status,
+                "ready": arm_preflight_consent_status == "approved",
+                "writesAuthorized": False,
+            },
+            "deploymentConsent": {
+                "status": deployment_consent_status,
+                "ready": deployment_consent_status == "approved",
+                "deploymentOnly": bool((deployment_consent or {}).get("deploymentOnly") is True),
+                "ingestionAuthorized": False,
+            },
+        }
+
+        arm_preflight = _read_optional_run_json("arm-preflight-result.json")
+        arm_checks = (arm_preflight or {}).get("checks") if isinstance(arm_preflight, dict) else {}
+        if not isinstance(arm_checks, dict):
+            arm_checks = {}
+
+        control_plane_ok = bool(
+            isinstance(arm_preflight, dict)
+            and arm_preflight.get("tenantMatches") is True
+            and arm_preflight.get("subscriptionMatches") is True
+            and arm_preflight.get("workspaceMatches") is True
+            and arm_preflight.get("nonProduction") is True
+        )
+        rg_ws_write_ok = bool(
+            isinstance(arm_preflight, dict)
+            and arm_preflight.get("armDeploymentAllowed") is True
+            and arm_preflight.get("disabledContentVerified") is True
+            and arm_preflight.get("ownershipVerified") is True
+        )
+        ext_check = arm_checks.get("extensionResourceWriteAllowed") if isinstance(arm_checks.get("extensionResourceWriteAllowed"), dict) else {}
+        ext_required = bool(ext_check.get("required", True)) if arm_preflight else True
+        ext_ok = bool(
+            isinstance(arm_preflight, dict)
+            and (not ext_required or arm_preflight.get("extensionResourceWriteAllowed") is True)
+        )
+        deployment_ready = bool(
+            isinstance(arm_preflight, dict)
+            and arm_preflight.get("status") == "ready"
+            and control_plane_ok
+            and rg_ws_write_ok
+            and ext_ok
+        )
+        deployment_permission_readiness = {
+            "status": (
+                "ready"
+                if deployment_ready
+                else ("not-evaluated" if arm_preflight is None else str(arm_preflight.get("status") or "blocked"))
+            ),
+            "ready": deployment_ready,
+            "receiptPresent": arm_preflight is not None,
+            "armControlPlaneAccess": {
+                "status": "ready" if control_plane_ok else ("not-evaluated" if arm_preflight is None else "blocked"),
+                "tenantMatches": (arm_preflight or {}).get("tenantMatches"),
+                "subscriptionMatches": (arm_preflight or {}).get("subscriptionMatches"),
+                "workspaceMatches": (arm_preflight or {}).get("workspaceMatches"),
+                "nonProduction": (arm_preflight or {}).get("nonProduction"),
+            },
+            "resourceGroupAndWorkspaceWriteReadiness": {
+                "status": "ready" if rg_ws_write_ok else ("not-evaluated" if arm_preflight is None else "blocked"),
+                "armDeploymentAllowed": (arm_preflight or {}).get("armDeploymentAllowed"),
+                "disabledContentVerified": (arm_preflight or {}).get("disabledContentVerified"),
+                "ownershipVerified": (arm_preflight or {}).get("ownershipVerified"),
+            },
+            "extensionReadiness": {
+                "status": (
+                    "not-required"
+                    if isinstance(arm_preflight, dict) and not ext_required
+                    else ("ready" if ext_ok else ("not-evaluated" if arm_preflight is None else "blocked"))
+                ),
+                "required": ext_required,
+                "extensionResourceWriteAllowed": (arm_preflight or {}).get("extensionResourceWriteAllowed"),
+            },
+            "reasons": list((arm_preflight or {}).get("reasons") or []) if isinstance(arm_preflight, dict) else ["ARM preflight receipt is missing"],
+            "impliesIngestionReadiness": False,
+        }
+
+        dcr_preflight = _read_optional_run_json("qualification-dcr-preflight.json")
+        dcr_summary = (dcr_preflight or {}).get("summary") if isinstance(dcr_preflight, dict) else {}
+        if not isinstance(dcr_summary, dict):
+            dcr_summary = {}
+        dcr_candidates = (dcr_preflight or {}).get("candidates") if isinstance(dcr_preflight, dict) else []
+        if not isinstance(dcr_candidates, list):
+            dcr_candidates = []
+
+        dcr_status = str((dcr_preflight or {}).get("status") or ("not-evaluated" if dcr_preflight is None else "blocked"))
+        dcr_dce_ready = bool(
+            isinstance(dcr_preflight, dict)
+            and bool(dcr_candidates)
+            and all(
+                isinstance(cand, dict)
+                and (cand.get("resourceProvisioningAuthorization") or {}).get("status") in {"ready", "not-needed"}
+                and (cand.get("tableSchemaCompatibility") or {}).get("status") == "compatible"
+                for cand in dcr_candidates
+            )
+        )
+        logs_ingestion_ready = bool(
+            isinstance(dcr_preflight, dict)
+            and bool(dcr_candidates)
+            and all(
+                isinstance(cand, dict)
+                and (cand.get("ingestionAuthorization") or {}).get("status") == "ready"
+                for cand in dcr_candidates
+            )
+        )
+        ingestion_ready = bool(dcr_dce_ready and logs_ingestion_ready and dcr_status in {"ready", "passed"})
+        ingestion_permission_readiness = {
+            "status": "ready" if ingestion_ready else ("not-evaluated" if dcr_preflight is None else dcr_status),
+            "ready": ingestion_ready,
+            "receiptPresent": dcr_preflight is not None,
+            "dcrAndDceReadiness": {
+                "status": "ready" if dcr_dce_ready else ("not-evaluated" if dcr_preflight is None else "blocked"),
+                "candidateCount": len(dcr_candidates),
+                "summary": dcr_summary,
+            },
+            "logsIngestionReadiness": {
+                "status": "ready" if logs_ingestion_ready else ("not-evaluated" if dcr_preflight is None else "blocked"),
+                "requiredAction": "Microsoft.Insights/Telemetry/Write",
+            },
+            "queryPermission": (dcr_preflight or {}).get("queryPermission") if isinstance(dcr_preflight, dict) else None,
+            "blockers": list((dcr_preflight or {}).get("blockers") or []) if isinstance(dcr_preflight, dict) else ["DCR/ingestion preflight receipt is missing"],
+            "separateFromDeploymentReadiness": True,
+        }
+
+        preflight_prompt = build_lab_deployment_preflight_prompt(root, state=state)
+        overall_ready = bool(auth_ready and deployment_ready and ingestion_ready)
+        return {
+            "schemaVersion": 1,
+            "solution": str(root),
+            "runId": effective_run_id,
+            "workflowProfile": context.get("workflowProfile"),
+            "status": "ready" if overall_ready else "blocked",
+            "authorizationChecks": authorization_checks,
+            "deploymentPermissionReadiness": deployment_permission_readiness,
+            "ingestionPermissionReadiness": ingestion_permission_readiness,
+            "deploymentAndIngestionSeparated": True,
+            "expectedContentCounts": preflight_prompt["expectedContentCounts"],
+            "labDeploymentPreflightPrompt": preflight_prompt["labDeploymentPreflightPrompt"],
+        }
+
+
+def audit_private_config_and_support_export(
+    solution_path: str | Path,
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Audit private target configuration and support/evidence export artifacts before making exposure claims."""
+    import re
+    from .artifacts import using_run
+    from .target_config import ENV_FILE_NAME, read_solution_target_config
+    from .target_context import workspace_identity
+
+    root = Path(solution_path).expanduser().resolve()
+    with using_run(root, run_id):
+        state = current_state(root)
+        context = (state or {}).get("context") or {}
+        effective_run_id = (state or {}).get("runId") or run_id
+        run_dir = report_directory(root) if effective_run_id else None
+
+        env_path = root / ENV_FILE_NAME
+        env_present = env_path.is_file() and not env_path.is_symlink()
+        env_config: dict[str, str] = {}
+        env_error: str | None = None
+        if env_present:
+            try:
+                env_config = read_solution_target_config(root)
+            except Exception as exc:
+                env_error = str(exc)
+
+        private_identifiers: dict[str, str] = {}
+        for key in ("tenantId", "subscriptionId", "workspaceResourceId", "workspaceCustomerId"):
+            val = context.get(key) or env_config.get(key)
+            if isinstance(val, str) and val.strip():
+                private_identifiers[key] = val.strip()
+
+        ws_res_id = private_identifiers.get("workspaceResourceId")
+        if ws_res_id:
+            try:
+                ws_id = workspace_identity(ws_res_id)
+                private_identifiers.setdefault("subscriptionId", ws_id["subscriptionId"])
+                private_identifiers["resourceGroup"] = ws_id["resourceGroup"]
+                private_identifiers["workspaceName"] = ws_id["workspaceName"]
+            except Exception:
+                pass
+
+        local_unexported_files: list[str] = []
+        if env_present:
+            local_unexported_files.append(ENV_FILE_NAME)
+        if run_dir and run_dir.is_dir():
+            for local_name in (
+                "workflow-state.json",
+                "qualification-target.json",
+                "qualification-dcr-preflight.json",
+                "arm-validation-plan.json",
+                "arm-preflight-plan.json",
+                "arm-preflight-result.json",
+            ):
+                candidate_file = run_dir / local_name
+                if candidate_file.is_file():
+                    local_unexported_files.append(candidate_file.relative_to(root).as_posix())
+
+        export_files_checked: list[str] = []
+        exposed_in_exports: list[dict[str, str]] = []
+        evidence_root = root / "Evidence"
+        export_dirs: list[Path] = []
+        if effective_run_id and (evidence_root / effective_run_id).is_dir():
+            export_dirs.append(evidence_root / effective_run_id)
+        elif evidence_root.is_dir():
+            export_dirs.extend(sorted(p for p in evidence_root.iterdir() if p.is_dir()))
+
+        uuid_pattern = re.compile(
+            r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+            re.IGNORECASE,
+        )
+        for export_dir in export_dirs:
+            for file_path in sorted(export_dir.rglob("*")):
+                if not file_path.is_file() or file_path.is_symlink():
+                    continue
+                rel = file_path.relative_to(root).as_posix()
+                export_files_checked.append(rel)
+                try:
+                    content = file_path.read_text(encoding="utf-8-sig")
+                except Exception:
+                    continue
+                for id_kind, id_value in sorted(private_identifiers.items()):
+                    if len(id_value) >= 4 and id_value.casefold() in content.casefold():
+                        exposed_in_exports.append({
+                            "file": rel,
+                            "identifierKind": id_kind,
+                        })
+                for match in uuid_pattern.findall(content):
+                    for id_kind in ("tenantId", "subscriptionId", "workspaceCustomerId"):
+                        expected = private_identifiers.get(id_kind)
+                        if expected and match.casefold() == expected.casefold():
+                            entry = {"file": rel, "identifierKind": id_kind}
+                            if entry not in exposed_in_exports:
+                                exposed_in_exports.append(entry)
+
+        private_config_isolated = not exposed_in_exports
+        return {
+            "schemaVersion": 1,
+            "solution": str(root),
+            "runId": effective_run_id,
+            "status": "isolated" if private_config_isolated else "exposed-in-support-export",
+            "privateConfigIsolatedToLocalUnexportedConfig": private_config_isolated,
+            "supportExportsRedacted": private_config_isolated,
+            "exposureClaimVerified": not private_config_isolated,
+            "localConfig": {
+                "envFilePresent": env_present,
+                "envParseError": env_error,
+                "trackedIdentifierKinds": sorted(private_identifiers.keys()),
+                "localUnexportedArtifacts": local_unexported_files,
+            },
+            "supportExports": {
+                "checkedFiles": export_files_checked,
+                "exposures": exposed_in_exports,
+            },
+        }
+
