@@ -73,6 +73,27 @@ themselves establish a toolkit fix is required.
 
 ## Candidate follow-ups
 
-No open candidate follow-ups remain for V1 PREVIEW. Any future environment
-write remains separately gated by explicit approval immediately before the
-exact operation. No cloud action is authorized by this roadmap.
+- **Deliver review-gate notifications reliably.** Add immediate coordinator-owned
+  alerts when a solution needs review or release approval, with one consolidated
+  decision request. Persist pending, delivered, and acknowledged notification
+  states bound to the run ID and current review-packet hash. Generating a status
+  summary must not count as delivery. Reconcile pending notifications after
+  restart or model changes, and use one read-only fallback reminder schedule
+  without creating another workflow executor. Deduplicate delivered unchanged
+  alerts, but do not suppress undelivered requests. Test missed notifications,
+  delivery failures, restart recovery, changed review packets, acknowledgment,
+  and single-owner execution. The current status helper does not implement
+  end-to-end scheduled notification delivery; separate maintainer implementation
+  and verification are required.
+- **Support automatic row-level query rewrite for `kind: NRT` rules with cosmetic
+  `summarize` wrappers.** While single-table `kind: NRT` rules already map to
+  `schedule.frequency: "NRT"`, Sentinel NRT rules that include a trailing
+  `summarize min(TimeGenerated), max(TimeGenerated), count() by ...` wrapper
+  are flagged by Defender XDR's Continuous (NRT) engine restriction against
+  `summarize`. Add a deterministic rewrite option to strip cosmetic timestamp/count
+  aggregations into row-level projections when converting to `NRT`, falling back
+  to `PT1H` scheduled frequency when aggregation is required.
+
+Any future environment write remains separately gated by explicit approval
+immediately before the exact operation. No cloud action is authorized by this
+roadmap.
