@@ -29,7 +29,8 @@ TABLE_WORKLOADS = {
     **{table: "mde" for table in NATIVE_XDR_TABLES if table.startswith("Device")},
     **{table: "mdo" for table in (
         "EmailAttachmentInfo", "EmailEvents", "EmailPostDeliveryEvents",
-        "EmailUrlInfo", "UrlClickEvents",
+        "EmailUrlInfo", "FileMaliciousContentInfo", "MessageEvents",
+        "MessagePostDeliveryEvents", "MessageUrlInfo", "UrlClickEvents",
     )},
     **{table: "mdi" for table in (
         "IdentityDirectoryEvents", "IdentityLogonEvents", "IdentityQueryEvents",
@@ -125,9 +126,10 @@ def dependency_plan(
     connectors: Any = None,
     table_mappings: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    resolution = resolve_data_types(source_query, metadata)
-    source_types = set(resolution["dataTypes"])
     from ._workbook_core import rewrite
+    source_free_literal = rewrite.is_source_free_literal_query(source_query)
+    resolution = resolve_data_types(source_query, None if source_free_literal else metadata)
+    source_types = set(resolution["dataTypes"])
     code = "".join(text if kind == "code" else " " * len(text)
                    for kind, text in rewrite._segments(source_query))
     if re.search(r"\b_GetWatchlist\s*\(", code):
@@ -149,7 +151,8 @@ def dependency_plan(
     target_tables = telemetry_data_types(target_table_names)
     workloads, unknown = workload_records(target_tables)
     reasons = []
-    if not source_types and not (builtin_asim_parsers and isinstance(connectors, list)):
+    if (not source_types and not source_free_literal
+            and not (builtin_asim_parsers and isinstance(connectors, list))):
         reasons.append("No source inputs resolved; provide source evidence and any telemetry connector prerequisites.")
     if unknown:
         reasons.append(f"Provide workload mappings for: {', '.join(unknown)}.")

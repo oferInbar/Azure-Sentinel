@@ -275,6 +275,17 @@ def _unquote_kql_string(literal: str) -> str:
     return literal
 
 
+def _is_union_withsource_output_binding(code: str, start: int) -> bool:
+    prefix = _QUOTED_LITERAL_RE.sub(lambda m: " " * len(m.group(0)), code[:start])
+    segment_start = max(prefix.rfind("|"), prefix.rfind(";"))
+    return re.search(
+        r"\bunion\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*"
+        r"\s+withsource\s*=\s*$",
+        prefix[segment_start + 1:],
+        re.IGNORECASE,
+    ) is not None
+
+
 def _union_operands(code):
     # Union operands are separated at the union's own depth, not by commas
     # inside function arguments. Include later operands, not only the first.
@@ -360,6 +371,8 @@ def _quoted_calls_and_table_sources(query: str) -> tuple[set[str], set[str]]:
     # Fail closed on non-literal or unsupported table()/totable() indirection
     for m in _TABLE_ANY_CALL_RE.finditer(no_comments):
         if any(s <= m.start() < e for s, e in outer_string_spans):
+            continue
+        if _is_union_withsource_output_binding(no_comments, m.start()):
             continue
         if not any(s == m.start() for s, _ in valid_spans):
             calls.add("{__unsupported_table_indirection__}")
@@ -483,7 +496,24 @@ def _parameter_source_or_call_tokens(query: str) -> set[str]:
         code,
         flags=re.IGNORECASE,
     ):
-        tokens.update(g for g in match.groups() if g)
+        captured = [g for g in match.groups() if g]
+        scalar_granularity = False
+        let_match = re.match(
+            rf"\blet\s+gran\s*=\s*({tok_pat})\s*;",
+            code[match.start():],
+            flags=re.IGNORECASE,
+        )
+        if let_match and let_match.group(1) in captured:
+            token = let_match.group(1)
+            scalar_granularity = (
+                token.casefold() == "{granularity}"
+                and bool(re.search(
+                    r"\bmake-series\b.*?\bstep\s+gran\b|\bbin\s*\([^)]*,\s*gran\s*\)",
+                    code, flags=re.IGNORECASE | re.DOTALL,
+                ))
+            )
+        if not scalar_granularity:
+            tokens.update(captured)
     for m in re.finditer(rf"(\(\s*(?:\(\s*)*)({tok_pat})((?:\s*\))*)\s*(?:\*/\s*)?(?=\|)", code):
         if m.group(1).count("(") > m.group(3).count(")"):
             tokens.add(m.group(2))
@@ -656,7 +686,8 @@ def convert_workbook(source: dict, resolutions: dict | None = None,
         if surface["parameter"]:
             gates.add("ah-query-backed-parameters")
         # The mapping catalog's resolve-to-self does not establish blank-selection visibility.
-        gates.add("blank-ah-selection-table-visibility")
+        if contract["resolvedTables"]:
+            gates.add("blank-ah-selection-table-visibility")
         if opaque:
             gates.add("sentinel-workspace-function-availability-and-branch-coverage")
         if re.search(r"\bexternaldata\s*[\[(]", code):

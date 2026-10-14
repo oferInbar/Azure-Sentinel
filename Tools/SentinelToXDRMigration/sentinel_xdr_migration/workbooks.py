@@ -515,6 +515,9 @@ def validate_workbooks(solution, *, selected_only=False) -> dict:
                     contract = {}
                 resolved_tables = (set(contract.get("resolvedTables", []))
                                    if isinstance(contract.get("resolvedTables"), list) else set())
+                if (not resolved_tables and
+                        not workbook.rewrite.is_source_free_literal_query(raw_source)):
+                    errors.append("Empty source-table lineage is allowed only for a verified literal datatable or numeric range query.")
                 aliases = query.get("workspaceFunctions", [])
                 alias_set = (set(aliases) if isinstance(aliases, list)
                              and all(isinstance(a, str) for a in aliases) else set())

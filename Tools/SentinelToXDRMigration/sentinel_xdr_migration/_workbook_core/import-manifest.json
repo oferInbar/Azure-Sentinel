@@ -27,7 +27,7 @@
     },
     {
       "component": "data/mapping_catalog.json",
-      "sha256": "5a76b154eb5a077219e900392eefce12f8a2e8d18c49e723441c1c4c9d3660c7",
+      "sha256": "6e81e0029e971302354e607e3f103b25aae282629205f8bb44637d45cae7d159",
       "originalSha256": "6a3c2c8a164923ec461208f33919518e36e34242106a3a8826650c8fcde60067"
     },
     {
@@ -55,7 +55,7 @@
     },
     {
       "component": "migrator.py",
-      "sha256": "694a75d820016928c127eccb51b933dae8eb5dbd95b7b9840a74dfe3ddb90c82",
+      "sha256": "6172c2b8ecb0069b5702403b62b254f68ce5e24a06ca5b9bec35c436e06c3a93",
       "originalSha256": "4f7d9d0c126d283a1c92e7429e89c01085b08c239e7dce66b8953482b0a5e92f"
     },
     {
@@ -65,7 +65,7 @@
     },
     {
       "component": "rewrite.py",
-      "sha256": "a77ff6aaeca6c919d0ed002085f877514a47fd670b68d6d1ac2179b45640c8c2",
+      "sha256": "9b53e3be9877c178d0b1aa8c255ae96da451f30b956e71f4b7e30b08bafc8ab0",
       "originalSha256": "0c4138edf041221f0bdfc4ee00e4417d4c9d505ff8ffec7ec29d62409ef8732a"
     },
     {
@@ -75,7 +75,7 @@
     },
     {
       "component": "workbook.py",
-      "sha256": "238701e7fec987ec6e7bb9ae89eaf98647c09e03802db9aac889a1a5772f28ac",
+      "sha256": "d23ddd2ada78e4b9da717cf9a79e58d96f31a9c5f84d25727a46129cfda020b7",
       "originalSha256": "eb931b23333994a56e94d3c8975c7663db258b9b8032b0ff171b9e456e1b3942"
     },
     {

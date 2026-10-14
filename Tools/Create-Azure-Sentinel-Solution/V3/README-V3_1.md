@@ -247,7 +247,14 @@ V3.1 applies these hard guards in local, catalog, and positional pipeline modes:
 |---|---|
 | Effective solution/package version, even without XDR content | `>= 3.2.0` and `< 4.0.0` |
 | Effective XDR Custom Detection content version | `>= 3.1.0` and `< 4.0.0` |
+| Effective Defender Workbook `xdrMetadata.version` | Canonical `major.minor.patch` in `[3.1.0, 4.0.0)` |
+| Ordinary Sentinel Workbook metadata content version | Independent numeric version; no solution-major ceiling (for example, `4.0.0` is valid with solution `3.2.1`) |
 | Every other packaged content-item release version | `< 4.0.0`; existing `1.x`/`2.x` versions remain valid |
+
+Existing Sentinel Workbook content and metadata versions are retained unchanged;
+adding XDR content does not require downgrading them to match the solution major.
+This distinction does not relax solution, Custom Detection, or Defender Workbook
+release-version checks.
 
 The guard reports the content type/path, effective version, and required range.
 It never promotes versions automatically. Explicit local bumps are evaluated

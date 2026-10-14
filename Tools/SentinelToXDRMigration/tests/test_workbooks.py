@@ -11,10 +11,49 @@ import jsonschema
 import pytest
 
 from sentinel_xdr_migration import workbooks
-from sentinel_xdr_migration._workbook_core import workbook, mapping_catalog, migrate
+from sentinel_xdr_migration._workbook_core import workbook, mapping_catalog, migrate, migrator, rewrite
 
 FIXTURES = Path(__file__).parent / "fixtures/workbooks"
 SCHEMA = Path(__file__).parents[1] / "schema/xdr-workbook.schema.json"
+ENDPOINT_TABLES = [
+    "DeviceInfo", "DeviceNetworkInfo", "DeviceProcessEvents", "DeviceNetworkEvents",
+    "DeviceFileEvents", "DeviceRegistryEvents", "DeviceLogonEvents",
+    "DeviceImageLoadEvents", "DeviceEvents", "DeviceFileCertificateInfo",
+]
+TYPE_LABEL_QUERY = '''union\x20
+isfuzzy = true
+(DeviceInfo | summarize arg_max(TimeGenerated,*) | project TimeGenerated, Type= "DeviceInfo" | extend Description = "Machine information (including OS information)"),
+(DeviceNetworkInfo | summarize arg_max(TimeGenerated,*) | project TimeGenerated, Type="DeviceNetworkInfo"  | extend Description = "Network properties of machines"),
+(DeviceProcessEvents | summarize arg_max(TimeGenerated,*) | project TimeGenerated, Type="DeviceProcessEvents" | extend Description = "Process creation and related events"),
+(DeviceNetworkEvents | summarize arg_max(TimeGenerated,*) | project TimeGenerated, Type="DeviceNetworkEvents" | extend Description = "Network connection and related events"),
+(DeviceFileEvents | summarize arg_max(TimeGenerated,*) | project TimeGenerated, Type="DeviceFileEvents" | extend Description = "File creation, modification, and other file system events"),
+(DeviceRegistryEvents | summarize arg_max(TimeGenerated,*) | project TimeGenerated, Type="DeviceRegistryEvents" | extend Description = "Creation and modification of registry entries"),
+(DeviceLogonEvents | summarize arg_max(TimeGenerated,*) | project TimeGenerated, Type="DeviceLogonEvents" | extend Description = "Sign-ins and other authentication events"),
+(DeviceImageLoadEvents | summarize arg_max(TimeGenerated,*) | project TimeGenerated, Type="DeviceImageLoadEvents" | extend Description = "DLL loading events"),
+(DeviceEvents | summarize arg_max(TimeGenerated,*) | project TimeGenerated, Type="DeviceEvents" | extend Description = "Additional events types"),
+(DeviceFileCertificateInfo | summarize arg_max(TimeGenerated,*) | project TimeGenerated, Type="DeviceFileCertificateInfo" | extend Description = "Certificate information of signed files)")
+| extend ["Last Log Received At (Local Time)"] = TimeGenerated
+| project Type, Description, ["Last Log Received At (Local Time)"]'''.replace("\n", "\r\n")
+TYPE_SUMMARY_QUERY = '''let AllDeviceNames = DeviceInfo | distinct DeviceId, DeviceName;
+let DeviceEventSummary = DeviceEvents | summarize count() by DeviceId, Type, bin(TimeGenerated,1d);
+let DeviceNetworkEventsSummary = DeviceNetworkEvents | summarize count() by DeviceId,Type, bin(TimeGenerated,1d);
+let DeviceNetworkInfoSummary = DeviceNetworkInfo | summarize count() by DeviceId,Type, bin(TimeGenerated,1d);
+let DeviceLogonEventsSummary = DeviceLogonEvents | summarize count() by DeviceId,Type, bin(TimeGenerated,1d);
+let DeviceRegistryEventsSummary = DeviceRegistryEvents | summarize count() by DeviceId,Type, bin(TimeGenerated,1d);
+let DeviceProcessEventsSummary = DeviceProcessEvents | summarize count() by DeviceId,Type, bin(TimeGenerated,1d);
+(DeviceEventSummary
+| union DeviceNetworkEventsSummary,
+DeviceNetworkEventsSummary,
+DeviceNetworkInfoSummary,
+DeviceLogonEventsSummary,
+DeviceRegistryEventsSummary,
+DeviceProcessEventsSummary)
+| join kind=inner (\x20
+AllDeviceNames
+)
+on $left.DeviceId == $right.DeviceId
+| project-reorder Type, TimeGenerated, count_
+//| project-away DeviceId, DeviceId1'''
 
 
 @pytest.fixture
@@ -53,6 +92,81 @@ def convert(solution, settings=None, overwrite=False):
 
 def authored(solution):
     return solution / "XDR Workbooks/nested/fixture.json"
+
+
+def test_endpoint_type_labels_and_summary_groupings_are_deterministic():
+    labels = rewrite.rewrite(TYPE_LABEL_QUERY, ENDPOINT_TABLES)
+    assert labels["deterministic"] is True
+    assert labels["convertedKql"] == TYPE_LABEL_QUERY
+    assert labels["flags"] == []
+
+    summary_tables = [
+        "DeviceInfo", "DeviceEvents", "DeviceNetworkEvents", "DeviceNetworkInfo",
+        "DeviceLogonEvents", "DeviceRegistryEvents", "DeviceProcessEvents",
+    ]
+    summary = rewrite.rewrite(TYPE_SUMMARY_QUERY, summary_tables)
+    assert summary["deterministic"] is True
+    assert summary["flags"] == []
+    assert summary["convertedKql"].count('extend Type = "Device') == 6
+    assert "| project-reorder Type, TimeGenerated, count_" in summary["convertedKql"]
+    assert "| join kind=inner" in summary["convertedKql"]
+    replay = rewrite.rewrite(summary["convertedKql"], summary_tables)
+    assert replay["deterministic"] is True
+    assert replay["convertedKql"] == summary["convertedKql"]
+
+
+@pytest.mark.parametrize("query", [
+    'DeviceEvents | where Type == "ProcessCreated" | project Type',
+    "DeviceEvents | summarize count() by DeviceId, Type",
+    'let Labelled = DeviceEvents | project Type = "label"; '
+    "let Raw = DeviceEvents | project Type; "
+    "union Labelled, Raw | project Type",
+])
+def test_ambiguous_type_column_references_remain_review_findings(query):
+    result = rewrite.rewrite(query, ["DeviceEvents"])
+    assert result["deterministic"] is False
+    assert result["convertedKql"] == query
+    assert any(flag["kind"] == "la-only-column" and flag["name"] == "Type"
+               for flag in result["flags"])
+
+
+def test_endpoint_type_conversion_passes_lineage_replay_and_validation(solution):
+    relative = "Workbooks/nested/fixture.json"
+    source_path = solution / relative
+    source = json.loads(source_path.read_text())
+    queries = [TYPE_LABEL_QUERY, TYPE_SUMMARY_QUERY]
+    tables = [ENDPOINT_TABLES, [
+        "DeviceInfo", "DeviceEvents", "DeviceNetworkEvents", "DeviceNetworkInfo",
+        "DeviceLogonEvents", "DeviceRegistryEvents", "DeviceProcessEvents",
+    ]]
+    source["items"] = [{
+        "type": 3,
+        "content": {"items": [
+            {"type": 3, "content": {"query": query, "queryType": 0,
+                                    "resourceType": workbook.LA}}
+            for query in queries
+        ]},
+    }]
+    source_path.write_text(json.dumps(source))
+    settings = {"workbookResolutions": {relative: {
+        surface["path"]: {
+            "querySha256": workbook.query_hash(surface["node"]["query"]),
+            "tables": tables[index],
+            "evidence": "Reviewed exact Endpoint workbook query",
+        }
+        for index, surface in enumerate(workbook.query_surfaces(source))
+    }}}
+
+    result = convert(solution, settings)
+    assert result["converted"] == 1 and result["blocked"] == 0
+    assert workbooks.validate_workbooks(solution)["valid"] == 1
+    output = json.loads(authored(solution).read_text())
+    records = output["contentProvenance"]["conversion"]["queries"]
+    assert [record["status"] for record in records] == ["converted", "converted"]
+    assert all(record["sourceSha256"] and record["targetSha256"] for record in records)
+    converted_queries = [surface["node"]["query"] for surface in workbook.query_surfaces(output)]
+    assert converted_queries[0] == TYPE_LABEL_QUERY
+    assert converted_queries[1].count('extend Type = "Device') == 6
 
 
 @pytest.mark.parametrize("case", json.loads((FIXTURES / "upstream-cases.json").read_text()),
