@@ -29,10 +29,12 @@ themselves establish a toolkit fix is required.
   ingestion-based lookback (`PT4H`) by default without pausing for timing-only
   approval, recording `eventTimeWindow` provenance and exact source/target
   hashes while keeping `parityClaimed: false`.
-- **Map eligible Sentinel `kind: NRT` rules to Continuous (`NRT`) Custom Detections.**
+- **Map eligible Sentinel `kind: NRT` rules to Continuous (`PT0S`) Custom Detections.**
   Mapped eligible single-table `kind: NRT` rules to `kind: CustomDetection`
-  with `schedule.frequency: "NRT"`, surfacing incompatible multi-table, join,
-  union, or aggregate NRT queries for explicit review.
+  with `schedule.frequency: "PT0S"` (`Edm.Duration` zero duration, while
+  normalizing legacy `"NRT"` strings at Graph/ARM boundaries), surfacing
+  incompatible multi-table, join, union, or aggregate NRT queries for explicit
+  review.
 - **Accept standard `_`-prefixed built-in ASIM parsers (`_ASim_*` and `_Im_*`).**
   Recognized built-in unifying ASIM parsers starting with `_` as supported in
   both Custom Detections and Defender Workbooks.
@@ -87,7 +89,7 @@ themselves establish a toolkit fix is required.
   and verification are required.
 - **Support automatic row-level query rewrite for `kind: NRT` rules with cosmetic
   `summarize` wrappers.** While single-table `kind: NRT` rules already map to
-  `schedule.frequency: "NRT"`, Sentinel NRT rules that include a trailing
+  `schedule.frequency: "PT0S"`, Sentinel NRT rules that include a trailing
   `summarize min(TimeGenerated), max(TimeGenerated), count() by ...` wrapper
   are flagged by Defender XDR's Continuous (NRT) engine restriction against
   `summarize`. Add a deterministic rewrite option to strip cosmetic timestamp/count

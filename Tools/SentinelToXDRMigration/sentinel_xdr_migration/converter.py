@@ -280,6 +280,8 @@ def slugify(value: str) -> str:
 def iso_duration(value: Any, default: str = "PT1H") -> tuple[str, str | None]:
     text = str(value or "").strip().lower()
     iso = text.upper()
+    if iso in {"NRT", "0", "PT0S"}:
+        return "PT0S", None
     if re.fullmatch(
         r"P(?:(?:\d+D)(?:T(?:\d+H)?(?:\d+M)?(?:\d+S)?)?|T(?:\d+H)?(?:\d+M)?(?:\d+S)?)",
         iso,
@@ -1125,15 +1127,15 @@ def assess_schedule(
         f"lookback={doc.get('queryPeriod') or 'unknown'}; target frequency={frequency}, "
         f"native lookback={str(target_period) + 's' if target_period else 'unknown/unconfigured'}"
     )
-    if str(doc.get("kind") or "").lower() == "nrt" and frequency == "NRT":
+    if str(doc.get("kind") or "").lower() == "nrt" and frequency in {"PT0S", "NRT"}:
         nrt_eligible, nrt_reasons = _assess_nrt_eligibility(source_query, target_query)
         if nrt_eligible:
             return [], [
-                f"Schedule assessment: source kind=NRT; target frequency=NRT (Continuous); "
+                f"Schedule assessment: source kind=NRT; target frequency={frequency} (Continuous); "
                 f"single-table Continuous (NRT) execution is supported in Defender XDR. See {SCHEDULE_REFERENCE}"
             ]
         return [
-            f"Schedule assessment: source kind=NRT; target frequency=NRT (Continuous); "
+            f"Schedule assessment: source kind=NRT; target frequency={frequency} (Continuous); "
             f"query is not eligible for Continuous (NRT) execution ({'; '.join(nrt_reasons)}). See {SCHEDULE_REFERENCE}"
         ], []
     reason = None
@@ -1761,7 +1763,7 @@ def build_xdr_document(source: Path, solution_root: Path, config: dict[str, Any]
     is_nrt = str(doc.get("kind") or "").lower() == "nrt"
     override_frequency = rule_override.get("frequency") if isinstance(rule_override, dict) else None
     if is_nrt and not override_frequency and not doc.get("queryFrequency"):
-        frequency = "NRT"
+        frequency = "PT0S"
         nrt_eligible, nrt_reasons = _assess_nrt_eligibility(source_query, converted_query)
         frequency_warning = (
             None
@@ -2170,7 +2172,7 @@ def validate_document(document: dict[str, Any]) -> list[str]:
     if not query:
         errors.append("properties.queryCondition.queryText is required")
     schedule = properties.get("schedule") or {}
-    if isinstance(schedule, dict) and schedule.get("frequency") == "NRT":
+    if isinstance(schedule, dict) and schedule.get("frequency") in {"PT0S", "NRT"}:
         nrt_eligible, nrt_reasons = _assess_nrt_eligibility(query, query)
         if not nrt_eligible and conversion.get("status") != "needsReview":
             errors.extend(f"NRT schedule: {reason}" for reason in nrt_reasons)

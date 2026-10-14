@@ -804,7 +804,7 @@ AzureActivity
             (self.solution / "XDR Detections" / "SampleRule.yaml").read_text(encoding="utf-8")
         )
         self.assertEqual(output["kind"], "CustomDetection")
-        self.assertEqual(output["properties"]["schedule"]["frequency"], "NRT")
+        self.assertEqual(output["properties"]["schedule"]["frequency"], "PT0S")
         self.assertEqual([], validate_document(output))
 
     def test_nrt_incompatible_query_requires_review_instead_of_silent_schedule(self) -> None:
@@ -822,7 +822,7 @@ AzureActivity
         output = yaml.safe_load(
             (self.solution / "XDR Detections" / "SampleRule.yaml").read_text(encoding="utf-8")
         )
-        self.assertEqual(output["properties"]["schedule"]["frequency"], "NRT")
+        self.assertEqual(output["properties"]["schedule"]["frequency"], "PT0S")
         conversion = output["contentProvenance"]["conversion"]
         self.assertEqual(conversion["status"], "needsReview")
         self.assertTrue(conversion["reviewRequired"])

@@ -171,6 +171,8 @@ def graph_detection_payload_with_projection(
     )
     projection = project_graph_tactics(alert)
     result = deepcopy(properties)
+    if isinstance(result.get("schedule"), dict) and result["schedule"].get("frequency") == "NRT":
+        result["schedule"]["frequency"] = "PT0S"
     result["@odata.type"] = "#microsoft.graph.security.detectionRule"
     result["status"] = "disabled"
     if package_context is not None:
