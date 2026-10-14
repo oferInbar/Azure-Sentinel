@@ -287,6 +287,26 @@ def _all_known_dependency_tokens(
     return valid
 
 
+def _is_custom_detection_install_deployment(res: Any) -> bool:
+    if not isinstance(res, dict):
+        return False
+    if str(res.get("type") or "").casefold() != "microsoft.resources/deployments":
+        return False
+    name = str(res.get("name") or "")
+    if name.startswith("CustomDetection-") or "-CD-" in name:
+        return True
+    props = res.get("properties")
+    if isinstance(props, dict) and isinstance(props.get("template"), dict):
+        inner_res = props["template"].get("resources")
+        if isinstance(inner_res, list) and any(
+            isinstance(child, dict)
+            and str(child.get("type") or "").casefold() == "microsoft.security/detectionrules"
+            for child in inner_res
+        ):
+            return True
+    return False
+
+
 def validate_solution_xdr_detections(
     solution_root: Path,
     content_root: Path,
@@ -324,7 +344,7 @@ def validate_solution_xdr_detections(
                 or any(
                     isinstance(r, dict)
                     and (
-                        str(r.get("name") or "").startswith("CustomDetection-")
+                        _is_custom_detection_install_deployment(r)
                         or (
                             isinstance(r.get("properties"), dict)
                             and str(r["properties"].get("contentKind") or "").casefold()
@@ -553,9 +573,7 @@ def _validate_packaged_custom_detections(
     installs = [
         r
         for r in resources
-        if isinstance(r, dict)
-        and str(r.get("type") or "").casefold() == "microsoft.resources/deployments"
-        and str(r.get("name") or "").startswith("CustomDetection-")
+        if _is_custom_detection_install_deployment(r)
     ]
     registrations = [
         r

@@ -855,6 +855,28 @@ async function validateIdChange(filePath: string, fileKind: string): Promise<Val
     const fullPath = path.resolve(process.cwd(), filePath);
     const diffSummary = execSync(`git diff ${mergeBase} HEAD -- "${fullPath}"`, { encoding: "utf8" });
 
+    if (/^new file mode /m.test(diffSummary) || diffSummary.includes("--- /dev/null")) {
+      return { validator: "ID Change", filePath, passed: true, skipped: true, skipReason: "New file in branch" };
+    }
+
+    const isXdrDetection = /(^|[\\/])XDR Detections[\\/]/.test(filePath);
+    if (isXdrDetection) {
+      const removedPropId = diffSummary.match(/^-[ \t]+id:\s*['"]?(xdr-[0-9a-fA-F-]{36}|[0-9a-fA-F-]{36})['"]?/m);
+      const addedPropId = diffSummary.match(/^\+[ \t]+id:\s*['"]?(xdr-[0-9a-fA-F-]{36}|[0-9a-fA-F-]{36})['"]?/m);
+      if (removedPropId && addedPropId && removedPropId[1] !== addedPropId[1]) {
+        if (skipIds.indexOf(addedPropId[1]) > -1) {
+          return { validator: "ID Change", filePath, passed: true, skipped: true, skipReason: "ID in skip list" };
+        }
+        return {
+          validator: "ID Change",
+          filePath,
+          passed: false,
+          error: `Template ID changed from ${removedPropId[1]} to ${addedPropId[1]} — IDs must not be modified`,
+        };
+      }
+      return { validator: "ID Change", filePath, passed: true };
+    }
+
     const idPosition = diffSummary.search(new RegExp(templateIdRegex));
     if (idPosition > 0) {
       const regex = /(?:xdr-)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
