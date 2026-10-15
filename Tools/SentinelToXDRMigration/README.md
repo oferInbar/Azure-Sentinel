@@ -391,7 +391,7 @@ Set-Location 'C:\content'
 & (Join-Path $Toolkit 'Tools\Create-Azure-Sentinel-Solution\V3\createSolutionV3_1.ps1') `
   -SolutionDataFolderPath (Join-Path $Solution 'Data') `
   -ToolkitRootPath $Toolkit -VersionMode local -VersionBump none `
-  -ArmValidationMethod lab-deployment -SkipAttributionLookup
+  -ArmValidationMethod lab-deployment
 ```
 
 This generates an **unaccepted candidate** with ARM lab validation pending;
@@ -2147,17 +2147,22 @@ XDR uses only its top-level YAML `version`, including when registration is
 disabled. Registration metadata and content product IDs use that same version.
 Data `XDR Detection Version`, solution version, and source provenance are not
 fallbacks in V3.1. See "Independent XDR release version" above for older files.
-Optional `trackingId` in SolutionMetadata.json is the complete Partner Center
+`trackingId` in SolutionMetadata.json is the complete Partner Center
 customer usage attribution ID, not a bare GUID, Partner ID, or plan ID.
 When absent/blank, V3.1 attempts anonymous **public Marketplace catalog/template**
 discovery (not authenticated Partner Center API access) using exact publisher and
 offer identity and one unambiguous plan/marker. It saves the validated full ID
 into authoritative SolutionMetadata.json and emits the current marker shape.
-Explicit IDs win without lookup. Set `SENTINEL_SKIP_ATTRIBUTION_LOOKUP=1` for
-offline attribution; the CLI inherits it without an additional flag.
-Lookup failures leave metadata unchanged and preserve prominent warnings in the
-packaging report; successful provenance is recorded separately in
-`attributionSources`. Local metadata write failures stop packaging.
+Explicit IDs win without lookup. Attribution is required when XDR detections
+or Defender Workbooks are emitted: neither `-SkipAttributionLookup` nor
+`SENTINEL_SKIP_ATTRIBUTION_LOOKUP=1` suppresses missing-ID lookup.
+Lookup failure or ambiguity leaves metadata unchanged and terminates packaging
+before package files/ZIP output. Verify publisher/offer identity and the
+published plan/marker, or supply the correct full ID and rebuild.
+For optional attribution only, the CLI inherits the environment control for
+offline skips and preserves warning-only lookup failures in the packaging
+report. Successful provenance is recorded separately in `attributionSources`.
+Local metadata write failures stop packaging.
 Partner Center cannot auto-add tracking for functional nested deployments.
 If lookup cannot resolve it, obtain the ID from offer > plan > Technical
 configuration, add it, and rebuild. Missing attribution does not imply upload

@@ -214,7 +214,7 @@ Create a  file and place it in the base path of solution `https://raw.githubuser
 
 ### Generate Solution Package
 
-- The automated pipeline calls `Tools/Create-Azure-Sentinel-Solution/V3/createSolutionV3_1.ps1`. V3.1 also supports local hybrid Sentinel/XDR packaging; see the [V3.1 guide](../V3/README-V3_1.md), including optional `trackingId` customer usage attribution in SolutionMetadata.json.
+- The automated pipeline calls `Tools/Create-Azure-Sentinel-Solution/V3/createSolutionV3_1.ps1`. V3.1 also supports local hybrid Sentinel/XDR packaging; see the [V3.1 guide](../V3/README-V3_1.md), including customer usage attribution in SolutionMetadata.json. Attribution is required for emitted XDR detections or Defender Workbooks: missing-ID lookup cannot be skipped, and lookup failure stops packaging.
  > **IMPORTANT:** `V3/createSolutionV3.ps1` remains the legacy Sentinel-only local entry point. The older `pipeline/createSolutionV4.ps1` is not the current package automation entry point.
 - Core business logic for V3 and V3.1 is in `Tools/Create-Azure-Sentinel-Solution/common/commonFunctions.ps1`.
 - For any of the WorkbookMetadata change make use of './Tools/Create-Azure-Sentinel-Solution/V2/WorkbookMetadata/WorkbooksMetadata.json' file.

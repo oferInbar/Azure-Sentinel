@@ -3313,6 +3313,11 @@ function GeneratePackage(
     $baseMainTemplate.metadata.author = $(if ($contentToImport.Author) { $contentToImport.Author } else { "" })
     $baseMainTemplate.metadata.comments = $baseMainTemplate.metadata.comments -replace "{{SolutionName}}", $solutionName
 
+    if ($IncludeXdrDetections) {
+        # Resolve required attribution after content/version preparation, before any package output.
+        Add-CustomerUsageAttribution -SolutionMetadataPath $SolutionMetadataPath -Template $global:baseMainTemplate -WarnIfMissing ($xdrDetectionCount -gt 0 -or $defenderWorkbookCount -gt 0) -SkipAttributionLookup:$SkipAttributionLookup
+    }
+
     $repoRoot = $(git rev-parse --show-toplevel)
     $solutionFolderName = $solutionName
     $solutionFolder = "$repoRoot/Solutions/$solutionFolderName"
@@ -3325,11 +3330,6 @@ function GeneratePackage(
     }
     $mainTemplateOutputPath = "$solutionFolder/mainTemplate.json"
     $createUiDefinitionOutputPath = "$solutionFolder/createUiDefinition.json"
-
-    if ($IncludeXdrDetections) {
-        # Persist only after content/version preparation, after metadata filtering and before output.
-        Add-CustomerUsageAttribution -SolutionMetadataPath $SolutionMetadataPath -Template $global:baseMainTemplate -WarnIfMissing ($xdrDetectionCount -gt 0 -or $defenderWorkbookCount -gt 0) -SkipAttributionLookup:$SkipAttributionLookup
-    }
 
     try {
         $baseMainTemplate | ConvertTo-Json -Depth $packageSerializationDepth | Out-File $mainTemplateOutputPath -Encoding utf8

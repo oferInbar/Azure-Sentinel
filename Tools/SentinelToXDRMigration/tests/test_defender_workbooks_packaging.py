@@ -107,7 +107,8 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
     def write(self) -> None:
         self.target.write_text(json.dumps(self.notebook), encoding="utf-8")
 
-    def invoke(self, *, success: bool = True, package: bool = False, unchanged: bool = False) -> dict:
+    def invoke(self, *, success: bool = True, package: bool = False, unchanged: bool = False,
+               tracking_id: str | None = "pid-workbook-regression") -> dict:
         payload = self.root / "input.json"
         payload.write_text(json.dumps({
             "data": self.data, "template": self.template, "ui": self.ui,
@@ -120,7 +121,7 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
         )
         if package:
             metadata = self.solution / "SolutionMetadata.json"
-            metadata.write_text("{}", encoding="utf-8")
+            metadata.write_text(json.dumps({"trackingId": tracking_id}), encoding="utf-8")
             emit = (
                 f"function git {{ $global:LASTEXITCODE=0; return {literal(self.root)} }}; "
                 "$global:baseMainTemplate=$template; $global:baseCreateUiDefinition=$ui; "
@@ -1001,10 +1002,21 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
         with zipfile.ZipFile(package / "3.2.7.zip") as archive:
             template = json.loads(archive.read("mainTemplate.json"))
             ui = json.loads(archive.read("createUiDefinition.json"))
-        self.assertEqual(4, len(template["resources"]))
+        self.assertEqual(5, len(template["resources"]))
+        marker = next(r for r in template["resources"] if r.get("name") == "pid-workbook-regression")
+        self.assertNotIn("condition", marker)
+        self.assertEqual([], marker["properties"]["template"]["resources"])
         self.assertEqual("[steps('contentSelection').DeployDefenderWorkbook]", ui["parameters"]["outputs"]["DeployDefenderWorkbook"])
         self.assertEqual(original, self.target.read_bytes())
         self.assertIn("**XDR Workbooks:** 1", ui["parameters"]["config"]["basics"]["description"])
+
+    def test_workbook_only_missing_attribution_cannot_skip_lookup(self) -> None:
+        result = self.invoke(package=True, success=False, tracking_id=None)
+        self.assertIn("Required published lookup failed", result["error"])
+        self.assertIn("catalog identity", result["error"])
+        self.assertFalse((self.solution / "Package").exists())
+        self.assertEqual({"trackingId": None},
+                         json.loads((self.solution / "SolutionMetadata.json").read_text()))
 
     def test_empty_selection_never_scans_or_emits_flag(self) -> None:
         self.data["XDR Workbooks"] = []
