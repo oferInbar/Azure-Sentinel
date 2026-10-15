@@ -150,9 +150,22 @@ def test_review_is_complete_current_and_explicit(solution, mutation):
     "EmailEvents | join (SecurityIncident | take 1) on Title",
     "let f=(){UnknownTable | take 1}; f()",
     "table('EmailEvents') | take 1", "table({Table}) | take 1",
-    "_Im_Authentication | take 1", "print x=1", "range n from 1 to toscalar(UnknownFunction()) step 1",
+    "print x=1", "range n from 1 to toscalar(UnknownFunction()) step 1",
     'datatable(x:string)["literal"] | join (UnknownTable) on x',
     "workspace('other').EmailEvents | take 1",
+    "_CustomFunction() | take 1", "_CustomSource | take 1",
+    "_Im_Test | take 1", "_ASim_Test() | take 1",
+    "ASimAuthentication() | take 1",
+    "_Im_Authentication | extend x=_CustomFunction()",
+    "_Im_Authentication | join (UnknownFunction()) on EventType",
+    "_Im_Authentication | union SecurityEvent",
+    "_Im_Authentication | extend x=['_CustomFunction']()",
+    "union _Im_Authentication, _CustomSource",
+    "_ASim_Authentication() | union externaldata(x:string)['https://example.invalid/data']",
+    "_Im_Authentication | union cluster('other').database('db').EmailEvents",
+    'print x="_Im_Authentication"',
+    "print _Im_Authentication=1",
+    "// _Im_Authentication\nprint x=1",
 ])
 def test_unknown_functions_tables_and_unproven_empty_lineage_block(solution, query):
     write_source_query(solution, query)
@@ -178,6 +191,51 @@ def test_strict_recognizers_and_native_source_shapes(solution, query, tables):
     assert plan["queries"][0]["tables"] == tables
     assert not plan["queries"][0]["blockers"]
     assert native.import_native_workbook(solution, SOURCE, plan)["validation"]["invalid"] == 0
+
+
+@pytest.mark.parametrize("query,tables", [
+    ("_Im_Authentication | take 1", []),
+    ("_ASim_Authentication() | take 1", []),
+    ("_ASim_NetworkSession | count", []),
+    ("_ASim_NetworkSession(starttime=ago(1d)) | count", []),
+    ("_im_Dns() | count", []),
+    ("let events = _Im_Authentication; events | count", []),
+    ("union _Im_Authentication, _ASim_NetworkSession()", []),
+    ("['_ASim_Authentication']() | take 1", []),
+    ("_Im_Authentication | union EmailEvents | count", ["EmailEvents"]),
+])
+def test_builtin_asim_roundtrip_does_not_invent_hidden_dependencies(solution, query, tables):
+    write_source_query(solution, query)
+    plan = reviewed(solution)
+    assert plan["queries"][0]["tables"] == tables
+    assert plan["queries"][0]["blockers"] == []
+    assert plan["requiredWorkloads"] == (
+        [{"workload": "mdo", "dataTypes": ["EmailEvents"]}] if tables else [])
+    assert plan["requiredDataConnectors"] == []
+    assert native.review_native_workbook(solution, SOURCE, plan) == plan
+    result = native.import_native_workbook(solution, SOURCE, plan)
+    assert result["runtimeQualified"] is False
+    assert result["validation"]["invalid"] == 0
+    document = json.loads(candidate(solution).read_bytes())
+    assert document["items"][1]["content"]["query"] == query
+    assert document["contentProvenance"]["requiredWorkloads"] == plan["requiredWorkloads"]
+    (solution / SOURCE).unlink()
+    assert workbooks.validate_workbooks(solution, selected_only=True)["invalid"] == 0
+
+
+@pytest.mark.parametrize("mutation", ["stale-query", "invented-tables", "invented-workload"])
+def test_builtin_asim_review_cannot_override_hash_or_dependencies(solution, mutation):
+    write_source_query(solution, "_Im_Authentication | take 1")
+    plan = reviewed(solution)
+    if mutation == "stale-query":
+        write_source_query(solution, "_ASim_Authentication() | take 1")
+    elif mutation == "invented-tables":
+        plan["queries"][0]["tables"] = ["IdentityLogonEvents"]
+    else:
+        plan["requiredWorkloads"] = [{"workload": "mdi", "dataTypes": ["IdentityLogonEvents"]}]
+    with pytest.raises(ValueError):
+        native.import_native_workbook(solution, SOURCE, plan)
+    assert not candidate(solution).exists()
 
 
 @pytest.mark.parametrize("source", [
@@ -266,7 +324,9 @@ def test_authored_tampering_fails_closed(solution, mutation):
     assert workbooks.validate_workbooks(solution)["invalid"] > 0
 
 
-def test_cli_roundtrip_and_duplicate_json_keys(solution, capsys):
+@pytest.mark.parametrize("query", ["EmailEvents | take 1", "_Im_Authentication | take 1"])
+def test_cli_roundtrip_and_duplicate_json_keys(solution, capsys, query):
+    write_source_query(solution, query)
     assert cli.main(["native-workbook-plan", "--solution", str(solution), "--source", SOURCE]) == 0
     plan = json.loads(capsys.readouterr().out)
     plan.update(actor="CLI reviewer", reference="CLI regression")
@@ -293,8 +353,12 @@ def test_cli_roundtrip_and_duplicate_json_keys(solution, capsys):
 
 
 @pytest.mark.skipif(not shutil.which("pwsh"), reason="PowerShell 7 required")
-def test_native_only_v31_package_requires_no_sentinel_parent(solution, monkeypatch):
+@pytest.mark.parametrize("query", [
+    "EmailEvents | take 1", "_Im_Authentication | take 1", "_ASim_NetworkSession() | count",
+])
+def test_native_only_v31_package_requires_no_sentinel_parent(solution, monkeypatch, query):
     monkeypatch.setenv("SENTINEL_XDR_PYTHON", sys.executable)
+    write_source_query(solution, query)
     imported(solution)
     (solution / SOURCE).unlink()
     content_root = solution.parent.parent

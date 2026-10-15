@@ -314,14 +314,23 @@ parameter and nested queries), supply `decision: "accept"` and nonempty
 `evidence` describing the exact query's complete input/dependency review.
 Keep the proposed `origin`, `source.path`, `source.sha256`, query `path`,
 `canonicalPayloadSha256`, `querySha256`, `tables`, `blockers`, `requiredWorkloads`, and
-`requiredDataConnectors` unchanged. The native route currently supports only
-catalogued non-Sentinel workloads and no connector or saved-function
-prerequisites. Reviewers cannot override discovery, label an unknown function
+`requiredDataConnectors` unchanged. The native route supports catalogued
+non-Sentinel tables and standard built-in underscore ASIM parsers (`_ASim_*`,
+`_Im_*`) recognized by the shared workbook classifier, including bare and called
+forms. It does not support arbitrary underscore/custom saved functions or
+connector/saved-function prerequisites. Reviewers cannot override discovery, label an unknown function
 as a table, accept a blocker, or supply arbitrary empty lineage. Unsupported
 functions/tables, dynamic/external/cross-resource sources and non-AH providers
 require a separate maintainer/content design decision, not a forced import.
-Empty lineage uses only the existing strict literal `datatable`/numeric `range`
-recognizers. The plan exits nonzero when it contains technical blockers.
+Empty table lineage is allowed for recognized built-in ASIM parser queries as
+well as the existing strict literal `datatable`/numeric `range` recognizers.
+ASIM parser names are not tables: only explicitly discovered catalogued tables
+contribute workload records. An ASIM-only query therefore has empty `tables`,
+`requiredWorkloads` and `requiredDataConnectors`; these mean no statically
+inferred dependencies, not proof of no prerequisites. The toolkit does not infer
+hidden parser inputs, workloads or connector coverage, and offline acceptance
+does not qualify parser availability or execution in the target tenant.
+The plan exits nonzero when it contains technical blockers.
 
 Authored provenance is additive:
 

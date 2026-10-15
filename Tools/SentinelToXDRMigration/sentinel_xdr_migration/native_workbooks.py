@@ -72,23 +72,30 @@ def _query(surface):
         if not workbook._is_union_withsource_output_binding(code, match.start()):
             raise ValueError("Native import does not support dynamic, external or cross-resource sources.")
     known = set(TABLE_WORKLOADS) | set(mapping_catalog.load_mapping_catalog()["tables"])
-    tables = {r["table"] for r in query_table_references(raw, known_tables=known)}
+    asim_names = {name for name in re.findall(r"\b[A-Za-z_]\w*", code)
+                  if workbook.is_standard_builtin_asim_parser(name)}
+    tables = {r["table"] for r in query_table_references(raw, known_tables=known | asim_names)}
     # Include quoted/union sources and reject unknown calls/bare sources rather
     # than interpreting a reviewer's assertion as proof that they are tables.
     quoted_calls, quoted_tables = workbook._quoted_calls_and_table_sources(raw)
     tables |= quoted_tables | workbook.union_source_names(raw)
+    calls = set(re.findall(r"(?<![.\w])([A-Za-z_]\w*)\s*\(", code))
+    asim = {name for name in tables | calls | quoted_calls
+            if workbook.is_standard_builtin_asim_parser(name)}
+    # Built-in parsers are supported functions, not proof of their hidden
+    # input tables, workloads or connector prerequisites.
+    tables -= asim
     local = set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=", code))
     tables -= local | workbook._BUILTINS | workbook._STATEMENT_PREFIXES
     opaque = workbook.opaque_functions(raw) - tables
-    explicit = workbook.opaque_functions(raw, include_bare=False) | quoted_calls
-    asim = {name for name in re.findall(r"\b[A-Za-z_]\w*", code)
-            if workbook.is_standard_builtin_asim_parser(name)}
-    if opaque or explicit or asim:
-        raise ValueError("Unreviewable native functions/sources: " + ", ".join(sorted(opaque | explicit | asim)))
+    explicit = workbook.opaque_functions(raw, include_bare=False) | (quoted_calls - asim)
+    if opaque or explicit:
+        raise ValueError("Unreviewable native functions/sources: " + ", ".join(sorted(opaque | explicit)))
     if any(table not in TABLE_WORKLOADS or TABLE_WORKLOADS[table] == "sentinel" for table in tables):
         raise ValueError("Unknown or non-native tables: " + ", ".join(sorted(tables)))
-    if not tables and not rewrite.is_source_free_literal_query(raw):
-        raise ValueError("Empty lineage requires a recognized literal datatable or numeric range query.")
+    if not tables and not asim and not rewrite.is_source_free_literal_query(raw):
+        raise ValueError("Empty lineage requires a standard built-in ASIM parser "
+                         "or a recognized literal datatable or numeric range query.")
     return sorted(tables)
 
 
