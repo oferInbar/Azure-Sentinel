@@ -414,6 +414,77 @@ native reviews and authoring metadata are not installed. Registration keeps
 the existing reviewed dependency contract. Original Sentinel selections remain
 independent and no native source is deployed twice.
 
+### Reviewed post-import workbook corrections (offline)
+
+Use `workbook-update-plan`, `workbook-update-review`, and
+`workbook-update-apply` for intentional authored Notebook corrections after
+migration/import. These commands do not migrate, deploy, invoke queries, or
+establish runtime/UI qualification. They require an explicit original reviewed
+**authored** baseline file, for example extracted with `git show` from the
+accepted content commit into a review workspace outside deployable content.
+An update-reviewed artifact is not an original baseline: subsequent corrections
+continue to use the original artifact.
+
+```powershell
+# $Python, $Solution and PYTHONPATH use the same setup as native import above.
+$Content = 'XDR Workbooks\example.json'.Replace('\', '/')
+$Baseline = 'C:\review-workspace\baseline-example.json'
+& $Python -m sentinel_xdr_migration.cli workbook-update-plan `
+  --solution $Solution --content $Content --baseline $Baseline |
+  Set-Content -LiteralPath '.\update-plan.json' -Encoding utf8
+```
+
+Inspect the exact current Notebook and plan, including all current `queries`
+with discovered tables/functions and `changedQueries` (added/removed queries
+use null previous/current hashes). Explicitly set nonempty `actor` and
+`reference`, whole-document `decision: "accept"`, and each changed query's
+`decision: "accept"` and nonempty `evidence`. Do not edit generated hashes,
+dependencies or the reverse baseline delta. Save as `update-decisions.json`.
+
+```powershell
+& $Python -m sentinel_xdr_migration.cli workbook-update-review `
+  --solution $Solution --content $Content --baseline $Baseline `
+  --review '.\update-decisions.json' |
+  Set-Content -LiteralPath '.\update-reviewed.json' -Encoding utf8
+& $Python -m sentinel_xdr_migration.cli workbook-update-apply `
+  --solution $Solution --content $Content --baseline $Baseline `
+  --review '.\update-reviewed.json'
+& $Python -m sentinel_xdr_migration.cli native-workbook-validate --solution $Solution
+```
+
+Apply preserves the edited payload and metadata/IDs, restores historical
+provenance from the independently validated baseline (including any accidentally
+hand-edited conversion records), and adds `contentProvenance.authoredReview`.
+It refuses identity or prerequisite changes. Existing reviewed workloads,
+connectors and hash-bound workspace functions must cover discovered current
+dependencies; native updates retain native-only lineage, while migrated
+updates also support their existing Sentinel tables and workspace functions.
+Unknown/new dependencies and unsupported dynamic/cross-resource inputs fail;
+reviewer assertions cannot make them supported.
+
+The review binds the original file SHA, canonical baseline artifact, complete
+current canonical Notebook and authored document, exact query/dependency
+inventories, actor/reference, and decisions. Only changed baseline values and
+historical metadata are retained as a reverse payload delta. Validation
+reconstructs that original artifact and reruns the original deterministic
+conversion/native-review gates, unchanged. No duplicate raw Notebook or
+invented Sentinel parent is retained, and the external baseline is not needed
+after apply. Historical receipts describe the original content, not current
+queries. Review hashes detect staleness; they are **not cryptographic signatures**
+or evidence of who reviewed content. Git history and review remain the trust
+boundary. Re-review using the original baseline after any further authored edit.
+
+The Python validator, PowerShell assertions/dependency scan, static adapter,
+and normal V3.1 packaging honor this explicit update branch. Review material
+is authoring-only and is not included in installed Notebook provenance.
+Keep existing version/release and candidate gates: package through
+`package-v3-1 --solution $Solution --toolkit-root $Toolkit --version-bump none`
+(for an already prepared release), then run the official
+`.script\local-validation\build-and-validate.ps1 -SolutionName <name>
+-ContentRoot <content checkout> -SkipPackaging -PackageReportPath <exact V3.1 report>`.
+That wrapper otherwise defaults to legacy V3 packaging and disallows
+cross-checkout packaging; do not use it to create this candidate.
+
 ### Toolkit-owner managed update policy
 
 Toolkit-managed Defender Workbooks and XDR detections are updated by stable ID.

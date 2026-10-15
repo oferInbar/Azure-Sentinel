@@ -177,6 +177,14 @@ def main(argv: list[str] | None = None) -> int:
         description="Convert Microsoft Sentinel analytic rules into XDR Custom Detection YAML."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    for update_command in ("workbook-update-plan", "workbook-update-review", "workbook-update-apply"):
+        update_parser = subparsers.add_parser(
+            update_command, help="Offline explicit post-import edits; preserve historical receipts.")
+        update_parser.add_argument("--solution", required=True)
+        update_parser.add_argument("--content", required=True, help="Authored XDR Workbooks/ relative JSON path.")
+        update_parser.add_argument("--baseline", required=True, help="External original reviewed authored artifact.")
+        if update_command != "workbook-update-plan":
+            update_parser.add_argument("--review", required=True)
     for native_command in ("native-workbook-plan", "native-workbook-review",
                            "native-workbook-import", "native-workbook-validate"):
         native_parser = subparsers.add_parser(
@@ -1181,6 +1189,9 @@ def main(argv: list[str] | None = None) -> int:
     selection = None
     try:
         isolated_permission_commands = {
+            "workbook-update-plan",
+            "workbook-update-review",
+            "workbook-update-apply",
             "native-workbook-plan",
             "native-workbook-review",
             "native-workbook-import",
@@ -1554,6 +1565,17 @@ def main(argv: list[str] | None = None) -> int:
             result = plan_solution_dependencies(
                 args.solution, results_path=args.results, workspace_id=args.workspace_id,
             )
+        elif args.command.startswith("workbook-update-"):
+            from .workbook_updates import (
+                plan_workbook_update, review_workbook_update, apply_workbook_update, _read_external,
+            )
+            if args.command == "workbook-update-plan":
+                result = plan_workbook_update(args.solution, args.content, args.baseline)
+            else:
+                _, review = _read_external(args.review)
+                operation = (review_workbook_update if args.command == "workbook-update-review"
+                             else apply_workbook_update)
+                result = operation(args.solution, args.content, args.baseline, review)
         elif args.command.startswith("native-workbook-"):
             from .native_workbooks import (
                 plan_native_workbook, review_native_workbook, import_native_workbook, load_json,

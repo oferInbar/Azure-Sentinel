@@ -45,7 +45,8 @@ function Assert-DefenderWorkbookReleaseVersion {
 }
 
 function Assert-NativeDefenderWorkbookDocument {
-    param([psobject]$Document, [string]$SolutionRoot)
+    param([psobject]$Document, [string]$SolutionRoot,
+        [ValidateSet('native_workbooks', 'workbook_updates')][string]$ValidationModule = 'native_workbooks')
 
     $python = if ($env:SENTINEL_XDR_PYTHON) { $env:SENTINEL_XDR_PYTHON } else { 'python' }
     $start = [System.Diagnostics.ProcessStartInfo]::new()
@@ -56,7 +57,7 @@ function Assert-NativeDefenderWorkbookDocument {
     $start.RedirectStandardError = $true
     $start.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
     $start.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
-    foreach ($argument in @('-m', 'sentinel_xdr_migration.native_workbooks', $SolutionRoot)) {
+    foreach ($argument in @('-m', "sentinel_xdr_migration.$ValidationModule", $SolutionRoot)) {
         $start.ArgumentList.Add($argument)
     }
     $start.Environment['PYTHONPATH'] = [System.IO.Path]::GetFullPath(
@@ -104,6 +105,19 @@ function Assert-DefenderWorkbookDocument {
     }
     Assert-DefenderWorkbookReleaseVersion -Version $metadata.version
     $provenance = $Document.contentProvenance
+    if ($null -ne $provenance -and $null -ne $provenance.PSObject.Properties['authoredReview']) {
+        Assert-NativeDefenderWorkbookDocument -Document $Document -SolutionRoot $SolutionRoot `
+            -ValidationModule workbook_updates
+        if ($PassThruSource) {
+            if ($provenance.origin -ceq 'native-xdr') {
+                return $Document
+            }
+            $resolved = Resolve-SolutionContentPath -SolutionRoot $SolutionRoot -SolutionName $SolutionName `
+                -ContentPath $provenance.source.path -RequireFile
+            return (Get-Content -LiteralPath $resolved.FullPath -Raw | ConvertFrom-Json -ErrorAction Stop)
+        }
+        return
+    }
     if ($null -ne $provenance -and $provenance.origin -ceq 'native-xdr') {
         Assert-NativeDefenderWorkbookDocument -Document $Document -SolutionRoot $SolutionRoot
         if ($PassThruSource) {

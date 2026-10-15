@@ -424,21 +424,23 @@ def authored_schema_errors(document):
             for e in Draft202012Validator(schema).iter_errors(document)]
 
 
-def validate_workbooks(solution, *, selected_only=False) -> dict:
+def validate_workbooks(solution, *, selected_only=False, _documents=None) -> dict:
     root = _root(solution)
     inventory = {r["path"]: r for r in inventory_workbooks(root)}
-    files = selected_workbook_files(root) if selected_only else _files(root, "XDR Workbooks")
+    files = (selected_workbook_files(root) if selected_only else _files(root, "XDR Workbooks")) if _documents is None else []
     results, identities, instances = [], set(), set()
     source_paths = set()
-    for path in files:
-        document = _document(path)
+    documents = ((path, _document(path)) for path in files) if _documents is None else _documents
+    for path, document in documents:
+        digest = _sha(path.read_bytes()) if _documents is None else _sha(
+            json.dumps(document, sort_keys=True, ensure_ascii=False).encode())
         schema_errors = authored_schema_errors(document)
         if schema_errors:
             provenance = document.get("contentProvenance")
             if isinstance(provenance, dict) and isinstance(provenance.get("source"), dict):
                 source_paths.add(provenance["source"].get("path"))
             results.append({"path": path.relative_to(root).as_posix(),
-                            "sha256": _sha(path.read_bytes()), "valid": False, "errors": schema_errors})
+                            "sha256": digest, "valid": False, "errors": schema_errors})
             continue
         errors = dependency_validation_errors(document)
         metadata = document.get("xdrMetadata", {})
@@ -466,14 +468,18 @@ def validate_workbooks(solution, *, selected_only=False) -> dict:
             errors.append("Workbook displayName is required.")
         if any(key in provenance for key in ("packageId", "packageVersion", "contentId", "contentVersion")):
             errors.append("Deployment provenance quartet must not be authored.")
-        if provenance.get("origin") == "native-xdr":
-            from .native_workbooks import validate_native_document
-            errors.extend(validate_native_document(root, document))
+        if "authoredReview" in provenance or provenance.get("origin") == "native-xdr":
+            if "authoredReview" in provenance:
+                from .workbook_updates import validate_updated_document
+                errors.extend(validate_updated_document(root, document))
+            else:
+                from .native_workbooks import validate_native_document
+                errors.extend(validate_native_document(root, document))
             if source.get("path") in source_paths:
                 errors.append("Duplicate workbook source provenance.")
             source_paths.add(source.get("path"))
             results.append({"path": path.relative_to(root).as_posix(),
-                            "sha256": _sha(path.read_bytes()), "valid": not errors, "errors": errors})
+                            "sha256": digest, "valid": not errors, "errors": errors})
             continue
         row = inventory.get(source.get("path"))
         if not row or row["sha256"] != source.get("sha256"):
@@ -595,7 +601,7 @@ def validate_workbooks(solution, *, selected_only=False) -> dict:
             if recorded_source != set(original_queries) or recorded_output != set(output_queries):
                 errors.append("Query provenance does not cover complete original/output inventory.")
         results.append({"path": path.relative_to(root).as_posix(),
-                        "sha256": _sha(path.read_bytes()), "valid": not errors, "errors": errors})
+                        "sha256": digest, "valid": not errors, "errors": errors})
     if not selected_only:
         for relative in sorted(set(inventory) - source_paths):
             results.append({"path": relative, "valid": False, "errors": ["Source workbook has no authored candidate."]})
