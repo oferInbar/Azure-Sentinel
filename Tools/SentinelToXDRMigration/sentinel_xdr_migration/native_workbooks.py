@@ -5,6 +5,7 @@ from copy import deepcopy
 import json
 import re
 import sys
+from pathlib import PurePosixPath
 from uuid import NAMESPACE_URL, uuid5
 
 from ._workbook_core import workbook, mapping_catalog, rewrite
@@ -26,6 +27,34 @@ def _source(root, relative):
     if any(key in document for key in ("xdrMetadata", "contentProvenance")):
         raise ValueError("Native source must be raw Notebook content, not an authored candidate.")
     return path, document
+
+
+def _payload(document):
+    return {key: value for key, value in document.items()
+            if key not in ("contentProvenance", "xdrMetadata")}
+
+
+def _canonical_payload_sha256(document):
+    canonical = json.dumps(
+        _payload(document), sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")
+    return _sha(canonical)
+
+
+def _valid_source_identity(source):
+    if not isinstance(source, dict) or set(source) != {"path", "sha256"}:
+        return False
+    relative, digest = source["path"], source["sha256"]
+    return (
+        isinstance(relative, str)
+        and relative.startswith(SOURCE_PREFIX)
+        and "\\" not in relative
+        and relative.lower().endswith(".json")
+        and all(part not in ("", ".", "..") for part in relative.split("/"))
+        and isinstance(digest, str)
+        and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+    )
 
 
 def identities(root, relative):
@@ -63,9 +92,7 @@ def _query(surface):
     return sorted(tables)
 
 
-def plan_native_workbook(solution, source):
-    root = _root(solution)
-    path, document = _source(root, source)
+def _plan_document(document, source):
     queries, all_tables = [], set()
     for surface in workbook.query_surfaces(document):
         if not isinstance(surface["node"]["query"], str):
@@ -84,19 +111,27 @@ def plan_native_workbook(solution, source):
         })
     workloads, _ = workload_records(sorted(all_tables))
     return {
-        "origin": ORIGIN, "source": {"path": source, "sha256": _sha(path.read_bytes())},
-        "displayName": path.stem, "actor": "", "reference": "",
+        "origin": ORIGIN, "source": source,
+        "canonicalPayloadSha256": _canonical_payload_sha256(document),
+        "displayName": PurePosixPath(source["path"]).stem, "actor": "", "reference": "",
         "requiredWorkloads": workloads, "requiredDataConnectors": [],
         "queries": queries,
     }
 
 
-def _review_errors(root, source, review):
+def plan_native_workbook(solution, source):
+    root = _root(solution)
+    path, document = _source(root, source)
+    return _plan_document(document, {"path": source, "sha256": _sha(path.read_bytes())})
+
+
+def _review_errors_for_document(document, source, review):
     errors = []
-    expected = plan_native_workbook(root, source)
+    expected = _plan_document(document, source)
     if not isinstance(review, dict) or set(review) != set(expected):
         return ["Native review must have exactly the current plan fields."]
-    for field in ("origin", "source", "requiredWorkloads", "requiredDataConnectors"):
+    for field in ("origin", "source", "canonicalPayloadSha256",
+                  "requiredWorkloads", "requiredDataConnectors"):
         if review[field] != expected[field]:
             errors.append(f"Native review {field} is stale or differs from strict native dependencies.")
     for field in ("actor", "reference", "displayName"):
@@ -128,21 +163,35 @@ def _review_errors(root, source, review):
     return errors
 
 
+def _review_errors(root, source, review):
+    path, document = _source(root, source)
+    source_record = {"path": source, "sha256": _sha(path.read_bytes())}
+    return _review_errors_for_document(document, source_record, review)
+
+
 def validate_native_document(solution, document):
     root = _root(solution)
     provenance = document.get("contentProvenance", {})
+    if not isinstance(provenance, dict):
+        return ["Native provenance must be an object."]
     if provenance.get("origin") != ORIGIN:
         return ["Expected explicit native-xdr origin."]
     source = provenance.get("source", {})
+    if not isinstance(source, dict):
+        return ["Native historical source identity/hash is malformed."]
     relative = source.get("path")
     try:
-        path, original = _source(root, relative)
         review = provenance.get("nativeReview")
-        errors = _review_errors(root, relative, review)
-        if source != {"path": relative, "sha256": _sha(path.read_bytes())}:
-            errors.append("Native source provenance is missing or stale.")
+        if not _valid_source_identity(source):
+            return ["Native historical source identity/hash is malformed."]
+        payload = _payload(document)
+        errors = _review_errors_for_document(payload, source, review)
+        canonical_hash = _canonical_payload_sha256(document)
+        if provenance.get("canonicalPayloadSha256") != canonical_hash:
+            errors.append("Native canonical payload hash is stale.")
         expected_provenance = {
             "origin": ORIGIN, "source": source, "nativeReview": review,
+            "canonicalPayloadSha256": canonical_hash,
             "requiredWorkloads": review["requiredWorkloads"],
             "requiredDataConnectors": review["requiredDataConnectors"],
             "dependencyReviewRequired": False,
@@ -155,10 +204,6 @@ def validate_native_document(solution, document):
             errors.append("Native identities do not match stable source assignment.")
         if metadata.get("displayName") != review["displayName"]:
             errors.append("Native displayName differs from reviewed name.")
-        payload = {key: value for key, value in document.items()
-                   if key not in ("contentProvenance", "xdrMetadata")}
-        if payload != original:
-            errors.append("Native Notebook content must be preserved unchanged from its current source.")
         return errors
     except (OSError, ValueError, TypeError, KeyError) as exc:
         return [str(exc)]
@@ -190,6 +235,7 @@ def import_native_workbook(solution, source, review):
     }
     document["contentProvenance"] = {
         "origin": ORIGIN, "source": deepcopy(review["source"]), "nativeReview": deepcopy(review),
+        "canonicalPayloadSha256": review["canonicalPayloadSha256"],
         "requiredWorkloads": deepcopy(review["requiredWorkloads"]),
         "requiredDataConnectors": deepcopy(review["requiredDataConnectors"]),
         "dependencyReviewRequired": False,

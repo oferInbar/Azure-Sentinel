@@ -98,12 +98,18 @@ def test_native_import_preserves_notebook_and_stable_identity(solution):
     # Identity is source-path based, not query-, file-hash- or release-based.
     write_source_query(solution, "EmailEvents | take 2")
     assert native.identities(solution, SOURCE) == (first["contentId"], first["instanceId"])
+    assert workbooks.validate_workbooks(solution, selected_only=True)["invalid"] == 0
+    (solution / SOURCE).unlink()
+    assert workbooks.validate_workbooks(solution, selected_only=True)["invalid"] == 0
+    document = json.loads(candidate(solution).read_bytes())
+    document["items"][1]["content"]["query"] += " | take 2"
+    candidate(solution).write_text(json.dumps(document), encoding="utf-8")
     assert workbooks.validate_workbooks(solution, selected_only=True)["invalid"] == 1
 
 
 @pytest.mark.parametrize("mutation", [
     "missing-query", "duplicate-query", "stale-query", "stale-source", "empty-evidence",
-    "defer", "missing-actor", "wrong-tables", "wrong-workload", "connectors",
+    "stale-payload", "defer", "missing-actor", "wrong-tables", "wrong-workload", "connectors",
 ])
 def test_review_is_complete_current_and_explicit(solution, mutation):
     plan = reviewed(solution)
@@ -115,6 +121,8 @@ def test_review_is_complete_current_and_explicit(solution, mutation):
         plan["queries"][0]["querySha256"] = "0" * 64
     elif mutation == "stale-source":
         plan["source"]["sha256"] = "0" * 64
+    elif mutation == "stale-payload":
+        plan["canonicalPayloadSha256"] = "0" * 64
     elif mutation == "empty-evidence":
         plan["queries"][0]["evidence"] = " "
     elif mutation == "defer":
@@ -227,7 +235,10 @@ def test_native_provider_is_not_converted(solution, provider):
         imported(solution)
 
 
-@pytest.mark.parametrize("mutation", ["query", "notice", "hash", "identity", "duplicate", "migration-origin"])
+@pytest.mark.parametrize("mutation", [
+    "query", "notice", "hash", "identity", "duplicate", "migration-origin",
+    "payload-hash", "dependency", "review", "review-hash",
+])
 def test_authored_tampering_fails_closed(solution, mutation):
     imported(solution)
     document = json.loads(candidate(solution).read_bytes())
@@ -237,6 +248,14 @@ def test_authored_tampering_fails_closed(solution, mutation):
         document["items"][0]["content"]["json"] = "changed"
     elif mutation == "hash":
         document["contentProvenance"]["source"]["sha256"] = "0" * 64
+    elif mutation == "payload-hash":
+        document["contentProvenance"]["canonicalPayloadSha256"] = "0" * 64
+    elif mutation == "dependency":
+        document["contentProvenance"]["requiredWorkloads"] = []
+    elif mutation == "review":
+        document["contentProvenance"]["nativeReview"]["queries"][0]["evidence"] = ""
+    elif mutation == "review-hash":
+        document["contentProvenance"]["nativeReview"]["canonicalPayloadSha256"] = "0" * 64
     elif mutation == "identity":
         document["xdrMetadata"]["contentId"] = str(uuid4())
     elif mutation == "migration-origin":
@@ -263,6 +282,10 @@ def test_cli_roundtrip_and_duplicate_json_keys(solution, capsys):
     capsys.readouterr()
     assert cli.main(["native-workbook-validate", "--solution", str(solution)]) == 0
     write_source_query(solution, "UnknownFunction()")
+    assert cli.main(["native-workbook-validate", "--solution", str(solution)]) == 0
+    document = json.loads(candidate(solution).read_bytes())
+    document["items"][1]["content"]["query"] = "UnknownFunction()"
+    candidate(solution).write_text(json.dumps(document), encoding="utf-8")
     assert cli.main(["native-workbook-validate", "--solution", str(solution)]) == 1
     review.write_text('{"queries": [], "queries": []}', encoding="utf-8")
     assert cli.main(["native-workbook-import", "--solution", str(solution), "--source", SOURCE,
@@ -273,6 +296,7 @@ def test_cli_roundtrip_and_duplicate_json_keys(solution, capsys):
 def test_native_only_v31_package_requires_no_sentinel_parent(solution, monkeypatch):
     monkeypatch.setenv("SENTINEL_XDR_PYTHON", sys.executable)
     imported(solution)
+    (solution / SOURCE).unlink()
     content_root = solution.parent.parent
     subprocess.run(["git", "init", "--quiet", str(content_root)], check=True)
     result = subprocess.run([
@@ -328,6 +352,7 @@ def test_real_v31_mixed_package_and_static_validator(solution, monkeypatch):
     data_file.write_text(json.dumps(data), encoding="utf-8")
     migrated = (solution / "XDR Workbooks" / "sentinel.json").read_bytes()
     imported(solution)
+    (solution / SOURCE).unlink()
     assert (solution / "XDR Workbooks" / "sentinel.json").read_bytes() == migrated
     assert workbooks.validate_workbooks(solution)["invalid"] == 0
     subprocess.run(["git", "init", "--quiet", str(solution.parent.parent)], check=True)

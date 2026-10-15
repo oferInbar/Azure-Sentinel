@@ -107,9 +107,11 @@ function Assert-DefenderWorkbookDocument {
     if ($null -ne $provenance -and $provenance.origin -ceq 'native-xdr') {
         Assert-NativeDefenderWorkbookDocument -Document $Document -SolutionRoot $SolutionRoot
         if ($PassThruSource) {
-            $nativeSource = Resolve-SolutionContentPath -SolutionRoot $SolutionRoot -SolutionName $SolutionName `
-                -ContentPath $provenance.source.path -RequireFile
-            return Get-Content -LiteralPath $nativeSource.FullPath -Raw | ConvertFrom-Json -ErrorAction Stop
+            $nativePayload = $Document | ConvertTo-Json -Depth 100 -Compress |
+                ConvertFrom-Json -ErrorAction Stop
+            $nativePayload.PSObject.Properties.Remove('xdrMetadata')
+            $nativePayload.PSObject.Properties.Remove('contentProvenance')
+            return $nativePayload
         }
         return
     }

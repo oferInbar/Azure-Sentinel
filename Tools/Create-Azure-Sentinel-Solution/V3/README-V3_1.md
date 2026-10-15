@@ -119,17 +119,21 @@ guarantee Content Hub acceptance, or provision missing external dependencies.
 Already-native Advanced Hunting workbooks use the explicit
 `native-workbook-plan` / `native-workbook-review` / `native-workbook-import` authoring route documented in
 [the migration toolkit README](../../SentinelToXDRMigration/README.md#native-defender-workbook-authoringimport-no-sentinel-parent).
-Raw source belongs in solution-local `Workbook Sources/Native/`, never in
-Sentinel `Workbooks` selections. Select only the authored `XDR Workbooks`
-candidate. `contentProvenance.origin: native-xdr` selects source/hash-bound
-native review instead of migrated-source converter proof. It does not weaken
-the existing migrated workbook contract.
+The raw source may be supplied under solution-local `Workbook Sources/Native/`
+while running the authoring commands, but it need not be retained or shipped.
+Select only the authored `XDR Workbooks` candidate; no duplicate source artifact
+is packaged. `contentProvenance.origin: native-xdr` selects native review with
+historical source path/hash and a canonical reviewed Notebook payload hash,
+instead of migrated-source converter proof. It does not weaken the existing
+migrated workbook contract.
 
 The V3.1 emitter invokes the shared native Python validator before any template
 mutation, requiring Python 3.11/3.12 with the toolkit dependencies.
 `SENTINEL_XDR_PYTHON` selects the interpreter (default: `python`); the subprocess
 uses this emitter's toolkit checkout, not another editable installation.
-Unknown functions/tables and stale/incomplete reviews block packaging.
+Unknown functions/tables, payload/query changes, and stale/incomplete reviews
+block packaging. Source deletion after import does not invalidate a native
+candidate.
 Native and migrated entries share managed install/registration, independent
 Sentinel selection, default-false `DeployDefenderWorkbook`, and the installed
 provenance quartet. Native sources/reviews are not installed or ZIP entries.

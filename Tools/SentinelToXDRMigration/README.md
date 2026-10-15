@@ -264,11 +264,19 @@ success receipt, workflow-stage receipt or runtime qualification is invented.
 Migrated workbooks retain their existing source inventory and deterministic
 converter proof unchanged.
 
-Store the original raw JSON **inside the solution** at
-`Workbook Sources/Native/<name>.json` (nested paths are supported). Commit this
-source alongside its authored candidate for reproducible builds. The source
-file is SHA256-bound even before commit. Do not select it in `Workbooks` or
-`XDR Workbooks`; it is not a deployment artifact. The import command creates
+Provide the original raw JSON to the plan/review/import commands at
+`Workbook Sources/Native/<name>.json` (nested paths are supported). This input
+must be available while generating and importing the review, but it need not be
+committed, retained in the solution, or copied into the package. Its path and
+exact-byte SHA256 remain historical import evidence and preserve the existing
+stable identity assignment; validation does not reread or require that source.
+The review also binds `canonicalPayloadSha256`: SHA256 of canonical UTF-8 JSON
+(sorted keys, compact separators, non-ASCII preserved) for the complete Notebook
+after excluding only top-level `xdrMetadata` and `contentProvenance`. This
+protects notices, layout, queries, and all other Notebook fields, while strict
+query hashes and dependency discovery are independently rechecked. Do not
+select the raw source in `Workbooks` or `XDR Workbooks`; it is not a deployment
+artifact. The import command creates
 `XDR Workbooks/<name>.json` and appends that candidate once to the existing
 `Data/Solution_*.json` `XDR Workbooks` selection, preserving other selections
 and the solution version. A native-only solution needs no `Workbooks` directory.
@@ -305,7 +313,7 @@ Neither command auto-accepts proposals. Supply nonempty `actor`,
 parameter and nested queries), supply `decision: "accept"` and nonempty
 `evidence` describing the exact query's complete input/dependency review.
 Keep the proposed `origin`, `source.path`, `source.sha256`, query `path`,
-`querySha256`, `tables`, `blockers`, `requiredWorkloads`, and
+`canonicalPayloadSha256`, `querySha256`, `tables`, `blockers`, `requiredWorkloads`, and
 `requiredDataConnectors` unchanged. The native route currently supports only
 catalogued non-Sentinel workloads and no connector or saved-function
 prerequisites. Reviewers cannot override discovery, label an unknown function
@@ -325,9 +333,11 @@ Authored provenance is additive:
       "path": "Workbook Sources/Native/example.json",
       "sha256": "<SHA256 of exact source file bytes>"
     },
+    "canonicalPayloadSha256": "<canonical Notebook payload SHA256>",
     "nativeReview": {
       "origin": "native-xdr",
       "source": {"path": "Workbook Sources/Native/example.json", "sha256": "<same hash>"},
+      "canonicalPayloadSha256": "<same canonical Notebook payload SHA256>",
       "displayName": "Example",
       "actor": "<reviewer>",
       "reference": "<review reference>",

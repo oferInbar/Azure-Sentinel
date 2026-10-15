@@ -25,7 +25,7 @@
       "allOf": [{
         "if": {"required": ["origin"], "properties": {"origin": {"const": "native-xdr"}}},
         "then": {
-          "required": ["nativeReview"],
+          "required": ["nativeReview", "canonicalPayloadSha256"],
           "not": {"anyOf": [{"required": ["conversion"]}, {"required": ["requiredWorkspaceFunctions"]}]},
           "properties": {"source": {"properties": {"path": {"pattern": "^Workbook Sources/Native/[^\\\\]+\\.[jJ][sS][oO][nN]$"}}}}
         },
@@ -37,12 +37,14 @@
       }],
       "properties": {
         "origin": {"enum": ["native-xdr", "sentinel-migration"]},
+        "canonicalPayloadSha256": {"$ref": "#/$defs/sha256"},
         "nativeReview": {
           "type": "object",
-          "required": ["origin", "source", "displayName", "actor", "reference", "requiredWorkloads", "requiredDataConnectors", "queries"],
+          "required": ["origin", "source", "canonicalPayloadSha256", "displayName", "actor", "reference", "requiredWorkloads", "requiredDataConnectors", "queries"],
           "properties": {
             "origin": {"const": "native-xdr"},
             "source": {"type": "object"},
+            "canonicalPayloadSha256": {"$ref": "#/$defs/sha256"},
             "displayName": {"type": "string", "minLength": 1},
             "actor": {"type": "string", "minLength": 1},
             "reference": {"type": "string", "minLength": 1},
