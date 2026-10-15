@@ -60,13 +60,19 @@ def convert(kql: str, tables: Optional[List[str]] = None,
         raise ValueError("Live resolution is not supported by the offline converter.")
 
     res = rewrite.rewrite(kql, tables)
-    status = _status_of(tables, res)
+    source_free_literal = (
+        not tables and rewrite.is_source_free_literal_query(kql)
+    )
+    if source_free_literal:
+        res["deterministic"] = True
+        res["overallTier"] = "1to1"
+    status = "converted" if source_free_literal else _status_of(tables, res)
     tier = res["overallTier"]
     mapping_tier = tier if tier in _CONTRACT_TIERS else "blocked"
 
     unsupported = [{"construct": f["name"], "kind": f["kind"], "reason": f["reason"]}
                    for f in res["flags"]]
-    if tables is None:
+    if tables is None and not source_free_literal:
         unsupported.append({
             "construct": "data-sources", "kind": "unresolved",
             "reason": resolve_error or "Data sources could not be resolved "

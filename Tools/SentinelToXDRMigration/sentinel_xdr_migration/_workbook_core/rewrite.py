@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -125,12 +126,306 @@ def _find_identifiers(kql: str, names: set) -> set:
     return found
 
 
+def _type_column_rewrite(kql: str, eligible_tables: set[str]) -> Tuple[str, bool, List[str]]:
+    """Accept only generated Type labels and direct-table summarize groupings.
+
+    Advanced Hunting does not expose the Log Analytics `Type` column. A literal
+    projected as Type is already a query-defined label; a direct table summarize
+    can preserve the same grouping by extending that table with its own name.
+    All other Type references remain review findings.
+    """
+    mask = _code_mask(kql)
+    masked = "".join(char if is_code else " " for char, is_code in zip(kql, mask))
+    type_positions = [m.start() for m in re.finditer(r"\bType\b", masked)]
+    if not type_positions:
+        return kql, True, []
+
+    producers: set[int] = set()
+    outputs: set[int] = set()
+    insertions: List[Tuple[int, str, str]] = []
+
+    # Only recognize a one-line let binding whose input is a reviewed native
+    # table and whose summarize groups by the bare Type key.
+    line_start = 0
+    for line in kql.splitlines(keepends=True):
+        line_end = line_start + len(line)
+        code_line = masked[line_start:line_end].rstrip("\r\n")
+        summary = re.match(
+            r"\s*let\s+[A-Za-z_]\w*\s*=\s*([A-Za-z_]\w*)\s*\|\s*"
+            r"summarize\b(.*?)\bby\b(.*?);\s*$",
+            code_line, re.IGNORECASE,
+        )
+        extended_summary = re.match(
+            r"\s*let\s+[A-Za-z_]\w*\s*=\s*([A-Za-z_]\w*)\s*\|\s*"
+            r"extend\s+Type\s*=\s*\s*\|\s*summarize\b(.*?)\bby\b(.*?);\s*$",
+            code_line, re.IGNORECASE,
+        )
+        is_extended = extended_summary is not None
+        if is_extended:
+            table_name = extended_summary.group(1)
+            summary_match = extended_summary
+            raw_line = kql[line_start:line_start + len(code_line)]
+            label = re.match(
+                r"\s*let\s+[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*\s*\|\s*"
+                r"extend\s+Type\s*=\s*(?:\"([^\"]*)\"|'([^']*)')\s*\|\s*summarize\b",
+                raw_line, re.IGNORECASE,
+            )
+            literal_label = next((value for value in label.groups() if value is not None), None) if label else None
+            if literal_label is None or literal_label.lower() != table_name.lower():
+                summary_match = None
+        else:
+            table_name = summary.group(1) if summary else None
+            summary_match = summary
+        if summary_match and table_name in eligible_tables:
+            key_group = 3
+            key_start = line_start + summary_match.start(key_group)
+            key_end = line_start + summary_match.end(key_group)
+            key_mask = masked[key_start:key_end]
+            type_keys = set()
+            for start, end in _split_top_level_ranges(key_mask):
+                item = key_mask[start:end].strip()
+                if item.lower() == "type":
+                    type_token = re.search(r"\bType\b", item, re.IGNORECASE)
+                    if type_token:
+                        type_keys.add(key_start + start + len(key_mask[start:end])
+                                       - len(key_mask[start:end].lstrip())
+                                       + type_token.start())
+            for pos in type_positions:
+                if pos in type_keys:
+                    producers.add(pos)
+                    if not is_extended:
+                        insertions.append((
+                            line_start + summary_match.end(1),
+                            f' | extend Type = "{table_name}"',
+                            table_name,
+                        ))
+            if is_extended:
+                assignment = re.search(r"\bType\b", code_line[:summary_match.start(2)])
+                if assignment:
+                    producers.add(line_start + assignment.start())
+        line_start = line_end
+
+    # Split a masked expression on commas outside parentheses and retain ranges.
+    # This is also used for projection items so Type embedded in an expression
+    # (for example, a predicate or function argument) is never waved through.
+    for pos in type_positions:
+        if pos in producers:
+            continue
+        start = kql.rfind("\n", 0, pos) + 1
+        end = kql.find("\n", pos)
+        if end < 0:
+            end = len(kql)
+        code_line = masked[start:end]
+        rel = pos - start
+        pipe = code_line.rfind("|", 0, rel)
+        if pipe < 0:
+            continue
+        clause = code_line[pipe + 1:]
+        projection = re.match(r"\s*project(?:-reorder)?(?=\s|$)(.*)$", clause, re.IGNORECASE)
+        if not projection:
+            continue
+        items_start = pipe + 1 + projection.start(1)
+        next_pipe = code_line.find("|", items_start)
+        items_end = next_pipe if next_pipe >= 0 else len(code_line)
+        item_region = code_line[items_start:items_end]
+        item_ranges = _split_top_level_ranges(item_region)
+        for item_start, item_end in item_ranges:
+            absolute_start = start + items_start + item_start
+            absolute_end = start + items_start + item_end
+            if absolute_start <= pos < absolute_end:
+                item = code_line[items_start + item_start:items_start + item_end].strip()
+                raw_item = kql[absolute_start:absolute_end].strip()
+                if item.lower() == "type":
+                    after_projection = masked[start + items_end:]
+                    if (re.search(r"\bunion\b", masked[:pos], re.IGNORECASE)
+                            and not after_projection.strip(" \t\r\n;")):
+                        outputs.add(pos)
+                elif (item.lower().startswith("type")
+                      and re.fullmatch(
+                          r"Type\s*=\s*(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')",
+                          raw_item, re.IGNORECASE,
+                      )):
+                    producers.add(pos)
+                break
+
+    if not producers or any(pos not in producers and pos not in outputs
+                            for pos in type_positions):
+        return kql, False, []
+
+    converted = kql
+    for offset, insertion, _ in sorted(insertions, reverse=True):
+        converted = converted[:offset] + insertion + converted[offset:]
+    return converted, True, [table for _, _, table in insertions]
+
+
+def _split_top_level_ranges(text: str) -> List[Tuple[int, int]]:
+    """Return comma-delimited ranges outside parentheses."""
+    parts: List[Tuple[int, int]] = []
+    depth, start = 0, 0
+    for index, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append((start, index))
+            start = index + 1
+    parts.append((start, len(text)))
+    return parts
+
+
 def _code_mask(kql: str) -> List[bool]:
     """Boolean mask, True where the char is in a code segment (not string/comment)."""
     mask: List[bool] = []
     for kind, text in _segments(kql):
         mask.extend([kind == "code"] * len(text))
     return mask
+
+
+def is_source_free_literal_range(kql: str) -> bool:
+    """Recognize a complete numeric range operator, never expressions or tails."""
+    number = r"-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"
+    match = re.fullmatch(
+        rf"\s*range\s+[A-Za-z_][A-Za-z0-9_]*\s+from\s+({number})"
+        rf"\s+to\s+({number})\s+step\s+({number})\s*",
+        kql,
+    )
+    if not match:
+        return False
+    values = []
+    for literal in match.groups():
+        try:
+            if re.fullmatch(r"-?[0-9]+", literal):
+                value = int(literal)
+                if not -(2**63) <= value < 2**63:
+                    return False
+            else:
+                value = float(literal)
+                if not math.isfinite(value):
+                    return False
+        except ValueError:
+            return False
+        values.append(value)
+    start, stop, step = values
+    return step != 0 and (start == stop or (stop > start) == (step > 0))
+
+
+def is_source_free_literal_query(kql: str) -> bool:
+    """Shared empty-lineage exception for independently verified literal inputs."""
+    return is_source_free_literal_range(kql) or is_source_free_literal_datatable(kql)
+
+
+def is_source_free_literal_datatable(kql: str) -> bool:
+    """Recognize only literal datatable panels with direct projections/sorting."""
+    match = re.fullmatch(
+        r"\s*datatable\s*\(([^()]*)\)\s*\[(.*?)\]\s*(.*?)\s*",
+        kql, flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return False
+
+    field = r"(?:[A-Za-z_]\w*|\[[^\]\r\n]+\])"
+    schema = []
+    for item in match.group(1).split(","):
+        column = re.fullmatch(
+            rf"\s*([A-Za-z_]\w*)\s*:\s*(int|long|real|string|bool)\s*",
+            item, flags=re.IGNORECASE,
+        )
+        if not column:
+            return False
+        schema.append((column.group(1), column.group(2).lower()))
+    if not schema or len({name.casefold() for name, _ in schema}) != len(schema):
+        return False
+    available_columns = {name.casefold() for name, _ in schema}
+
+    literal = re.compile(
+        r'\s*(?:(?P<string>"(?:[^"]|"")*"|\'(?:[^\']|\'\')*\')'
+        r"|(?P<boolean>true|false)"
+        r"|(?P<number>-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
+        r"|(?P<null>null))\s*",
+        flags=re.IGNORECASE,
+    )
+    values = []
+    value_text = match.group(2)
+    position = 0
+    while position < len(value_text):
+        value_match = literal.match(value_text, position)
+        if not value_match:
+            return False
+        values.append(next(
+            (key, value) for key, value in value_match.groupdict().items() if value is not None
+        ))
+        position = value_match.end()
+        if position < len(value_text):
+            if value_text[position] != ",":
+                return False
+            position += 1
+            if position == len(value_text):
+                return False
+    if len(values) % len(schema):
+        return False
+    for index, (kind, value) in enumerate(values):
+        expected = schema[index % len(schema)][1]
+        if kind != "null" and not (
+            expected == "string" and kind == "string"
+            or expected == "bool" and kind == "boolean"
+            or expected in ("int", "long") and kind == "number"
+            and re.fullmatch(r"-?\d+", value) is not None
+            or expected == "real" and kind == "number"
+        ):
+            return False
+
+    tail = match.group(3).strip()
+    if not tail:
+        return True
+    clauses = re.split(r"\s*\|\s*", tail)
+    if clauses[0] != "" or len(clauses) > 3:
+        return False
+    clauses = clauses[1:]
+    if not clauses:
+        return False
+    seen_order = False
+    seen_project = False
+
+    def column_name(expression):
+        value = expression.strip()
+        if value.startswith("[") and value.endswith("]"):
+            value = value[1:-1].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+        return value.casefold()
+
+    for clause in clauses:
+        project = re.fullmatch(r"project\s+(.+)", clause, flags=re.IGNORECASE)
+        order = re.fullmatch(r"order\s+by\s+(.+)", clause, flags=re.IGNORECASE)
+        if project and not seen_order and not seen_project:
+            projected_columns = set()
+            for expression in project.group(1).split(","):
+                projection = re.fullmatch(
+                    rf"\s*(?:(?P<alias>{field})\s*=\s*)?(?P<source>{field})\s*",
+                    expression,
+                )
+                if not projection:
+                    return False
+                source = column_name(projection.group("source"))
+                if source not in available_columns:
+                    return False
+                alias = projection.group("alias")
+                projected_columns.add(column_name(alias) if alias else source)
+            available_columns = projected_columns
+            seen_project = True
+        elif order and not seen_order:
+            seen_order = True
+            for expression in order.group(1).split(","):
+                ordering = re.fullmatch(
+                    rf"\s*(?P<column>{field})(?:\s+(?:asc|desc))?\s*",
+                    expression, flags=re.IGNORECASE,
+                )
+                if not ordering or column_name(ordering.group("column")) not in available_columns:
+                    return False
+        else:
+            return False
+    return True
 
 
 def _is_word(kql: str, start: int, end: int) -> bool:
@@ -304,9 +599,22 @@ def rewrite(kql: str, tables: Optional[List[str]],
         if entry.get("removedColumns"):
             removed_cols[t] = list(entry["removedColumns"])
 
+    eligible_type_tables = {
+        t for t in tables
+        if t in tbl_map and tbl_map[t].get("tier") == "1to1"
+        and tbl_map[t].get("ahTable", t) == t
+    }
+    type_is_la_only = "Type" in drop_cols
+    source_has_type = type_is_la_only and bool(_find_identifiers(kql, {"Type"}))
+    if type_is_la_only:
+        converted, type_supported, synthesized_types = _type_column_rewrite(
+            kql, eligible_type_tables)
+    else:
+        converted, type_supported, synthesized_types = kql, True, []
+
     # Apply table + column renames in one whole-identifier pass.
     rename_map = {**col_renames, **table_renames}
-    converted, counts = _apply_renames(kql, rename_map)
+    converted, counts = _apply_renames(converted, rename_map)
 
     # Drop redundant duplicate group-by keys (AH rejects duplicate output columns).
     converted, dup_keys = _dedupe_summarize_keys(converted)
@@ -330,6 +638,12 @@ def rewrite(kql: str, tables: Optional[List[str]],
                      "count": 1, "source": "deterministic",
                      "reason": "Duplicate summarize group-by key removed; "
                                "AH rejects duplicate output columns"})
+    for table in synthesized_types:
+        diff.append({
+            "kind": "synthesize-type-column", "before": "Type",
+            "after": f'Type = "{table}"', "count": 1, "source": "deterministic",
+            "reason": "Preserve a direct table summarize grouping with its native table label",
+        })
     diff.extend(cast_diffs)
     diff.extend(int_diffs)
 
@@ -364,10 +678,16 @@ def rewrite(kql: str, tables: Optional[List[str]],
     diff.sort(key=lambda d: (d["kind"], d["before"]))
 
     # Flag references to LA-only columns that don't exist in AH (never delete).
-    for col in sorted(_find_identifiers(kql, drop_cols)):
+    la_only_references = _find_identifiers(kql, drop_cols - {"Type"})
+    if source_has_type and not type_supported:
+        la_only_references.add("Type")
+    for col in sorted(la_only_references):
         flags.append({"kind": "la-only-column", "name": col,
                       "reason": "Log-Analytics-only column not present in AH; "
-                                "query references it and needs manual handling."})
+                                "query references it and needs manual handling."
+                      if col != "Type" else
+                      "Type is not a recognized query-defined label or a direct-table "
+                      "summarize key; review its source semantics."})
 
     overall = "1to1"
     if tables:

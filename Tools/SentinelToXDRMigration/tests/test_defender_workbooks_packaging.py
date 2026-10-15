@@ -206,6 +206,252 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
         self.write()
         return resource
 
+    def invoke_prerequisites(self, *, success: bool = True) -> str:
+        self.write()
+        payload = self.root / "prerequisites.json"
+        payload.write_text(json.dumps({"data": self.data, "template": self.template}), encoding="utf-8")
+        result = subprocess.run([
+            "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+            "$ErrorActionPreference='Stop'; "
+            f". {literal(COMMON)}; "
+            f"$inputData=Get-Content -Raw -LiteralPath {literal(payload)} | ConvertFrom-Json; "
+            f"$doc=Get-Content -Raw -LiteralPath {literal(self.target)} | ConvertFrom-Json; "
+            "Get-DefenderWorkbookParserDependencies -Document $doc -ContentToImport $inputData.data "
+            f"-Template $inputData.template -SolutionRoot {literal(self.solution)} -SolutionName Sample; "
+            "Write-Output '__PREREQUISITES_PASSED__'",
+        ], capture_output=True, text=True, check=False)
+        self.assertEqual(success, result.returncode == 0, result.stderr)
+        self.assertEqual(success, "__PREREQUISITES_PASSED__" in result.stdout)
+        return result.stderr
+
+    def scope_fixture(self) -> None:
+        original = json.loads(self.source.read_bytes())
+        original["items"][1] = {"content": {
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "parameters": [{
+                "name": "Workspace", "type": 5, "queryType": 1,
+                "query": "resources | where type =~ 'microsoft.operationalinsights/workspaces'",
+            }],
+        }}
+        self.source.write_text(json.dumps(original), encoding="utf-8")
+        provenance = self.notebook["contentProvenance"]
+        provenance["source"]["sha256"] = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        provenance["conversion"]["queries"].append({
+            "sourcePath": "/items/1/content/parameters/0/query",
+            "sourceSha256": hashlib.sha256(original["items"][1]["content"]["parameters"][0]["query"].encode()).hexdigest(),
+            "outputPath": None, "targetSha256": None, "status": "removed-scope-helper",
+        })
+
+    def test_prerequisite_scan_excludes_only_proven_removed_scope_helpers(self) -> None:
+        self.scope_fixture()
+        source_before = self.source.read_bytes()
+        self.invoke_prerequisites()
+        self.assertEqual(source_before, self.source.read_bytes())
+        target_before = self.target.read_bytes()
+        self.invoke_prerequisites()
+        self.assertEqual(target_before, self.target.read_bytes())
+        baseline = copy.deepcopy(self.notebook)
+        for mutation in (
+            "source-hash", "query-hash", "pointer", "status", "output",
+            "retained-parameter", "retained-query", "retained-reference",
+        ):
+            with self.subTest(mutation=mutation):
+                self.notebook = copy.deepcopy(baseline)
+                provenance = self.notebook["contentProvenance"]
+                query = provenance["conversion"]["queries"][-1]
+                if mutation == "source-hash":
+                    provenance["source"]["sha256"] = "0" * 64
+                elif mutation == "query-hash":
+                    query["sourceSha256"] = "0" * 64
+                elif mutation == "pointer":
+                    query["sourcePath"] = "/items/99/query"
+                elif mutation == "status":
+                    query["status"] = "blocked"
+                elif mutation == "output":
+                    query["outputPath"] = "/items/0/content/query"
+                elif mutation == "retained-parameter":
+                    self.notebook["items"].append({"content": {"parameters": [{"name": "Workspace", "type": 5}]}})
+                elif mutation == "retained-query":
+                    self.notebook["items"].append({"query": json.loads(source_before)["items"][1]["content"]["parameters"][0]["query"]})
+                else:
+                    self.notebook["items"].append({"content": {"json": "{Workspace}"}})
+                self.invoke_prerequisites(success=False)
+
+    def test_prerequisite_scope_proof_rejects_nonhelpers_and_live_dependencies(self) -> None:
+        self.scope_fixture()
+        baseline_source = json.loads(self.source.read_bytes())
+        baseline = copy.deepcopy(self.notebook)
+        for mutation in ("ordinary-query", "kql-parameter", "time-parameter", "live-text", "live-parameter", "duplicate-name"):
+            with self.subTest(mutation=mutation):
+                source = copy.deepcopy(baseline_source)
+                self.notebook = copy.deepcopy(baseline)
+                param = source["items"][1]["content"]["parameters"][0]
+                if mutation == "ordinary-query":
+                    source["items"][1] = {"query": param["query"]}
+                    self.notebook["contentProvenance"]["conversion"]["queries"][-1]["sourcePath"] = "/items/1/query"
+                elif mutation == "kql-parameter":
+                    param["queryType"] = 0
+                elif mutation == "time-parameter":
+                    param["type"] = 4
+                elif mutation == "live-text":
+                    source["items"].append({"content": {"json": "{Workspace}"}})
+                elif mutation == "live-parameter":
+                    source["items"][1]["content"]["parameters"].append({
+                        "name": "Filter", "type": 1, "value": "{Workspace}",
+                    })
+                else:
+                    source["items"][1]["content"]["parameters"].append(copy.deepcopy(param))
+                self.source.write_text(json.dumps(source), encoding="utf-8")
+                self.notebook["contentProvenance"]["source"]["sha256"] = hashlib.sha256(self.source.read_bytes()).hexdigest()
+                self.invoke_prerequisites(success=False)
+
+    def test_prerequisite_scope_dependency_closure_matches_python(self) -> None:
+        from sentinel_xdr_migration._workbook_core import workbook
+        self.scope_fixture()
+        source = json.loads(self.source.read_bytes())
+        params = source["items"][1]["content"]["parameters"]
+        params[0]["query"] += " | where subscriptionId in ({Subscription})"
+        params.append({"name": "Subscription", "type": 6, "value": "all"})
+        params.append({
+            "name": "ContextFree", "type": 1, "isHiddenWhenLocked": True,
+            "queryType": 1, "query": "print context='{Workspace}'",
+        })
+        source["items"][0]["content"]["resourceContextFromParameter"] = "Workspace"
+        _, removed, retained = workbook._scope_parameters(source)
+        self.assertEqual({"Workspace", "Subscription", "ContextFree"}, removed)
+        self.assertFalse(retained)
+        self.source.write_text(json.dumps(source), encoding="utf-8")
+        provenance = self.notebook["contentProvenance"]
+        provenance["source"]["sha256"] = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        provenance["conversion"]["queries"][-1]["sourceSha256"] = hashlib.sha256(params[0]["query"].encode()).hexdigest()
+        provenance["conversion"]["queries"].append({
+            "sourcePath": "/items/1/content/parameters/2/query",
+            "sourceSha256": hashlib.sha256(params[2]["query"].encode()).hexdigest(),
+            "outputPath": None, "targetSha256": None, "status": "removed-scope-helper",
+        })
+        self.invoke_prerequisites()
+        source["items"].append({"content": {"json": "{ContextFree}"}})
+        _, removed, retained = workbook._scope_parameters(source)
+        self.assertFalse(removed)
+        self.assertEqual({"Workspace", "Subscription", "ContextFree"}, retained)
+        self.source.write_text(json.dumps(source), encoding="utf-8")
+        provenance["source"]["sha256"] = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        self.invoke_prerequisites(success=False)
+
+    def test_prerequisite_scanner_matches_reviewed_python_query_contracts(self) -> None:
+        from sentinel_xdr_migration._workbook_core import workbook
+        queries = [
+            "let gran = {Granularity}; EmailEvents | summarize count() by bin(Timestamp, gran)",
+            "let gran = {Granularity}; EmailEvents | make-series count() on Timestamp step gran",
+            "union withsource=Table (print value=1), (EmailEvents | take 1)",
+            "union kind=outer withsource=Table (print value=1), (HiddenParser())",
+            "union withsource=totable (print value=1), (MessageEvents | take 1)",
+            "union withsource=Table (print value=1), table(Name)",
+            "EmailPostDeliveryEvents | take 1",
+            "MessagePostDeliveryEvents | take 1",
+            "MessageUrlInfo | take 1",
+            "FileMaliciousContentInfo | take 1",
+            "datatable(label:string, value:long)['EmailEvents', 1] | extend doubled=value*2",
+            "let gran = {Granularity}; DeviceEvents | take 1",
+            "let gran = {Other}; EmailEvents | summarize count() by bin(Timestamp, gran)",
+            "{Granularity}() | take 1",
+            "{Granularity} | take 1",
+            "table({Granularity}) | take 1",
+            "totable(strcat('Email', 'Events')) | take 1",
+            "resources | take 1",
+            "['resources'] | take 1",
+            "EmailEvents() | take 1",
+            "HiddenParser() | take 1",
+            "DeviceEvents | invoke HiddenParser()",
+            "let Data = HiddenParser(); Data",
+            "table('HiddenParser') | take 1",
+            "table('EmailEvents') | take 1",
+            "datatable(label:string)['constant'] | join (HiddenParser()) on label",
+            "let gran = {Granularity}; EmailEvents | summarize count() by bin(Timestamp, gran); table(Name)",
+            "union withsource=Other (table(Name)), HiddenParser",
+            "range x from 0 to 10 step 1",
+            "range x from 0 to 20 step 1",
+            "range x from 0 to HiddenParser() step 1",
+            "range x from 0 to toscalar(HiddenParser() | count) step 1",
+            "range x from 0 to 10 step 1 | union HiddenParser",
+            "union (range x from 0 to 10 step 1), (HiddenParser())",
+            "range x from 0 to 10 step 1 | union EmailEvents",
+        ]
+        payload = self.root / "scanner-queries.json"
+        payload.write_text(json.dumps(queries), encoding="utf-8")
+        result = subprocess.run([
+            "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+            "$ErrorActionPreference='Stop'; "
+            f". {literal(COMMON)}; "
+            f"$queries=Get-Content -Raw -LiteralPath {literal(payload)} | ConvertFrom-Json; "
+            "$rows=@(foreach ($q in $queries) { ,@(Get-DefenderWorkbookImplicitFunctions "
+            "-Value ([pscustomobject]@{query=$q}) | Sort-Object -Unique) }); "
+            "ConvertTo-Json -InputObject $rows -Depth 10 -Compress",
+        ], capture_output=True, text=True, check=False)
+        self.assertEqual(0, result.returncode, result.stderr)
+        actual = json.loads(result.stdout)
+        for query, aliases in zip(queries, actual, strict=True):
+            with self.subTest(query=query):
+                self.assertEqual(sorted(workbook.opaque_functions(query)), sorted(aliases))
+
+    def test_reviewed_literal_range_dropdowns_package_without_dependencies(self) -> None:
+        from sentinel_xdr_migration import workbook_dependencies, workbooks
+        from test_workbook_dependencies import decisions, review
+
+        source = json.loads(self.source.read_bytes())
+        source["items"] = [{"type": 9, "content": {"parameters": [
+            {"name": f"Range{i}", "type": 2, "queryType": 0, "query": query}
+            for i, query in enumerate((
+                "range x from 0 to 10 step 1", "range x from 0 to 20 step 1",
+            ))
+        ]}}]
+        self.source.write_text(json.dumps(source), encoding="utf-8")
+        data = self.solution / "Data/Solution_Sample.json"
+        data.parent.mkdir()
+        data.write_text(json.dumps({"Version": "3.2.7"}), encoding="utf-8")
+        plan = workbook_dependencies.plan_workbook_dependencies(self.solution)
+        reviewed = decisions(plan)
+        for row in reviewed["queries"]:
+            row["tables"] = []
+        reviewed["workbooks"][0]["requiredWorkloads"] = []
+        receipt = review(self.solution, plan, reviewed)
+        self.assertFalse(receipt["dependencyReviewRequired"])
+        settings = json.loads((self.solution / "Logs/review-1/conversion-config.json").read_bytes())
+        result = workbooks.convert_workbooks(
+            self.solution, config=settings, report_directory=self.solution / "Logs/conversion")
+        self.assertEqual(1, result["converted"])
+        self.target = self.solution / "XDR Workbooks/nested/source.json"
+        self.reference = self.target.relative_to(self.solution).as_posix()
+        self.data["XDR Workbooks"] = [self.reference]
+        self.notebook = json.loads(self.target.read_bytes())
+        self.assertEqual(1, workbooks.validate_workbooks(self.solution)["valid"])
+        emitted = self.invoke(package=True)
+        self.assertEqual(1, emitted["count"])
+        resources = [r for r in emitted["template"]["resources"]
+                     if r.get("properties", {}).get("contentKind") == "DefenderWorkbook"]
+        self.assertEqual(1, len(resources))
+        install = next(r for r in emitted["template"]["resources"]
+                       if r["type"] == "Microsoft.Resources/deployments")
+        installed = install["properties"]["template"]["resources"]["workbook"]["properties"]["content"]
+        self.assertEqual(
+            ["range x from 0 to 10 step 1", "range x from 0 to 20 step 1"],
+            [p["query"] for p in installed["items"][0]["content"]["parameters"]],
+        )
+        provenance = self.notebook["contentProvenance"]
+        self.assertEqual([], provenance["requiredWorkloads"])
+        self.assertEqual([], provenance["requiredDataConnectors"])
+        self.assertEqual([], provenance.get("requiredWorkspaceFunctions", []))
+
+    def test_prerequisite_scanner_preserves_known_saved_table_aliases(self) -> None:
+        self.add_function("EmailEvents")
+        self.notebook["items"][0]["content"]["query"] = "EmailEvents | take 1"
+        query = self.notebook["contentProvenance"]["conversion"]["queries"][0]
+        query["targetSha256"] = hashlib.sha256(b"EmailEvents | take 1").hexdigest()
+        query["workspaceFunctions"] = []
+        self.notebook["contentProvenance"]["requiredWorkspaceFunctions"] = []
+        error = self.invoke_prerequisites(success=False)
+        self.assertIn("unreviewed implicit workspace function 'EmailEvents'", error)
+
     def test_required_parser_dependencies_use_emitted_names_and_preserve_provenance(self) -> None:
         self.add_function()
         self.add_function("SecondParser", folder="Workspace Functions", name="lab/arm-name-not-alias")
@@ -796,6 +1042,36 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
         self.template["variables"]["_solutionVersion"] = "3.2.6"
         self.invoke(success=False)
 
+    def test_source_passthrough_validates_all_dependencies_and_handles_empty_arrays(self) -> None:
+        baseline = copy.deepcopy(self.notebook)
+        cases = (
+            ({}, True),
+            ({"requiredWorkloads": [], "requiredDataConnectors": []}, True),
+            ({"requiredDataConnectors": "[]"}, False),
+            ({"requiredWorkloads": [
+                {"workload": "mde", "dataTypes": ["DeviceEvents"]},
+                {"workload": "unknown", "dataTypes": []},
+            ]}, False),
+        )
+        for changes, success in cases:
+            with self.subTest(changes=changes):
+                self.notebook = copy.deepcopy(baseline)
+                self.notebook["contentProvenance"].update(changes)
+                self.write()
+                result = subprocess.run([
+                    "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                    "$ErrorActionPreference='Stop'; "
+                    f". {literal(COMMON)}; "
+                    f"$doc=Get-Content -Raw -LiteralPath {literal(self.target)} | ConvertFrom-Json; "
+                    "$source=Assert-DefenderWorkbookDocument -Document $doc "
+                    f"-SolutionRoot {literal(self.solution)} -SolutionName Sample "
+                    "-ContentPath 'fixture' -PassThruSource; "
+                    "ConvertTo-Json -InputObject $source -Depth 100 -Compress",
+                ], capture_output=True, text=True, check=False)
+                self.assertEqual(success, result.returncode == 0, result.stderr)
+                if success:
+                    self.assertEqual(json.loads(self.source.read_bytes()), json.loads(result.stdout))
+
     def test_review_missing_arrays_unknown_workload_and_stale_source_block(self) -> None:
         baseline = copy.deepcopy(self.notebook)
         mutations = [
@@ -882,10 +1158,7 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
                 self.write()
                 self.invoke(success=False)
         self.notebook = copy.deepcopy(baseline)
-        self.notebook["contentProvenance"]["conversion"]["queries"].append({
-            "sourcePath": "/items/1/query", "sourceSha256": hashlib.sha256(b"scope").hexdigest(),
-            "outputPath": None, "targetSha256": None, "status": "removed-scope-helper",
-        })
+        self.scope_fixture()
         self.write()
         self.assertEqual(1, self.invoke()["count"])
 

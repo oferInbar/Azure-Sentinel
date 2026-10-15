@@ -45,7 +45,7 @@ function Assert-DefenderWorkbookReleaseVersion {
 }
 
 function Assert-DefenderWorkbookDocument {
-    param([psobject]$Document, [string]$SolutionRoot, [string]$SolutionName, [string]$ContentPath)
+    param([psobject]$Document, [string]$SolutionRoot, [string]$SolutionName, [string]$ContentPath, [switch]$PassThruSource)
 
     if ($Document -isnot [pscustomobject] -or $Document.version -cne 'Notebook/1.0' -or
         $Document.items -isnot [array]) {
@@ -132,6 +132,7 @@ function Assert-DefenderWorkbookDocument {
             throw "Defender Workbook '$ContentPath' target query hash is stale."
         }
     }
+    Assert-DefenderWorkbookRemovedScopeQueries -Source $sourceNotebook -Document $Document
     $workloads = @('mde', 'mdo', 'mdi', 'mda', 'mdc', 'entraid', 'purview', 'appgovernance', 'sentinel', 'mtp')
     foreach ($field in @('requiredWorkloads', 'requiredDataConnectors')) {
         $value = $provenance.PSObject.Properties[$field]
@@ -161,6 +162,7 @@ function Assert-DefenderWorkbookDocument {
             }
         }
     }
+    if ($PassThruSource) { return $sourceNotebook }
 }
 
 function Assert-DefenderWorkbookSerializationDepth {
@@ -205,11 +207,144 @@ function Get-DefenderWorkbookDeploymentName {
     return 'DefenderWorkbook-' + $hash.Substring(0, 32)
 }
 
+function Get-DefenderWorkbookNodes {
+    param([AllowNull()][object]$Value, [string]$Path = '', [object]$QueryType = 0, [string]$ResourceType = '')
+    if ($Value -is [pscustomobject]) {
+        if ($null -ne $Value.PSObject.Properties['queryType']) { $QueryType = $Value.queryType }
+        if ($Value.resourceType) { $ResourceType = $Value.resourceType }
+        [pscustomobject]@{ Path = $Path; Node = $Value; QueryType = $QueryType; ResourceType = $ResourceType }
+        foreach ($property in $Value.PSObject.Properties) {
+            $key = $property.Name.Replace('~', '~0').Replace('/', '~1')
+            Get-DefenderWorkbookNodes -Value $property.Value -Path "$Path/$key" -QueryType $QueryType -ResourceType $ResourceType
+        }
+    }
+    elseif ($Value -is [array]) {
+        for ($i = 0; $i -lt $Value.Count; $i++) {
+            Get-DefenderWorkbookNodes -Value $Value[$i] -Path "$Path/$i" -QueryType $QueryType -ResourceType $ResourceType
+        }
+    }
+}
+
+function Get-DefenderWorkbookParameterReferences {
+    param([AllowNull()][object]$Value, [switch]$SkipScope, [switch]$SkipParameters)
+    if ($Value -is [string]) {
+        foreach ($match in [regex]::Matches($Value, '\{([A-Za-z_][\w .-]*)(?::[^{}]*)?\}')) { $match.Groups[1].Value }
+    }
+    elseif ($Value -is [pscustomobject]) {
+        foreach ($property in $Value.PSObject.Properties) {
+            if ($SkipParameters -and $property.Name -ceq 'parameters' -and $property.Value -is [array]) { continue }
+            if ($SkipScope -and $property.Name -cin @(
+                'crossComponentResources', 'fallbackResourceIds', 'resourceIds', 'workspaceId',
+                'workspaceResourceId', 'selectedWorkspaceIds', 'resourceContextFromParameter'
+            )) { continue }
+            if ($property.Name -cin @('parameterName', 'exportParameterName', 'timeContextFromParameter', 'resourceContextFromParameter') -and
+                $property.Value -is [string]) { $property.Value }
+            if ($property.Name -ceq 'linkTarget' -and $property.Value -ceq 'parameter') { $Value.cellValue }
+            Get-DefenderWorkbookParameterReferences -Value $property.Value -SkipScope:$SkipScope -SkipParameters:$SkipParameters
+        }
+    }
+    elseif ($Value -is [array]) {
+        foreach ($item in $Value) {
+            Get-DefenderWorkbookParameterReferences -Value $item -SkipScope:$SkipScope -SkipParameters:$SkipParameters
+        }
+    }
+}
+
+function Assert-DefenderWorkbookRemovedScopeQueries {
+    param([psobject]$Source, [psobject]$Document)
+    $removedQueries = @($Document.contentProvenance.conversion.queries | Where-Object status -CEQ 'removed-scope-helper')
+    if ($removedQueries.Count -eq 0) { return }
+    # Mirror the reviewed Python _scope_parameters dependency closure; a status alone is not proof.
+    $nodes = @(Get-DefenderWorkbookNodes -Value $Source)
+    $entries = @($nodes | Where-Object { $_.Path -cmatch '/parameters/[0-9]+$' -and $_.Node.name })
+    $params = [System.Collections.Generic.Dictionary[string,object]]::new([System.StringComparer]::Ordinal)
+    $eligible = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $candidates = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $live = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $bindings = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($entry in $nodes) {
+        foreach ($property in $entry.Node.PSObject.Properties) {
+            if ($property.Name -cin @(
+                'crossComponentResources', 'fallbackResourceIds', 'resourceIds', 'workspaceId',
+                'workspaceResourceId', 'selectedWorkspaceIds', 'resourceContextFromParameter'
+            )) {
+                foreach ($name in @(Get-DefenderWorkbookParameterReferences -Value $property.Value)) { [void]$bindings.Add($name) }
+                if ($property.Name -ceq 'resourceContextFromParameter' -and $property.Value -is [string]) {
+                    [void]$bindings.Add($property.Value)
+                }
+            }
+        }
+    }
+    foreach ($entry in $entries) {
+        $p = $entry.Node
+        if ($p.name -isnot [string] -or $params.ContainsKey($p.name)) { throw 'Duplicate or invalid scope parameter names.' }
+        $params.Add($p.name, $entry)
+        $supported = -not $p.query -or $entry.QueryType -cin @(0, $null, 'advancedHunting')
+        if (-not ($p.query -and $supported) -and $p.type -ne 4) {
+            [void]$eligible.Add($p.name)
+            $settings = $p.typeSettings | ConvertTo-Json -Depth 100 -Compress
+            if ($p.type -eq 6 -or
+                ($p.type -eq 5 -and ($bindings.Contains($p.name) -or $entry.ResourceType -ieq 'microsoft.operationalinsights/workspaces')) -or
+                $settings -imatch 'microsoft\.operationalinsights/workspaces' -or
+                ($p.queryType -eq 1 -and $p.query -imatch 'microsoft\.operationalinsights/workspaces')) {
+                [void]$candidates.Add($p.name)
+            }
+        }
+        $entry | Add-Member -NotePropertyName AllDependencies -NotePropertyValue @(Get-DefenderWorkbookParameterReferences -Value $p)
+        $entry | Add-Member -NotePropertyName Dependencies -NotePropertyValue @(Get-DefenderWorkbookParameterReferences -Value $p -SkipScope:$supported)
+    }
+    do {
+        $before = $candidates.Count
+        foreach ($name in @($candidates)) {
+            foreach ($dep in $params[$name].AllDependencies) {
+                if ($eligible.Contains($dep)) { [void]$candidates.Add($dep) }
+            }
+        }
+        foreach ($entry in $entries) {
+            if ($eligible.Contains($entry.Node.name) -and $entry.Node.isHiddenWhenLocked -and
+                @($entry.AllDependencies | Where-Object { $candidates.Contains($_) }).Count -gt 0) {
+                [void]$candidates.Add($entry.Node.name)
+            }
+        }
+    } while ($before -ne $candidates.Count)
+    foreach ($name in $params.Keys) { if (-not $candidates.Contains($name)) { [void]$live.Add($name) } }
+    foreach ($name in @(Get-DefenderWorkbookParameterReferences -Value $Source -SkipScope -SkipParameters)) {
+        if ($params.ContainsKey($name)) { [void]$live.Add($name) }
+    }
+    do {
+        $before = $live.Count
+        foreach ($name in @($live)) {
+            $deps = if ($candidates.Contains($name)) { $params[$name].AllDependencies } else { $params[$name].Dependencies }
+            foreach ($dep in $deps) { if ($params.ContainsKey($dep)) { [void]$live.Add($dep) } }
+        }
+    } while ($before -ne $live.Count)
+    $targetNodes = @(Get-DefenderWorkbookNodes -Value $Document.items -Path '/items')
+    foreach ($query in $removedQueries) {
+        if (-not $query.sourcePath.EndsWith('/query', [System.StringComparison]::Ordinal)) {
+            throw 'Removed scope provenance must identify a query surface.'
+        }
+        $helper = @($entries | Where-Object {
+            $query.sourcePath.StartsWith($_.Path + '/', [System.StringComparison]::Ordinal) -and
+            $candidates.Contains($_.Node.name) -and -not $live.Contains($_.Node.name)
+        })
+        if ($helper.Count -ne 1) { throw 'Only proven scope-helper queries may be removed.' }
+        $name = $helper[0].Node.name
+        $sourceQuery = Get-DefenderWorkbookJsonPointer -Document $Source -Pointer $query.sourcePath
+        if (@($targetNodes | Where-Object {
+            ($_.Path -cmatch '/parameters/[0-9]+$' -and $_.Node.name -ceq $name) -or
+            ($_.Node.query -is [string] -and $_.Node.query -ceq $sourceQuery)
+        }).Count -gt 0 -or
+            $name -cin @(Get-DefenderWorkbookParameterReferences -Value $Document.items)) {
+            throw 'Removed scope helper is still present or referenced in the target workbook.'
+        }
+    }
+}
+
 function Get-DefenderWorkbookKnownCatalogTables {
     if ($null -eq $script:DefenderWorkbookKnownCatalogTables) {
         $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-        $catalogDir = Join-Path $PSScriptRoot '../../SentinelToXDRMigration/sentinel_xdr_migration/catalog'
-        foreach ($file in @('xdr_only_tables.json', 'table_mappings.json')) {
+        $catalogDir = Join-Path $PSScriptRoot '../../SentinelToXDRMigration/sentinel_xdr_migration/_workbook_core/data'
+        foreach ($file in @('mapping_catalog.json')) {
             $full = Join-Path $catalogDir $file
             if (Test-Path -LiteralPath $full -PathType Leaf) {
                 $json = Get-Content -LiteralPath $full -Raw | ConvertFrom-Json
@@ -229,11 +364,16 @@ function Get-DefenderWorkbookImplicitFunctions {
     param(
         [AllowNull()][object]$Value,
         [AllowNull()][System.Collections.Generic.HashSet[string]]$AllowedBareTables = $null,
-        [AllowNull()][System.Collections.Generic.HashSet[string]]$KnownFunctionAliases = $null
+        [AllowNull()][System.Collections.Generic.HashSet[string]]$KnownFunctionAliases = $null,
+        [AllowNull()][System.Collections.Generic.HashSet[string]]$ExcludedQueryPaths = $null,
+        [string]$Path = ''
     )
     if ($Value -is [pscustomobject]) {
         foreach ($property in $Value.PSObject.Properties) {
+            $key = $property.Name.Replace('~', '~0').Replace('/', '~1')
+            $childPath = "$Path/$key"
             if ($property.Name -ceq 'query' -and $property.Value -is [string]) {
+                if ($null -ne $ExcludedQueryPaths -and $ExcludedQueryPaths.Contains($childPath)) { continue }
                 $queryText = $property.Value
                 if ($Value.queryType -eq 18 -and $queryText.TrimStart().StartsWith('{')) {
                     try { $settings = $queryText | ConvertFrom-Json -ErrorAction Stop }
@@ -261,6 +401,14 @@ function Get-DefenderWorkbookImplicitFunctions {
                         return [regex]::Replace($lit.Substring(1, $lit.Length - 2), '\\(.)', '$1')
                     }
                     return $lit
+                }
+                function Test-KqlUnionWithsourceBinding([string]$text, [int]$start) {
+                    $prefix = [regex]::Replace($text.Substring(0, $start), $strPat, {
+                        param($m) ' ' * $m.Length
+                    })
+                    $segmentStart = [Math]::Max($prefix.LastIndexOf('|'), $prefix.LastIndexOf(';'))
+                    return [regex]::IsMatch($prefix.Substring($segmentStart + 1),
+                        '(?i)\bunion\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*\s+withsource\s*=\s*$')
                 }
                 $protectedSpans = [System.Collections.Generic.List[pscustomobject]]::new()
                 foreach ($m in [regex]::Matches($noComments, $bracketPat)) {
@@ -375,6 +523,7 @@ function Get-DefenderWorkbookImplicitFunctions {
                     }
                 }
                 foreach ($m in [regex]::Matches($noComments, $tableAnyCallPat)) {
+                    if (Test-KqlUnionWithsourceBinding -text $noComments -start $m.Index) { continue }
                     $inStr = $false
                     foreach ($sm in $strMatches) {
                         if ($sm.Index -le $m.Index -and ($sm.Index + $sm.Length) -gt $m.Index) {
@@ -428,6 +577,10 @@ function Get-DefenderWorkbookImplicitFunctions {
                     }
                 }
                 foreach ($match in [regex]::Matches($codeWithTokens, "($tokPat)\s*\(|(?i)(?:^|[;{]|/\*|\*/|\bmaterialize\s*\(|\btoscalar\s*\(|\b(?:join|lookup|union)\b(?:\s+[A-Za-z_][\w.]*\s*=\s*[\w.*-]+)*)(?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?:\*/\s*)?(?=\|)|\(\s*($tokPat)\s*(?:\*/\s*)?(?=\|)|\binvoke\s+($tokPat)|\blet\s+[A-Za-z_]\w*\s*=(?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[;|(])|\blet\s+[A-Za-z_]\w*\s*=\s*(?:view\s*)?\([^)]*\)\s*\{(?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[;|(\}])|\bview\s*\([^)]*\)\s*\{(?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[;|(\}])|\bpartition\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+by\s+[A-Za-z_]\w*\s*\{(?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[;|(\}])|\bfork\b(?:\s+[A-Za-z_]\w*\s*=)?\s*\((?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[|)\(])|\b(?:toscalar|materialize|table|totable)\s*\((?:\s*\()*\s*($tokPat)(?:\s*\))*\s*(?=[|)\(,])")) {
+                    $scalarGranularity = [regex]::Match($codeWithTokens.Substring($match.Index), "\A(?i)let\s+gran\s*=\s*($tokPat)\s*;")
+                    if ($scalarGranularity.Success -and $scalarGranularity.Groups[1].Value -ieq '{Granularity}' -and
+                        @($match.Groups | Where-Object { $_.Success -and $_.Value -ceq $scalarGranularity.Groups[1].Value }).Count -gt 0 -and
+                        [regex]::IsMatch($codeWithTokens, '(?is)\bmake-series\b.*?\bstep\s+gran\b|\bbin\s*\([^)]*,\s*gran\s*\)')) { continue }
                     foreach ($group in $match.Groups | Select-Object -Skip 1) {
                         if ($group.Success -and $group.Value -match '[A-Za-z0-9_]') { $calls.Add($group.Value) }
                     }
@@ -528,14 +681,16 @@ function Get-DefenderWorkbookImplicitFunctions {
             }
             else {
                 Get-DefenderWorkbookImplicitFunctions -Value $property.Value `
-                    -AllowedBareTables $AllowedBareTables -KnownFunctionAliases $KnownFunctionAliases
+                    -AllowedBareTables $AllowedBareTables -KnownFunctionAliases $KnownFunctionAliases `
+                    -ExcludedQueryPaths $ExcludedQueryPaths -Path $childPath
             }
         }
     }
     elseif ($Value -is [array]) {
-        foreach ($item in $Value) {
-            Get-DefenderWorkbookImplicitFunctions -Value $item `
-                -AllowedBareTables $AllowedBareTables -KnownFunctionAliases $KnownFunctionAliases
+        for ($i = 0; $i -lt $Value.Count; $i++) {
+            Get-DefenderWorkbookImplicitFunctions -Value $Value[$i] `
+                -AllowedBareTables $AllowedBareTables -KnownFunctionAliases $KnownFunctionAliases `
+                -ExcludedQueryPaths $ExcludedQueryPaths -Path "$Path/$i"
         }
     }
 }
@@ -546,6 +701,8 @@ function Get-DefenderWorkbookParserDependencies {
         [string]$SolutionRoot, [string]$SolutionName
     )
 
+    $sourceNotebook = Assert-DefenderWorkbookDocument -Document $Document -SolutionRoot $SolutionRoot `
+        -SolutionName $SolutionName -ContentPath 'prerequisite scan' -PassThruSource
     $provenance = $Document.contentProvenance
     $declared = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $property = $provenance.PSObject.Properties['requiredWorkspaceFunctions']
@@ -633,17 +790,14 @@ function Get-DefenderWorkbookParserDependencies {
             }
         }
     }
-    $source = Resolve-SolutionContentPath -SolutionRoot $SolutionRoot -SolutionName $SolutionName `
-        -ContentPath $provenance.source.path -RequireFile
-    $sourceNotebook = Get-Content -LiteralPath $source.FullPath -Raw | ConvertFrom-Json
     $sourceAllowedBareTables = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($item in $allowedBareTables) { [void]$sourceAllowedBareTables.Add($item) }
-    $catalogPath = Join-Path $PSScriptRoot '../../SentinelToXDRMigration/sentinel_xdr_migration/catalog/table_mappings.json'
+    $catalogPath = Join-Path $PSScriptRoot '../../SentinelToXDRMigration/sentinel_xdr_migration/_workbook_core/data/mapping_catalog.json'
     if (Test-Path -LiteralPath $catalogPath -PathType Leaf) {
         $catalogJson = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
         if ($null -ne $catalogJson.tables) {
             foreach ($prop in $catalogJson.tables.PSObject.Properties) {
-                $targetTable = $prop.Value.target_table
+                $targetTable = $prop.Value.ahTable
                 if ($targetTable -is [string] -and $allowedBareTables.Contains($targetTable) -and
                     -not $knownFunctionAliases.Contains($prop.Name)) {
                     [void]$sourceAllowedBareTables.Add($prop.Name)
@@ -654,8 +808,13 @@ function Get-DefenderWorkbookParserDependencies {
     if (-not $knownFunctionAliases.Contains('SourceTable')) {
         [void]$sourceAllowedBareTables.Add('SourceTable')
     }
+    $excludedQueryPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($query in $provenance.conversion.queries) {
+        if ($query.status -ceq 'removed-scope-helper') { [void]$excludedQueryPaths.Add($query.sourcePath) }
+    }
     foreach ($alias in @(Get-DefenderWorkbookImplicitFunctions -Value $sourceNotebook.items `
-                -AllowedBareTables $sourceAllowedBareTables -KnownFunctionAliases $knownFunctionAliases) +
+                -AllowedBareTables $sourceAllowedBareTables -KnownFunctionAliases $knownFunctionAliases `
+                -ExcludedQueryPaths $excludedQueryPaths -Path '/items') +
             @(Get-DefenderWorkbookImplicitFunctions -Value $Document.items `
                 -AllowedBareTables $allowedBareTables -KnownFunctionAliases $knownFunctionAliases)) {
         if (-not $referenced.Contains($alias)) {

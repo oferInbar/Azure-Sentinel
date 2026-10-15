@@ -10,7 +10,7 @@ function Assert-V31ReleaseVersion {
     if (-not $v31VersionPolicy) { return }
 
     $minimum = if ($ContentKind -eq 'Solution') { [version]'3.2.0.0' } elseif ($ContentKind -eq 'CustomDetection') { [version]'3.1.0.0' } else { [version]'0.0.0.0' }
-    $range = if ($ContentKind -eq 'Solution') { '>= 3.2.0 and < 4.0.0' } elseif ($ContentKind -eq 'CustomDetection') { '>= 3.1.0 and < 4.0.0' } else { '< 4.0.0' }
+    $range = if ($ContentKind -eq 'Solution') { '>= 3.2.0 and < 4.0.0' } elseif ($ContentKind -eq 'CustomDetection') { '>= 3.1.0 and < 4.0.0' } elseif ($ContentKind -eq 'Workbook') { 'an independent numeric content version' } else { '< 4.0.0' }
     $parsed = $null
     $valid = $Version -cmatch '\A[0-9]+\.[0-9]+(?:\.[0-9]+){0,2}\z' -and
         [version]::TryParse($Version, [ref]$parsed)
@@ -19,7 +19,10 @@ function Assert-V31ReleaseVersion {
     }
     if ($valid) {
         $normalized = [version]::new($parsed.Major, $parsed.Minor, [Math]::Max(0, $parsed.Build), [Math]::Max(0, $parsed.Revision))
-        $valid = $normalized -ge $minimum -and $normalized -lt [version]'4.0.0.0'
+        # Sentinel Workbook metadata versions predate and are independent of solution release bounds.
+        # Defender Workbooks use their separate Assert-DefenderWorkbookReleaseVersion guard.
+        $valid = $normalized -ge $minimum -and
+            ($ContentKind -eq 'Workbook' -or $normalized -lt [version]'4.0.0.0')
     }
     if (-not $valid) {
         $message = "V3.1 version policy: $ContentKind '$ContentPath' has effective release version '$Version'; required $range (numeric release version). No version is automatically promoted."

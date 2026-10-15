@@ -44,6 +44,10 @@ def _connectors(root, data):
     if not isinstance(references, list):
         raise ValueError("Solution Data Connectors must be an array.")
     for relative in references:
+        prefix = f"Solutions/{root.name}/"
+        if (isinstance(relative, str) and root.parent.name == "Solutions"
+                and relative.startswith(prefix)):
+            relative = relative[len(prefix):]
         path = _path(root, relative)
         if not relative.startswith("Data Connectors/") or not path.is_file():
             raise ValueError("Connector references must identify existing Data Connectors content.")
@@ -58,7 +62,7 @@ def _connectors(root, data):
         names = sorted({entry.get("name") if isinstance(entry, dict) else entry for entry in types
                         if isinstance(entry, str) or isinstance(entry, dict) and isinstance(entry.get("name"), str)})
         alternatives.append({
-            "sourcePath": relative, "sourceSha256": _sha(path.read_bytes()),
+            "sourcePath": path.relative_to(root).as_posix(), "sourceSha256": _sha(path.read_bytes()),
             "connectorId": connector_id, "dataTypes": telemetry_data_types(names),
             **({"referenceInputs": ["Watchlist"]} if "Watchlist" in names else {}),
             "title": value.get("title") or (nested.get("connectorUiConfig") or {}).get("title"),
@@ -337,7 +341,8 @@ def review_workbook_dependencies(solution, *, plan_path, decisions_path, expecte
             raise ValueError("Reviewed workspaceFunctions must match exact source aliases.")
         if not set(aliases) <= declared_aliases or set(aliases) & set(tables):
             raise ValueError("Function aliases need vetted prerequisites and separate underlying tables.")
-        if not tables and not row["scopeHelper"]:
+        source_free_literal = rewrite.is_source_free_literal_query(row["queryKql"])
+        if not tables and not row["scopeHelper"] and not source_free_literal:
             raise ValueError("Accepted query requires explicit underlying source tables.")
         resolution = {"querySha256": row["querySha256"], "tables": tables,
                       "evidence": {"actor": actor, "reference": reference, "planSha256": expected_plan_sha256,

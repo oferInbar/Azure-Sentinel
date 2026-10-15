@@ -714,7 +714,7 @@
       "dropColumns": [],
       "applyGlobalDropColumns": false,
       "discriminator": null,
-      "notes": "Offline conversion mapping; target visibility and runtime semantics remain unverified."
+      "notes": "Identity mapping for the Microsoft Defender XDR Advanced Hunting table documented at https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-filemaliciouscontentinfo-table; visibility and runtime semantics remain unverified."
     },
     "GCPDNS": {
       "ahTable": "GCPDNS",
@@ -812,6 +812,30 @@
       "discriminator": null,
       "recommendAhTable": "GraphAPIAuditEvents",
       "notes": "Offline conversion mapping; target visibility and runtime semantics remain unverified."
+    },
+    "MessageEvents": {
+      "ahTable": "MessageEvents",
+      "tier": "1to1",
+      "columnRenames": {},
+      "dropColumns": [],
+      "discriminator": null,
+      "notes": "Identity mapping for the Microsoft Defender XDR Advanced Hunting table documented at https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-messageevents-table; visibility and runtime semantics remain unverified."
+    },
+    "MessagePostDeliveryEvents": {
+      "ahTable": "MessagePostDeliveryEvents",
+      "tier": "1to1",
+      "columnRenames": {},
+      "dropColumns": [],
+      "discriminator": null,
+      "notes": "Identity mapping for the Microsoft Defender XDR Advanced Hunting table documented at https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-messagepostdeliveryevents-table; visibility and runtime semantics remain unverified."
+    },
+    "MessageUrlInfo": {
+      "ahTable": "MessageUrlInfo",
+      "tier": "1to1",
+      "columnRenames": {},
+      "dropColumns": [],
+      "discriminator": null,
+      "notes": "Identity mapping for the Microsoft Defender XDR Advanced Hunting table documented at https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-messageurlinfo-table; visibility and runtime semantics remain unverified."
     },
     "NTANetAnalytics": {
       "ahTable": "NTANetAnalytics",

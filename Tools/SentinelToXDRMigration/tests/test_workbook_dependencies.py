@@ -1,12 +1,14 @@
 from copy import deepcopy
 import json
+from importlib.resources import files
 
 import pytest
 
 from sentinel_xdr_migration import cli, workbooks
+from sentinel_xdr_migration.dependencies import dependency_plan, workload_records
 from sentinel_xdr_migration import workbook_dependencies as dependencies
 from sentinel_xdr_migration.workbook_functions import candidates
-from sentinel_xdr_migration._workbook_core import workbook
+from sentinel_xdr_migration._workbook_core import workbook, mapping_catalog, migrator, rewrite
 from test_workbooks import solution, config, convert, authored
 
 SOURCE = "Workbooks/nested/fixture.json"
@@ -84,6 +86,215 @@ def test_plan_is_offline_hash_bound_and_never_accepts_heuristics(solution):
     assert plan["liveQueriesExecuted"] is False
     assert plan["planSha256"] == dependencies.digest({k: v for k, v in plan.items() if k != "planSha256"})
     assert before == {str(path): path.read_bytes() for path in solution.rglob("*") if path.is_file()}
+
+
+def test_office_native_tables_have_documented_identity_mappings_and_mdo_workload():
+    names = (
+        "MessageEvents", "MessageUrlInfo", "MessagePostDeliveryEvents",
+        "FileMaliciousContentInfo",
+    )
+    tables = mapping_catalog.load_mapping_catalog()["tables"]
+    for name in names:
+        assert tables[name]["ahTable"] == name
+        assert tables[name]["tier"] == "1to1"
+    schemas = json.loads(files("sentinel_xdr_migration._workbook_core")
+                         .joinpath("data/ah_schema_catalog.json").read_text())
+    assert not {"MessageEvents", "MessageUrlInfo", "MessagePostDeliveryEvents"} & set(schemas)
+    records, unknown = workload_records(list(names))
+    assert records == [{"workload": "mdo", "dataTypes": sorted(names)}]
+    assert unknown == []
+
+
+def test_granularity_scalar_parameter_is_not_a_source_but_table_parameters_are():
+    scalar = (
+        "let gran = {Granularity}; "
+        "EmailEvents | make-series Total = count() on Timestamp step gran"
+    )
+    assert workbook.opaque_functions(scalar) == set()
+    assert workbook.opaque_functions("let source = {TableName}; source | take 1") == {"{TableName}"}
+    assert workbook.opaque_functions("{TableName} | take 1") == {"{TableName}"}
+
+
+def test_static_datatable_review_converts_without_phantom_dependencies(solution):
+    query = '''datatable(Index:int, Name:string, Value:int)
+[
+    1, "Defender for Office 365", 194,
+    2, "Mimecast", 478
+]
+| project ["Email security solution"] = Name, ["Threats missed"] = Value
+| order by ["Threats missed"] asc'''
+    assert rewrite.is_source_free_literal_datatable(query)
+    assert not rewrite.is_source_free_literal_datatable(
+        'datatable(Index:int, Name:string)[1, "x"] | join DeviceEvents on Index'
+    )
+    assert not rewrite.is_source_free_literal_datatable(
+        'datatable(Index:int)[1] | project MissingColumn'
+    )
+    assert migrator.convert(query, tables=[])["status"] == "converted"
+    assert migrator.convert("print 1", tables=[])["status"] == "needs-review"
+    assert dependency_plan(query, metadata=[{"tables": ["MessageEvents"]}])["dataTypes"] == []
+
+    write_query(solution, query)
+    plan = dependencies.plan_workbook_dependencies(solution)
+    row = plan["queries"][0]
+    assert row["workspaceFunctions"] == []
+    assert row["proposal"]["dataTypes"] == []
+    assert row["proposal"]["reviewRequired"] is False
+
+    reviewed = decisions(plan)
+    reviewed["queries"][0]["tables"] = []
+    reviewed["workbooks"][0]["requiredWorkloads"] = []
+    reviewed["workbooks"][0]["requiredDataConnectors"] = []
+    review(solution, plan, reviewed)
+    settings = json.loads((solution / "Logs/review-1/conversion-config.json").read_bytes())
+    result = convert(solution, settings)
+    assert result["converted"] == 1 and result["blocked"] == 0
+    assert workbooks.validate_workbooks(solution)["valid"] == 1
+
+    authored_document = json.loads(authored(solution).read_bytes())
+    provenance = authored_document["contentProvenance"]
+    assert provenance["requiredWorkloads"] == []
+    assert provenance["requiredDataConnectors"] == []
+    record = provenance["conversion"]["queries"][0]
+    assert record["conversion"]["resolvedTables"] == []
+    assert record["conversion"]["status"] == "converted"
+
+    write_query(solution, "print 1")
+    unsupported_plan = dependencies.plan_workbook_dependencies(solution)
+    unsupported_decisions = decisions(unsupported_plan)
+    unsupported_decisions["queries"][0]["tables"] = []
+    unsupported_decisions["workbooks"][0]["requiredWorkloads"] = []
+    unsupported_decisions["workbooks"][0]["requiredDataConnectors"] = []
+    with pytest.raises(ValueError, match="requires explicit underlying source tables"):
+        review(solution, unsupported_plan, unsupported_decisions, output="Logs/review-unsupported")
+
+
+@pytest.mark.parametrize("query", [
+    "range x from 0 to 10 step 1",
+    "range x from 0 to 20 step 1",
+    "\n range Value_1 from -10 to 0 step 2 \r\n",
+    "range x from 10 to -10 step -1",
+    "range x from 0.0 to 1.0 step 0.25",
+    "range x from -1e1 to 1e1 step 5e-1",
+    "range DeviceEvents from 0 to 10 step 1",
+    "range x from 1 to 1 step -1",
+    "range x from -9223372036854775808 to 9223372036854775807 step 1",
+])
+def test_literal_numeric_range_conversion_is_identity_and_dependency_free(query):
+    assert rewrite.is_source_free_literal_range(query)
+    assert rewrite.is_source_free_literal_query(query)
+    assert not rewrite.is_source_free_literal_datatable(query)
+    for tables in ([], None):
+        contract = migrator.convert(query, tables=tables)
+        assert contract["status"] == "converted"
+        assert contract["convertedKql"] == query
+        assert contract["resolvedTables"] == []
+        assert contract["unsupported"] == []
+        assert contract["diff"] == []
+    proposal = dependency_plan(query, metadata=[{"tables": ["MessageEvents"]}])
+    assert proposal["dataTypes"] == []
+    assert proposal["requiredWorkloads"] == []
+    assert proposal["requiredDataConnectors"] == []
+    assert proposal["reviewRequired"] is False
+
+
+@pytest.mark.parametrize("query", [
+    "range(0, 10, 1)",
+    "range x from 0 to Limit step 1",
+    "range x from 0 to {Limit} step 1",
+    "range x from 0 to toscalar(DeviceEvents | count) step 1",
+    "range x from 0 to HiddenParser() step 1",
+    "range x from 0 to 10+1 step 1",
+    "range x from 0 to long(10) step 1",
+    "range x from datetime(2026-01-01) to now() step 1d",
+    "range x from 0 to 10 step 0",
+    "range x from 0 to 10 step -1",
+    "range x from 10 to 0 step 1",
+    "range x from 0 to 10 step 0e1",
+    "range x from 0 to 10 step 1e-999",
+    "range x from 0 to 1e999 step 1",
+    "range x from 0 to 9223372036854775808 step 1",
+    "range x from -9223372036854775809 to 0 step 1",
+    "range x from NaN to 10 step 1",
+    "range x from 0 to 10 step 1;",
+    "range x from 0 to 10 step 1 // comment",
+    "// range x from 0 to 10 step 1",
+    "'range x from 0 to 10 step 1'",
+    "range x from 0 to 10 step 1 | project x",
+    "range x from 0 to 10 step 1 | union DeviceEvents",
+    "union (range x from 0 to 10 step 1), (HiddenParser())",
+    "range x from 0 to 10 step 1; DeviceEvents | count",
+    "let r = range x from 0 to 10 step 1; r",
+    "RANGE x FROM 0 TO 10 STEP 1",
+])
+def test_nonliteral_or_composite_ranges_do_not_clear_empty_lineage_review(query):
+    assert not rewrite.is_source_free_literal_range(query)
+    assert not rewrite.is_source_free_literal_query(query)
+    assert migrator.convert(query, tables=[])["status"] != "converted"
+    assert migrator.convert(query)["status"] != "converted"
+    proposal = dependency_plan(query)
+    if proposal["dataTypes"]:
+        assert proposal["dataTypes"] == ["DeviceEvents"]
+        assert proposal["requiredWorkloads"] == [{"workload": "mde", "dataTypes": ["DeviceEvents"]}]
+    else:
+        assert proposal["reviewRequired"] is True
+
+
+def test_range_review_preserves_both_hash_bound_parameter_dropdowns(solution):
+    path = solution / SOURCE
+    document = json.loads(path.read_bytes())
+    queries = ["range x from 0 to 10 step 1", "range x from 0 to 20 step 1"]
+    hashes = [
+        "2ccdaa784725b2a65a8f381ed39f1d053eb36879948ab0bc52508acdc47dbfea",
+        "e19eb4f4d503984f28cd04aba8a7975c0ff909046d9c3f980c2033c16aaf61d4",
+    ]
+    document["items"] = [{"type": 1, "content": {"json": "layout"}} for _ in range(4)]
+    parameters = [{"name": f"Placeholder{i}", "type": 1} for i in range(6)]
+    parameters.extend({"name": f"Range{i}", "type": 2, "query": query, "queryType": 0}
+                      for i, query in enumerate(queries))
+    document["items"].append({"type": 9, "content": {"parameters": parameters}})
+    path.write_text(json.dumps(document))
+    before = path.read_bytes()
+    plan = dependencies.plan_workbook_dependencies(solution)
+    assert [row["path"] for row in plan["queries"]] == [
+        "/items/4/content/parameters/6/query", "/items/4/content/parameters/7/query"]
+    assert [row["querySha256"] for row in plan["queries"]] == hashes
+    assert all(not row["proposal"]["reviewRequired"] for row in plan["queries"])
+    reviewed = decisions(plan)
+    for row in reviewed["queries"]:
+        row["tables"] = []
+    reviewed["workbooks"][0]["requiredWorkloads"] = []
+    receipt = review(solution, plan, reviewed)
+    assert receipt["unresolved"] == []
+    settings = json.loads((solution / "Logs/review-1/conversion-config.json").read_bytes())
+    assert convert(solution, settings)["converted"] == 1
+    assert workbooks.validate_workbooks(solution)["valid"] == 1
+    assert path.read_bytes() == before
+    target = json.loads(authored(solution).read_bytes())
+    assert [row["node"]["query"] for row in workbook.query_surfaces(target)] == queries
+    provenance = target["contentProvenance"]
+    assert provenance["requiredWorkloads"] == []
+    assert provenance["requiredDataConnectors"] == []
+    assert provenance.get("requiredWorkspaceFunctions", []) == []
+    assert all(row["conversion"]["resolvedTables"] == []
+               for row in provenance["conversion"]["queries"])
+
+
+@pytest.mark.parametrize("query", [
+    "range x from 0 to 10 step 1 | union DeviceEvents",
+    "range x from 0 to HiddenParser() step 1",
+    "range x from 0 to 10 step 0",
+])
+def test_range_review_rejects_empty_lineage_for_unsupported_branches(solution, query):
+    write_query(solution, query)
+    plan = dependencies.plan_workbook_dependencies(solution)
+    reviewed = decisions(plan)
+    reviewed["queries"][0]["tables"] = []
+    reviewed["workbooks"][0]["requiredWorkloads"] = []
+    with pytest.raises(ValueError, match="explicit underlying source tables|vetted prerequisites"):
+        review(solution, plan, reviewed)
+    assert not authored(solution).exists()
+    assert not (solution / "Logs/review-1").exists()
 
 
 def test_saved_function_lineage_static_proposal_remains_unresolved(solution):
@@ -471,7 +682,97 @@ def test_vendored_component_manifest_hashes_are_current():
     root = files("sentinel_xdr_migration._workbook_core")
     manifest = json.loads(root.joinpath("import-manifest.json").read_text())
     for item in manifest["components"]:
-        assert hashlib.sha256(root.joinpath(item["component"]).read_bytes()).hexdigest() == item["sha256"]
+        contents = root.joinpath(item["component"]).read_bytes().replace(b"\r\n", b"\n")
+        assert hashlib.sha256(contents).hexdigest() == item["sha256"]
+
+
+@pytest.fixture
+def connector_solution(solution):
+    root = solution.parent / "Solutions" / "Microsoft Defender for Office 365"
+    root.parent.mkdir()
+    solution.rename(root)
+    folder = root / "Data Connectors"
+    folder.mkdir()
+    (folder / "template_OfficeATP.json").write_text(json.dumps({
+        "id": "ReviewedConnector", "dataTypes": [{"name": "Syslog"}]}))
+    write_query(root, "Syslog | count")
+    return root
+
+
+@pytest.mark.parametrize("repository_relative", [False, True])
+def test_connector_paths_are_canonical_read_only_and_review_hash_bound(connector_solution, repository_relative):
+    root = connector_solution
+    relative = "Data Connectors/template_OfficeATP.json"
+    reference = f"Solutions/{root.name}/{relative}" if repository_relative else relative
+    data_path = root / "Data/Solution_Fixture.json"
+    data_path.write_text(json.dumps({"Version": "3.2.2", "Data Connectors": [reference]}))
+    before = data_path.read_bytes()
+    plan = dependencies.plan_workbook_dependencies(root)
+    connector = plan["connectorAlternatives"][0]
+    assert connector["sourcePath"] == relative
+    assert connector["sourceSha256"] == workbooks._sha((root / relative).read_bytes())
+    assert plan["solutionDataSha256"] == dependencies.digest(json.loads(before))
+    assert review(root, plan, decisions(plan, tables=["Syslog"]))["dependencyReviewRequired"] is False
+    assert data_path.read_bytes() == before
+
+    altered = deepcopy(plan)
+    altered["connectorAlternatives"][0]["sourcePath"] = f"Solutions/{root.name}/{relative}"
+    altered["planSha256"] = dependencies.digest({k: v for k, v in altered.items() if k != "planSha256"})
+    with pytest.raises(ValueError, match="malformed or stale"):
+        review(root, altered, decisions(altered, tables=["Syslog"]), output="Logs/altered-review")
+    (root / relative).write_text(json.dumps({"id": "Changed", "dataTypes": ["Syslog"]}))
+    with pytest.raises(ValueError, match="malformed or stale"):
+        review(root, plan, decisions(plan, tables=["Syslog"]), output="Logs/stale-review")
+    assert not (root / "Logs/altered-review").exists()
+    assert not (root / "Logs/stale-review").exists()
+
+
+@pytest.mark.parametrize("reference", [
+    "Solutions/Other/Data Connectors/template_OfficeATP.json",
+    "Solutions/microsoft defender for office 365/Data Connectors/template_OfficeATP.json",
+    "Solutions/Microsoft Defender for Office 365/../Data Connectors/template_OfficeATP.json",
+    "Solutions/Microsoft Defender for Office 365/Workbooks/nested/fixture.json",
+    "Solutions/Microsoft Defender for Office 365/Data Connectors/missing.json",
+    "Data Connectors/../Data/Solution_Fixture.json",
+    "Data Connectors/./template_OfficeATP.json",
+    "Data Connectors//template_OfficeATP.json",
+    "Data Connectors/",
+    "/Data Connectors/template_OfficeATP.json",
+    "C:/Data Connectors/template_OfficeATP.json",
+    "C:Data Connectors/template_OfficeATP.json",
+    "Data Connectors\\template_OfficeATP.json",
+    "../Data Connectors/template_OfficeATP.json",
+    None,
+])
+def test_connector_paths_reject_unsafe_or_non_connector_references(connector_solution, reference):
+    data_path = connector_solution / "Data/Solution_Fixture.json"
+    data_path.write_text(json.dumps({"Data Connectors": [reference]}))
+    with pytest.raises(ValueError):
+        dependencies.plan_workbook_dependencies(connector_solution)
+
+
+def test_repository_relative_connector_requires_solutions_parent(solution):
+    with pytest.raises(ValueError):
+        dependencies._connectors(solution, {
+            "Data Connectors": [f"Solutions/{solution.name}/Data Connectors/connector.json"]})
+
+
+@pytest.mark.parametrize("repository_relative", [False, True])
+@pytest.mark.parametrize("directory", [False, True])
+def test_connector_paths_reject_symlinks(connector_solution, repository_relative, directory):
+    root = connector_solution
+    folder = root / "Data Connectors"
+    if directory:
+        target = root / "Actual Connectors"
+        folder.rename(target)
+        folder.symlink_to(target, target_is_directory=True)
+        relative = "Data Connectors/template_OfficeATP.json"
+    else:
+        (folder / "linked.json").symlink_to(folder / "template_OfficeATP.json")
+        relative = "Data Connectors/linked.json"
+    reference = f"Solutions/{root.name}/{relative}" if repository_relative else relative
+    with pytest.raises(ValueError, match="Symlink"):
+        dependencies._connectors(root, {"Data Connectors": [reference]})
 
 
 def test_connector_alternatives_are_not_cumulative_or_title_recommendations(solution):
@@ -755,3 +1056,22 @@ def test_decoy_functions_cannot_satisfy_hint_flags_or_unsupported_table_indirect
 def test_benign_member_indexing_and_catalog_table_controls(query):
     assert workbook.opaque_functions(query) == set()
 
+
+@pytest.mark.parametrize("query", [
+    "union withsource=Table \n (print X=1)",
+    "union ISFUZZY=true WITHSOURCE = tAbLe\r\n (print X=1)",
+    "union kind=outer withsource=ToTable\n(print X=1)",
+])
+def test_union_withsource_output_names_are_not_dynamic_table_calls(query):
+    assert workbook._quoted_calls_and_table_sources(query) == (set(), set())
+    assert workbook.opaque_functions(query) == set()
+
+
+@pytest.mark.parametrize(("query", "calls", "bare"), [
+    ("table(strcat('Device', 'Events'))", {"{__unsupported_table_indirection__}"}, set()),
+    ("totable(strcat('Device', 'Events'))", {"{__unsupported_table_indirection__}"}, set()),
+    ("table('DeviceEvents')", set(), {"DeviceEvents"}),
+    ("totable('DeviceEvents')", set(), {"DeviceEvents"}),
+])
+def test_dynamic_and_literal_table_calls_keep_existing_scanner_behavior(query, calls, bare):
+    assert workbook._quoted_calls_and_table_sources(query) == (calls, bare)

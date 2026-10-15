@@ -117,6 +117,31 @@ resolution, and unresolved review findings remain blockers. The converter record
 source items in `workbooks-manifest.json`, separate from detection `manifest.json`.
 Queries removed as proven scope-only helpers remain in provenance.
 
+The KQL rewriter treats `Type` conservatively: literal `Type` labels explicitly
+projected by a query are retained, and a bare `Type` grouping in a one-line
+`let Alias = NativeTable | summarize ... by ...` can be preserved by adding
+that table's name as a `Type` value before aggregation. Other `Type` references
+remain review findings; they are not replaced with `ActionType` or removed.
+
+Workbook dependency review also recognizes source-free literal `datatable`
+queries limited to literal cells, direct `project` expressions, and `order by`.
+Complete `range Column from Start to Stop step Step` queries are also recognized
+when all three operands are signed 64-bit integer literals or finite real
+literals (decimal/exponent notation), the step is nonzero, and its direction
+matches the endpoints (equal endpoints are allowed). Range keywords are lowercase;
+the column must be a plain ASCII identifier. No range functions, parameters,
+arithmetic, casts, comments, additional statements, or pipeline/union tails are
+accepted by this exception. The original query is preserved unchanged.
+These literal queries require an explicit hash-bound review decision but no
+telemetry table, workload, or connector prerequisite; other table-free KQL remains
+unresolved. V3.1 prerequisite scanning already treats the range operator as built-in
+and continues discovering function calls and telemetry branches in larger queries.
+This static exception does not verify runtime visibility or parity. The identity
+mappings for `MessageEvents`, `MessageUrlInfo`, `MessagePostDeliveryEvents`, and
+`FileMaliciousContentInfo` are grounded in their Microsoft Learn Advanced
+Hunting table references; they do not assert runtime visibility or add a schema
+where none is catalogued.
+
 The explicit solution Data `XDR Workbooks` array selects deployable content.
 An empty array selects none; packaging never repopulates it by scanning files.
 V3.1 emits workbook installation and Content Hub registration together under
@@ -134,6 +159,16 @@ The JSON plan carries `planSha256`, complete source/query inventory, connector
 alternatives, and function candidates. Optional `--results <metadata-file>
 --workspace-id <approved-workspace-id>` imports approved lab evidence; planning
 and import never execute queries or authenticate.
+
+Connector selections in solution Data accept `Data Connectors/<file>` and,
+when the solution directory is directly under `Solutions`, the exact
+`Solutions/<current-solution-directory>/Data Connectors/<file>` repository-relative
+form. Plans return solution-relative POSIX `sourcePath` values for both forms;
+source Data selections are never rewritten. References must name existing files
+within the current solution's `Data Connectors` directory. Other solutions,
+absolute paths, backslashes, empty/dot/traversal segments, and symlinks are
+rejected. Review regenerates the same canonical plan and checks connector hashes,
+while retaining the hash of the original solution Data.
 
 Apply explicit decisions with `workbook-review --solution <path> --run-id <run-id>
 --plan <plan-file> --decisions <decision-file> --plan-sha256 <hash> --actor <reviewer>
@@ -196,6 +231,15 @@ alone is not installation. Missing, stale, ambiguous, or conditional required
 resources block packaging. Full workbook registration retains function prerequisites;
 the installed notebook retains only the identity/version quartet. ARM ordering
 does not establish AH propagation, query correctness, or provider/UI acceptance.
+
+The V3.1 prerequisite scanner excludes a source query only when current source
+file/query hashes and its JSON pointer prove it belongs to a removable scope
+parameter, and the target no longer contains or references that helper. A
+`removed-scope-helper` status alone is insufficient; retained helpers and
+non-helper `resources` queries still block. Source and target scanning use the
+shared workbook mapping catalog and reviewed scalar `Granularity` and
+`union withsource=Table (print ...)` contracts. Real saved aliases and dynamic
+`table()`/`totable()` sources still require review or remain blockers.
 
 **Provider contract unverified:** generated templates and successful local tests
 are candidate evidence, not accepted installation or publication evidence.
