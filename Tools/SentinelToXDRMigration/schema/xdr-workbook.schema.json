@@ -21,13 +21,59 @@
     },
     "contentProvenance": {
       "type": "object",
-      "required": ["source", "conversion", "requiredWorkloads", "requiredDataConnectors", "dependencyReviewRequired"],
+      "required": ["source", "requiredWorkloads", "requiredDataConnectors", "dependencyReviewRequired"],
+      "allOf": [{
+        "if": {"required": ["origin"], "properties": {"origin": {"const": "native-xdr"}}},
+        "then": {
+          "required": ["nativeReview", "canonicalPayloadSha256"],
+          "not": {"anyOf": [{"required": ["conversion"]}, {"required": ["requiredWorkspaceFunctions"]}]},
+          "properties": {"source": {"properties": {"path": {"pattern": "^Workbook Sources/Native/[^\\\\]+\\.[jJ][sS][oO][nN]$"}}}}
+        },
+        "else": {
+          "required": ["conversion"],
+          "not": {"required": ["nativeReview"]},
+          "properties": {"source": {"properties": {"path": {"pattern": "^Workbooks/[^\\\\]+\\.[jJ][sS][oO][nN]$"}}}}
+        }
+      }],
       "properties": {
+        "origin": {"enum": ["native-xdr", "sentinel-migration"]},
+        "canonicalPayloadSha256": {"$ref": "#/$defs/sha256"},
+        "nativeReview": {
+          "type": "object",
+          "required": ["origin", "source", "canonicalPayloadSha256", "displayName", "actor", "reference", "requiredWorkloads", "requiredDataConnectors", "queries"],
+          "properties": {
+            "origin": {"const": "native-xdr"},
+            "source": {"type": "object"},
+            "canonicalPayloadSha256": {"$ref": "#/$defs/sha256"},
+            "displayName": {"type": "string", "minLength": 1},
+            "actor": {"type": "string", "minLength": 1},
+            "reference": {"type": "string", "minLength": 1},
+            "requiredWorkloads": {"type": "array"},
+            "requiredDataConnectors": {"type": "array"},
+            "queries": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["path", "querySha256", "tables", "decision", "evidence", "blockers"],
+                "properties": {
+                  "path": {"type": "string", "pattern": "^/"},
+                  "querySha256": {"$ref": "#/$defs/sha256"},
+                  "tables": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+                  "decision": {"const": "accept"},
+                  "evidence": {"type": "string", "minLength": 1},
+                  "blockers": {"const": []}
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
         "source": {
           "type": "object",
           "required": ["path", "sha256"],
           "properties": {
-            "path": {"type": "string", "pattern": "^Workbooks/[^\\\\]+\\.[jJ][sS][oO][nN]$"},
+            "path": {"type": "string"},
             "sha256": {"$ref": "#/$defs/sha256"},
             "contentId": {"type": ["string", "null"]},
             "originalMetadataVersion": {"type": ["string", "null"]}

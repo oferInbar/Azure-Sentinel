@@ -30,6 +30,17 @@ def _sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _load_json(text):
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"Duplicate JSON key: {key}")
+            value[key] = item
+        return value
+    return json.loads(text, object_pairs_hook=unique)
+
+
 def _root(solution) -> Path:
     path = Path(solution).expanduser()
     if any(p.is_symlink() for p in (path, *path.parents)) or not path.is_dir():
@@ -72,7 +83,7 @@ def _files(root: Path, directory: str) -> list[Path]:
 
 
 def _document(path: Path) -> dict:
-    value = json.loads(path.read_bytes())
+    value = _load_json(path.read_bytes())
     if not isinstance(value, dict):
         raise ValueError("Workbook JSON must be an object.")
     if value.get("version") != "Notebook/1.0" or not isinstance(value.get("items"), list):
@@ -406,19 +417,22 @@ def convert_workbooks(solution, *, config=None, report_directory=None, overwrite
     return summary
 
 
+def authored_schema_errors(document):
+    schema = json.loads(package_files("sentinel_xdr_migration._workbook_core").joinpath(
+        "data/xdr-workbook.schema.json").read_text("utf-8"))
+    return [f"{'/'.join(map(str, e.absolute_path))}: {e.message}"
+            for e in Draft202012Validator(schema).iter_errors(document)]
+
+
 def validate_workbooks(solution, *, selected_only=False) -> dict:
     root = _root(solution)
     inventory = {r["path"]: r for r in inventory_workbooks(root)}
     files = selected_workbook_files(root) if selected_only else _files(root, "XDR Workbooks")
     results, identities, instances = [], set(), set()
     source_paths = set()
-    schema = json.loads(package_files("sentinel_xdr_migration._workbook_core").joinpath(
-        "data/xdr-workbook.schema.json").read_text("utf-8"))
-    validator = Draft202012Validator(schema)
     for path in files:
         document = _document(path)
-        schema_errors = [f"{'/'.join(map(str, e.absolute_path))}: {e.message}"
-                         for e in validator.iter_errors(document)]
+        schema_errors = authored_schema_errors(document)
         if schema_errors:
             provenance = document.get("contentProvenance")
             if isinstance(provenance, dict) and isinstance(provenance.get("source"), dict):
@@ -442,7 +456,7 @@ def validate_workbooks(solution, *, selected_only=False) -> dict:
         identity, instance = _guid(metadata.get("contentId")), _guid(metadata.get("instanceId"))
         if not identity or not instance or identity == instance:
             errors.append("Canonical and instance identities must be distinct GUIDs.")
-        if identity in identities or instance in instances:
+        if identity in identities or instance in instances or identity in instances or instance in identities:
             errors.append("Duplicate authored workbook identity.")
         identities.add(identity)
         instances.add(instance)
@@ -452,6 +466,15 @@ def validate_workbooks(solution, *, selected_only=False) -> dict:
             errors.append("Workbook displayName is required.")
         if any(key in provenance for key in ("packageId", "packageVersion", "contentId", "contentVersion")):
             errors.append("Deployment provenance quartet must not be authored.")
+        if provenance.get("origin") == "native-xdr":
+            from .native_workbooks import validate_native_document
+            errors.extend(validate_native_document(root, document))
+            if source.get("path") in source_paths:
+                errors.append("Duplicate workbook source provenance.")
+            source_paths.add(source.get("path"))
+            results.append({"path": path.relative_to(root).as_posix(),
+                            "sha256": _sha(path.read_bytes()), "valid": not errors, "errors": errors})
+            continue
         row = inventory.get(source.get("path"))
         if not row or row["sha256"] != source.get("sha256"):
             errors.append("Source provenance is missing or stale.")

@@ -177,6 +177,15 @@ def main(argv: list[str] | None = None) -> int:
         description="Convert Microsoft Sentinel analytic rules into XDR Custom Detection YAML."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    for native_command in ("native-workbook-plan", "native-workbook-review",
+                           "native-workbook-import", "native-workbook-validate"):
+        native_parser = subparsers.add_parser(
+            native_command, help="Offline native AH authoring; never conversion or runtime qualification.")
+        native_parser.add_argument("--solution", required=True)
+        if native_command != "native-workbook-validate":
+            native_parser.add_argument("--source", required=True, help="Workbook Sources/Native/ solution-relative JSON.")
+        if native_command in ("native-workbook-review", "native-workbook-import"):
+            native_parser.add_argument("--review", required=True, help="Complete reviewed current native plan JSON.")
     dependency_parser = subparsers.add_parser(
         "dependency-plan",
         help="Propose YAML dependencies offline, or verify them from approved lab metadata.",
@@ -1172,6 +1181,10 @@ def main(argv: list[str] | None = None) -> int:
     selection = None
     try:
         isolated_permission_commands = {
+            "native-workbook-plan",
+            "native-workbook-review",
+            "native-workbook-import",
+            "native-workbook-validate",
             "plan-delegated-app-permission-update",
             "verify-delegated-app-permission-update",
             "workbook-dependency-plan",
@@ -1541,6 +1554,22 @@ def main(argv: list[str] | None = None) -> int:
             result = plan_solution_dependencies(
                 args.solution, results_path=args.results, workspace_id=args.workspace_id,
             )
+        elif args.command.startswith("native-workbook-"):
+            from .native_workbooks import (
+                plan_native_workbook, review_native_workbook, import_native_workbook, load_json,
+            )
+            from .workbooks import validate_workbooks
+            if args.command == "native-workbook-plan":
+                result = plan_native_workbook(args.solution, args.source)
+            elif args.command in ("native-workbook-review", "native-workbook-import"):
+                review_path = Path(args.review)
+                if any(p.is_symlink() for p in (review_path, *review_path.parents)):
+                    raise ValueError("Native review must not use symlinks.")
+                operation = (review_native_workbook if args.command == "native-workbook-review"
+                             else import_native_workbook)
+                result = operation(args.solution, args.source, load_json(review_path.read_bytes()))
+            else:
+                result = validate_workbooks(args.solution, selected_only=True)
         elif args.command == "workbook-dependency-plan":
             from .workbook_dependencies import plan_workbook_dependencies
             result = plan_workbook_dependencies(
@@ -1955,6 +1984,12 @@ def main(argv: list[str] | None = None) -> int:
         result["status"] != "active"
         or result.get("validationStatus") == "blocked"
     ):
+        return 1
+    if args.command == "native-workbook-validate" and result["invalid"]:
+        return 1
+    if args.command == "native-workbook-import" and result["validation"]["invalid"]:
+        return 1
+    if args.command == "native-workbook-plan" and any(q["blockers"] for q in result["queries"]):
         return 1
     return 0
 

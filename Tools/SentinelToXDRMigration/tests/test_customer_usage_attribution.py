@@ -65,23 +65,42 @@ class AttributionTests(unittest.TestCase):
             "$template | ConvertTo-Json -Depth 30"
         )
 
-    def test_absent_null_and_blank_continue_with_actionable_warning(self) -> None:
+    def test_required_absent_null_and_blank_fail_with_actionable_error(self) -> None:
         for value in (ABSENT, None, "", " \t"):
             with self.subTest(value=value):
+                self.mock_lookup(failure="throw [System.TimeoutException]::new(); ")
                 result = self.helper(value)
-                self.assertEqual(0, result.returncode, result.stderr)
-                for text in ("No attribution marker", "Partner Center", "Technical configuration",
-                             "SolutionMetadata.json", "rebuild", "https://learn.microsoft.com/"):
-                    self.assertIn(text, result.stdout)
+                self.assertNotEqual(0, result.returncode)
+                for text in ("Packaging stopped", "Partner Center", "Technical", "configuration",
+                             "SolutionMetadata.json", "rebuild", "publisherId", "offerId"):
+                    self.assertIn(text, result.stderr)
+        self.ps_prelude = ""
         result = self.helper(warn=False)
         self.assertEqual({"resources": []}, json.loads(result.stdout))
 
     def test_complete_ids_are_preserved_and_marker_shape_is_exact(self) -> None:
+        self.mock_lookup(failure="throw 'NETWORK MUST NOT RUN'; ")
         for tracking_id in (TRACKING_ID, "pid-contoso-myoffer-partnercenter"):
             with self.subTest(tracking_id=tracking_id):
                 result = self.helper(tracking_id)
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual({"resources": [self.marker(tracking_id)]}, json.loads(result.stdout))
+
+    def test_required_lookup_ignores_each_skip_control_and_persists_marker(self) -> None:
+        for value in (ABSENT, None, "", " \t"):
+            for skip, environment in ((False, False), (True, False), (False, True), (True, True)):
+                with self.subTest(value=value, skip=skip, environment=environment):
+                    self.write_metadata(value)
+                    self.mock_lookup()
+                    if environment:
+                        self.ps_prelude += "$env:SENTINEL_SKIP_ATTRIBUTION_LOOKUP = '1'; "
+                    extra = "-WarnIfMissing $true" + (" -SkipAttributionLookup" if skip else "")
+                    result = self.lookup_helper(extra)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    self.assertIn("LOOKUP_CALLS=2", result.stdout)
+                    self.assertEqual(TRACKING_ID, json.loads(self.metadata.read_text())["trackingId"])
+                    self.assertEqual({"resources": [self.marker(TRACKING_ID)]},
+                                     json.loads((self.repository / "result.json").read_text()))
 
     @staticmethod
     def marker(tracking_id: str) -> dict:
@@ -451,16 +470,18 @@ class AttributionTests(unittest.TestCase):
     def test_lookup_local_and_pipeline_use_authoritative_metadata_and_keep_cached_id_on_bump(self) -> None:
         entry = self.prepare_integration()
         for pipeline in (False, True):
-            for skip in (False, True):
-                with self.subTest(pipeline=pipeline, skip=skip):
+            for skip, environment in ((False, False), (True, False), (False, True)):
+                with self.subTest(pipeline=pipeline, skip=skip, environment=environment):
                     self.write_metadata()
                     self.mock_lookup()
+                    if environment:
+                        self.ps_prelude += "$env:SENTINEL_SKIP_ATTRIBUTION_LOOKUP = '1'; "
                     result = self.package(entry, pipeline, skip_lookup=skip)
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                     template = json.loads((self.solution / "Package/mainTemplate.json").read_text())
                     markers = [r for r in template["resources"] if r.get("name") == TRACKING_ID]
-                    self.assertEqual(0 if skip else 1, len(markers))
-                    self.assertEqual(None if skip else TRACKING_ID,
+                    self.assertEqual(1, len(markers))
+                    self.assertEqual(TRACKING_ID,
                                      json.loads(self.metadata.read_text()).get("trackingId"))
         self.write_metadata()
         self.mock_lookup()
@@ -488,6 +509,7 @@ class AttributionTests(unittest.TestCase):
         entry = self.prepare_integration()
         self.write_metadata(TRACKING_ID)
         before = self.data.read_bytes(), self.metadata.read_bytes()
+        self.mock_lookup(failure="throw 'NETWORK MUST NOT RUN'; ")
         for pipeline in (False, True):
             with self.subTest(pipeline=pipeline):
                 result = self.package(entry, pipeline)
@@ -518,20 +540,49 @@ class AttributionTests(unittest.TestCase):
                     self.assertEqual(template, json.loads(archive.read("mainTemplate.json").decode("utf-8-sig")))
                 self.assertEqual(before, (self.data.read_bytes(), self.metadata.read_bytes()))
 
-    def test_entry_points_warn_for_missing_id_and_fail_for_invalid_id(self) -> None:
+    def test_required_lookup_failures_stop_entry_points_before_artifacts_or_metadata_writes(self) -> None:
         entry = self.prepare_integration()
         for pipeline in (False, True):
-            with self.subTest(pipeline=pipeline):
-                self.write_metadata()
-                result = self.package(entry, pipeline)
-                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-                self.assertIn("CUSTOMER USAGE ATTRIBUTION:", result.stdout)
-                template = json.loads((self.solution / "Package/mainTemplate.json").read_text(encoding="utf-8-sig"))
-                self.assertEqual(1, len([r for r in template["resources"] if r["type"] == "Microsoft.Resources/deployments"]))
-                self.write_metadata("bad/id")
-                result = self.package(entry, pipeline)
-                self.assertNotEqual(0, result.returncode)
-                self.assertIn("Invalid trackingId", result.stderr)
+            for failure in ("network", "ambiguity", "invalid supplied ID"):
+                with self.subTest(pipeline=pipeline, failure=failure):
+                    self.write_metadata("bad/id" if failure == "invalid supplied ID" else ABSENT)
+                    before = self.metadata.read_bytes()
+                    if failure == "ambiguity":
+                        self.mock_lookup(catalog={"items": []})
+                    else:
+                        self.mock_lookup(failure="throw [System.TimeoutException]::new('secret?sig=hidden'); ")
+                    self.ps_prelude += "$env:SENTINEL_SKIP_ATTRIBUTION_LOOKUP = '1'; "
+                    result = self.package(entry, pipeline, skip_lookup=True)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("Invalid trackingId" if failure == "invalid supplied ID"
+                                  else "Required published lookup failed", result.stderr)
+                    self.assertNotIn("hidden", result.stdout + result.stderr)
+                    self.assertNotIn("Package Generated Successfully", result.stdout)
+                    self.assertEqual(before, self.metadata.read_bytes())
+                    self.assertFalse((self.solution / "Package").exists())
+                    self.assertEqual([], list(self.solution.glob("*.attribution-*")))
+
+    def test_optional_packaging_preserves_offline_skips_and_warning_only_failures(self) -> None:
+        entry = self.prepare_integration()
+        data = json.loads(self.data.read_text())
+        del data["XDR Detections"]
+        self.data.write_text(json.dumps(data))
+        for pipeline in (False, True):
+            for route in ("switch", "environment", "failure"):
+                with self.subTest(pipeline=pipeline, route=route):
+                    self.write_metadata()
+                    before = self.metadata.read_bytes()
+                    self.mock_lookup(failure="throw [System.TimeoutException]::new(); ")
+                    if route == "environment":
+                        self.ps_prelude += "$env:SENTINEL_SKIP_ATTRIBUTION_LOOKUP = '1'; "
+                    result = self.package(entry, pipeline, skip_lookup=route == "switch")
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    self.assertEqual(route == "failure", "Published lookup failed" in result.stdout)
+                    self.assertEqual(before, self.metadata.read_bytes())
+                    template = json.loads((self.solution / "Package/mainTemplate.json").read_text())
+                    self.assertFalse(any(r["type"] == "Microsoft.Resources/deployments"
+                                         for r in template["resources"]))
+                    self.assertTrue((self.solution / "Package/3.2.0.zip").exists())
 
 
 if __name__ == "__main__":

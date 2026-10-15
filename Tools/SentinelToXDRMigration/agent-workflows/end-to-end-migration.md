@@ -1349,9 +1349,13 @@ AR/CD count matching, correct `E5Flavor` conditions, disabled CDs, unique IDs,
 and explained validation results. Complete the packaging stage only with
 `packager=V3.1`, the generated `packaging.v3_1.json`, and its template, UI,
 parameters, and ZIP paths. Existing package files are not current-run evidence.
-Do not relabel historical V4 evidence. Rebuild with V3.1. Surface missing
-customer usage attribution warnings; optional `trackingId` must be copied
-unchanged from Partner Center into SolutionMetadata.json, never synthesized.
+Do not relabel historical V4 evidence. Rebuild with V3.1. XDR detections and
+Defender Workbooks require customer usage attribution: a missing `trackingId`
+triggers published Marketplace lookup even with offline skip controls.
+Lookup failure or ambiguity stops packaging before artifact output without
+changing metadata. Verify the offer identity or supply the complete Partner
+Center ID unchanged in SolutionMetadata.json; never synthesize it.
+Optional-attribution packages retain offline skips and warning-only failures.
 V3.1 copies only the first authored tactic and its compatible nested techniques
 into the ARM payload, without changing the complete YAML/provenance. Disclose
 this intentional classification loss; packaging is not classification/alert
