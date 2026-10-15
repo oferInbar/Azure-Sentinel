@@ -1,3 +1,33 @@
+$script:V31LegacyWorkbookVersionExceptions = @{
+    'MicrosoftDefenderForOffice365detectionsandinsights' = [version]'4.0.0.0'
+    'MicrosoftDefenderForOffice365detectionsandinsights.json' = [version]'4.0.0.0'
+    'ThreatIntelligenceWorkbook' = [version]'5.0.0.0'
+    'ThreatIntelligence' = [version]'5.0.0.0'
+    'ThreatIntelligence.json' = [version]'5.0.0.0'
+}
+
+function Test-V31LegacyWorkbookVersionException {
+    param(
+        [string]$ContentPath,
+        [version]$NormalizedVersion
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ContentPath) -or $null -eq $NormalizedVersion) {
+        return $false
+    }
+    $normalizedPath = $ContentPath.Trim() -replace '\\', '/'
+    $leaf = [System.IO.Path]::GetFileName($normalizedPath)
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($leaf)
+    foreach ($candidate in @($normalizedPath, $leaf, $stem, "${stem}Workbook")) {
+        foreach ($entry in $script:V31LegacyWorkbookVersionExceptions.GetEnumerator()) {
+            if ($entry.Key -ieq $candidate -and $NormalizedVersion -eq $entry.Value) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
 function Assert-V31ReleaseVersion {
     param(
         [AllowNull()]
@@ -10,7 +40,7 @@ function Assert-V31ReleaseVersion {
     if (-not $v31VersionPolicy) { return }
 
     $minimum = if ($ContentKind -eq 'Solution') { [version]'3.2.0.0' } elseif ($ContentKind -eq 'CustomDetection') { [version]'3.1.0.0' } else { [version]'0.0.0.0' }
-    $range = if ($ContentKind -eq 'Solution') { '>= 3.2.0 and < 4.0.0' } elseif ($ContentKind -eq 'CustomDetection') { '>= 3.1.0 and < 4.0.0' } elseif ($ContentKind -eq 'Workbook') { 'an independent numeric content version' } else { '< 4.0.0' }
+    $range = if ($ContentKind -eq 'Solution') { '>= 3.2.0 and < 4.0.0' } elseif ($ContentKind -eq 'CustomDetection') { '>= 3.1.0 and < 4.0.0' } else { '< 4.0.0' }
     $parsed = $null
     $valid = $Version -cmatch '\A[0-9]+\.[0-9]+(?:\.[0-9]+){0,2}\z' -and
         [version]::TryParse($Version, [ref]$parsed)
@@ -19,10 +49,10 @@ function Assert-V31ReleaseVersion {
     }
     if ($valid) {
         $normalized = [version]::new($parsed.Major, $parsed.Minor, [Math]::Max(0, $parsed.Build), [Math]::Max(0, $parsed.Revision))
-        # Sentinel Workbook metadata versions predate and are independent of solution release bounds.
-        # Defender Workbooks use their separate Assert-DefenderWorkbookReleaseVersion guard.
+        $isLegacyWorkbookException = $ContentKind -eq 'Workbook' -and
+            (Test-V31LegacyWorkbookVersionException -ContentPath $ContentPath -NormalizedVersion $normalized)
         $valid = $normalized -ge $minimum -and
-            ($ContentKind -eq 'Workbook' -or $normalized -lt [version]'4.0.0.0')
+            ($normalized -lt [version]'4.0.0.0' -or $isLegacyWorkbookException)
     }
     if (-not $valid) {
         $message = "V3.1 version policy: $ContentKind '$ContentPath' has effective release version '$Version'; required $range (numeric release version). No version is automatically promoted."

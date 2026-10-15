@@ -315,16 +315,16 @@ class VersionPolicyTests(unittest.TestCase):
             f". {policy}; "
             "Assert-V31ReleaseVersion -Version '4.0.0' -ContentKind Solution -ContentPath 'Legacy'; "
             "$v31VersionPolicy = @{ Errors = [System.Collections.Generic.List[string]]::new() }; "
-            "try { Assert-V31ReleaseVersion -Version '4.0.0' -ContentKind AnalyticsRule -ContentPath 'Example.yaml' } catch {}; "
+            "try { Assert-V31ReleaseVersion -Version '4.0.0' -ContentKind Workbook -ContentPath 'Example.json' } catch {}; "
             "Assert-V31VersionChecksPassed"
         )
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("AnalyticsRule 'Example.yaml'", result.stderr)
+        self.assertIn("Workbook 'Example.json'", result.stderr)
         self.assertNotIn("Solution 'Legacy'", result.stderr)
 
     def test_numeric_bounds_do_not_apply_floor_to_other_content_kinds(self):
         policy = attribution.ps_literal(attribution.PACKAGER / "common/versionPolicy.ps1")
-        kinds = ("AnalyticsRule", "HuntingQuery", "Parser", "Playbook", "DataConnector", "LogicAppsCustomConnector",
+        kinds = ("AnalyticsRule", "HuntingQuery", "Parser", "Workbook", "Playbook", "DataConnector", "LogicAppsCustomConnector",
                  "AzureFunction", "SummaryRule", "Watchlist", "CCF DataConnector/Connections")
         for kind in kinds:
             with self.subTest(kind=kind):
@@ -385,23 +385,43 @@ class VersionPolicyTests(unittest.TestCase):
         result = self.run_ps(
             f". {policy}; "
             "$v31VersionPolicy = @{ Errors = [System.Collections.Generic.List[string]]::new() }; "
-            "foreach ($v in @('1.0', '2.0.0', '4.0.0', '4.1.0', '10.2.3.4')) { "
+            "foreach ($v in @('1.0', '2.0.0', '3.9.99')) { "
             "Assert-V31ReleaseVersion -Version $v -ContentKind Workbook -ContentPath 'Workbooks/Test.json' }; "
+            "foreach ($item in @("
+            "@('4.0.0', 'Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json'), "
+            "@('4.0.0', 'MicrosoftDefenderForOffice365detectionsandinsights'), "
+            "@('4.0.0', 'MicrosoftDefenderForOffice365detectionsandinsights.json'), "
+            "@('5.0.0', 'Workbooks/ThreatIntelligence.json'), "
+            "@('5.0.0', 'ThreatIntelligenceWorkbook'), "
+            "@('5.0.0', 'ThreatIntelligence.json')"
+            ")) { Assert-V31ReleaseVersion -Version $item[0] -ContentKind Workbook -ContentPath $item[1] }; "
             "Assert-V31VersionChecksPassed"
         )
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        for version in ("", "Notebook/1.0", "4.0.0-preview", "4.0.0\n"):
-            with self.subTest(version=version):
+        rejected_cases = (
+            ("4.0.0", "Workbooks/Test.json"),
+            ("4.1.0", "Workbooks/Test.json"),
+            ("10.2.3.4", "Workbooks/Test.json"),
+            ("4.1.0", "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json"),
+            ("5.0.0", "Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json"),
+            ("4.0.0", "Workbooks/ThreatIntelligence.json"),
+            ("5.1.0", "Workbooks/ThreatIntelligence.json"),
+            ("", "Workbooks/Test.json"),
+            ("Notebook/1.0", "Workbooks/Test.json"),
+            ("4.0.0-preview", "Workbooks/Test.json"),
+            ("4.0.0\n", "Workbooks/Test.json"),
+        )
+        for version, content_path in rejected_cases:
+            with self.subTest(version=version, content_path=content_path):
                 result = self.run_ps(
                     f". {policy}; "
                     "$v31VersionPolicy = @{ Errors = [System.Collections.Generic.List[string]]::new() }; "
                     f"try {{ Assert-V31ReleaseVersion -Version {attribution.ps_literal(version)} "
-                    "-ContentKind Workbook -ContentPath 'Workbooks/Test.json' } catch {}; "
+                    f"-ContentKind Workbook -ContentPath {attribution.ps_literal(content_path)} }} catch {{}}; "
                     "Assert-V31VersionChecksPassed"
                 )
                 self.assertNotEqual(0, result.returncode)
-                self.assertIn("independent", result.stderr)
-                self.assertIn("numeric content version", result.stderr)
+                self.assertIn("required < 4.0.0", result.stderr)
 
     def test_workbook_version_does_not_relax_solution_or_xdr_versions(self):
         common = attribution.ps_literal(attribution.PACKAGER / "common/commonFunctions.ps1")
@@ -418,7 +438,7 @@ class VersionPolicyTests(unittest.TestCase):
                 result = self.run_ps(
                     f". {common}; "
                     "$v31VersionPolicy = @{ Errors = [System.Collections.Generic.List[string]]::new() }; "
-                    "Assert-V31ReleaseVersion -Version '4.0.0' -ContentKind Workbook -ContentPath 'Workbooks/Test.json'; "
+                    "Assert-V31ReleaseVersion -Version '4.0.0' -ContentKind Workbook -ContentPath 'Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json'; "
                     f"foreach ($v in @({','.join(map(attribution.ps_literal, accepted))})) {{ {guard} }}; "
                     "$rejected = @(); "
                     f"foreach ($v in @({','.join(map(attribution.ps_literal, rejected))})) {{ "
@@ -428,22 +448,32 @@ class VersionPolicyTests(unittest.TestCase):
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                 self.assertEqual(list(rejected), json.loads(result.stdout))
 
-    def test_workbook_effective_metadata_version_is_preserved(self):
+    def test_workbook_effective_metadata_version_is_checked_and_preserved_for_exceptions(self):
         common = attribution.ps_literal(attribution.PACKAGER / "common/commonFunctions.ps1")
         metadata = self.solution / "Workbooks/WorkbooksMetadata.json"
         metadata.parent.mkdir()
-        metadata.write_text(json.dumps([{
-            "templateRelativePath": "Test.json", "workbookKey": "Test",
-            "title": "Test", "description": "Test", "version": "4.0.0",
-            "dataTypesDependencies": [], "dataConnectorsDependencies": [],
-        }]))
+        metadata.write_text(json.dumps([
+            {
+                "templateRelativePath": "Test.json", "workbookKey": "Test",
+                "title": "Test", "description": "Test", "version": "4.0.0",
+                "dataTypesDependencies": [], "dataConnectorsDependencies": [],
+            },
+            {
+                "templateRelativePath": "MicrosoftDefenderForOffice365detectionsandinsights.json",
+                "workbookKey": "MicrosoftDefenderForOffice365detectionsandinsights",
+                "title": "MDO", "description": "MDO", "version": "4.0.0",
+                "dataTypesDependencies": [], "dataConnectorsDependencies": [],
+            },
+        ]))
         workbook = metadata.with_name("Test.json")
         workbook.write_text(json.dumps({
             "version": "Notebook/1.0",
             "items": [{"type": 1, "content": {"json": "# Test"}}],
         }))
+        mdo_workbook = metadata.with_name("MicrosoftDefenderForOffice365detectionsandinsights.json")
+        mdo_workbook.write_text(workbook.read_text())
         before = self.snapshot()
-        result = self.run_ps(
+        rejected = self.run_ps(
             f". {common}; "
             "$v31VersionPolicy = @{ Errors = [System.Collections.Generic.List[string]]::new() }; "
             "$solutionName = 'Sample'; "
@@ -454,7 +484,26 @@ class VersionPolicyTests(unittest.TestCase):
             f"$rawData = Get-Content -LiteralPath {attribution.ps_literal(workbook)} -Raw; "
             "GetWorkbookDataMetadata -file 'Workbooks/Test.json' -isPipelineRun $false "
             "-contentResourceDetails (returnContentResources '3.2.1') "
-            f"-baseFolderPath {attribution.ps_literal(str(self.solution) + '\\')} "
+            f"-baseFolderPath {attribution.ps_literal(str(self.solution) + '/')} "
+            "-contentToImport $contentToImport; "
+            "Assert-V31VersionChecksPassed"
+        )
+        self.assertNotEqual(0, rejected.returncode, rejected.stdout + rejected.stderr)
+        self.assertIn("Workbook 'Workbooks/Test.json'", rejected.stderr)
+        self.assertIn("'4.0.0'", rejected.stderr)
+
+        result = self.run_ps(
+            f". {common}; "
+            "$v31VersionPolicy = @{ Errors = [System.Collections.Generic.List[string]]::new() }; "
+            "$solutionName = 'Sample'; "
+            "$global:workbookCounter = 1; $global:DependencyCriteria = @(); "
+            "$global:baseMainTemplate = [pscustomobject]@{variables=[pscustomobject]@{};parameters=[pscustomobject]@{};resources=@()}; "
+            "$global:baseCreateUiDefinition = [pscustomobject]@{parameters=[pscustomobject]@{steps=@()}}; "
+            "$contentToImport = [pscustomobject]@{TemplateSpec=$true;Name='Sample';Version='3.2.1';Author='Microsoft'}; "
+            f"$rawData = Get-Content -LiteralPath {attribution.ps_literal(mdo_workbook)} -Raw; "
+            "GetWorkbookDataMetadata -file 'Workbooks/MicrosoftDefenderForOffice365detectionsandinsights.json' -isPipelineRun $false "
+            "-contentResourceDetails (returnContentResources '3.2.1') "
+            f"-baseFolderPath {attribution.ps_literal(str(self.solution) + '/')} "
             "-contentToImport $contentToImport; "
             "Assert-V31VersionChecksPassed; "
             "$global:baseMainTemplate | ConvertTo-Json -Depth 50 -Compress"
@@ -464,7 +513,7 @@ class VersionPolicyTests(unittest.TestCase):
         self.assertEqual("4.0.0", template["variables"]["workbookVersion1"])
         registered = template["resources"][0]
         self.assertEqual("[variables('workbookVersion1')]", registered["properties"]["version"])
-        self.assertEqual(json.loads(workbook.read_text()),
+        self.assertEqual(json.loads(mdo_workbook.read_text()),
                          json.loads(registered["properties"]["mainTemplate"]["resources"][0]["properties"]["serializedData"]))
         self.assertEqual(before, self.snapshot())
 
