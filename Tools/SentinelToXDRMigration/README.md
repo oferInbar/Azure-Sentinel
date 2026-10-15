@@ -256,6 +256,145 @@ adaptations. Refreshing this slice is a deliberate maintainer change requiring
 reviewed import evidence and the differential workbook fixture tests, not an
 automatic runtime fetch.
 
+### Native Defender workbook authoring/import (no Sentinel parent)
+
+Already-native `Notebook/1.0` content has an explicit offline authoring route.
+It is **not** migration: no Sentinel sibling, converter replay, conversion
+success receipt, workflow-stage receipt or runtime qualification is invented.
+Migrated workbooks retain their existing source inventory and deterministic
+converter proof unchanged.
+
+Store the original raw JSON **inside the solution** at
+`Workbook Sources/Native/<name>.json` (nested paths are supported). Commit this
+source alongside its authored candidate for reproducible builds. The source
+file is SHA256-bound even before commit. Do not select it in `Workbooks` or
+`XDR Workbooks`; it is not a deployment artifact. The import command creates
+`XDR Workbooks/<name>.json` and appends that candidate once to the existing
+`Data/Solution_*.json` `XDR Workbooks` selection, preserving other selections
+and the solution version. A native-only solution needs no `Workbooks` directory.
+
+Use Python 3.11/3.12 and the toolkit's existing dependencies. For an isolated
+toolkit checkout, set `PYTHONPATH` rather than reinstalling an editable package:
+
+```powershell
+$Toolkit = 'C:\E5Workbooks\Azure-Sentinel-toolkit-native-workbooks'
+$Python = 'C:\Users\wiking\.copilot\session-state\368f9173-fbe4-4420-a1b1-2fe04724ed6b\files\xdr-toolkit-venv\Scripts\python.exe'
+$env:PYTHONPATH = Join-Path $Toolkit 'Tools\SentinelToXDRMigration'
+$env:PYTHONIOENCODING = 'utf-8'
+$env:SENTINEL_XDR_PYTHON = $Python
+$Solution = 'C:\content\Solutions\Example'
+$Source = 'Workbook Sources/Native/example.json'
+
+& $Python -m sentinel_xdr_migration.cli native-workbook-plan `
+  --solution $Solution --source $Source |
+  Set-Content -LiteralPath '.\native-review.json' -Encoding utf8
+
+# Review/edit native-review.json explicitly; do not auto-accept proposals.
+& $Python -m sentinel_xdr_migration.cli native-workbook-review `
+  --solution $Solution --source $Source --review '.\native-review.json' |
+  Set-Content -LiteralPath '.\native-reviewed.json' -Encoding utf8
+& $Python -m sentinel_xdr_migration.cli native-workbook-import `
+  --solution $Solution --source $Source --review '.\native-reviewed.json'
+& $Python -m sentinel_xdr_migration.cli native-workbook-validate --solution $Solution
+```
+
+The plan is the review input, not a success receipt. The review command checks
+and echoes complete current decisions; import independently rechecks them.
+Neither command auto-accepts proposals. Supply nonempty `actor`,
+`reference`, and `displayName`. For **every** current query pointer (including
+parameter and nested queries), supply `decision: "accept"` and nonempty
+`evidence` describing the exact query's complete input/dependency review.
+Keep the proposed `origin`, `source.path`, `source.sha256`, query `path`,
+`querySha256`, `tables`, `blockers`, `requiredWorkloads`, and
+`requiredDataConnectors` unchanged. The native route currently supports only
+catalogued non-Sentinel workloads and no connector or saved-function
+prerequisites. Reviewers cannot override discovery, label an unknown function
+as a table, accept a blocker, or supply arbitrary empty lineage. Unsupported
+functions/tables, dynamic/external/cross-resource sources and non-AH providers
+require a separate maintainer/content design decision, not a forced import.
+Empty lineage uses only the existing strict literal `datatable`/numeric `range`
+recognizers. The plan exits nonzero when it contains technical blockers.
+
+Authored provenance is additive:
+
+```json
+{
+  "contentProvenance": {
+    "origin": "native-xdr",
+    "source": {
+      "path": "Workbook Sources/Native/example.json",
+      "sha256": "<SHA256 of exact source file bytes>"
+    },
+    "nativeReview": {
+      "origin": "native-xdr",
+      "source": {"path": "Workbook Sources/Native/example.json", "sha256": "<same hash>"},
+      "displayName": "Example",
+      "actor": "<reviewer>",
+      "reference": "<review reference>",
+      "requiredWorkloads": [{"workload": "mdo", "dataTypes": ["EmailEvents"]}],
+      "requiredDataConnectors": [],
+      "queries": [{
+        "path": "/items/0/content/query",
+        "querySha256": "<SHA256 of exact UTF-8 query string>",
+        "tables": ["EmailEvents"],
+        "decision": "accept",
+        "evidence": "<complete current query/dependency review>",
+        "blockers": []
+      }]
+    },
+    "requiredWorkloads": [{"workload": "mdo", "dataTypes": ["EmailEvents"]}],
+    "requiredDataConnectors": [],
+    "dependencyReviewRequired": false
+  }
+}
+```
+
+There is no `conversion` object in native provenance. `xdrMetadata` uses the
+normal schema/version/display name fields. Canonical UUIDv5 assignment is
+`uuid5(NAMESPACE_URL, "native-xdr-workbook:<solution directory name>:<source POSIX path>")`;
+the instance is the existing
+`uuid5(NAMESPACE_URL, "xdr-workbook-instance:<solution directory name>:<canonical ID>")`.
+Relocating a checkout, reimporting, changing query content or changing release
+does not change these IDs; renaming the solution directory/source path does.
+Import refuses differing existing candidates rather than silently overwriting
+them. A deliberate source edit requires a fresh review and removal of the old
+local candidate and its `XDR Workbooks` selection before reimport, retaining the
+same identity for the same path.
+
+Native validation compares the **whole original Notebook** with the authored
+payload after removing only the two additive authoring fields. Thus query
+strings (including CRLF/Unicode), items, notices, tabs and other source keys
+remain unchanged. Missing/stale sources or query coverage, duplicate JSON
+keys/IDs/selections, traversal and symlinks fail closed. Native validation is
+integrated with `validate_workbooks`, the existing local static XDR adapter,
+and the V3.1 emitter. The PowerShell emitter reuses this Python validator
+against its in-memory native document and requires that interpreter's
+dependencies; a missing interpreter/dependency is an error, never a waiver.
+`SENTINEL_XDR_PYTHON` selects the interpreter; absent it, `python` is used.
+The subprocess imports only the emitter's toolkit checkout.
+
+For candidate package regression testing, use the correct V3.1 entry point
+from the **content repository root**, with a separate toolkit root:
+
+```powershell
+Set-Location 'C:\content'
+& (Join-Path $Toolkit 'Tools\Create-Azure-Sentinel-Solution\V3\createSolutionV3_1.ps1') `
+  -SolutionDataFolderPath (Join-Path $Solution 'Data') `
+  -ToolkitRootPath $Toolkit -VersionMode local -VersionBump none `
+  -ArmValidationMethod lab-deployment -SkipAttributionLookup
+```
+
+This generates an **unaccepted candidate** with ARM lab validation pending;
+it performs no deployment and is not a replacement for production release
+validation/acceptance. Do not use legacy `createSolutionV3.ps1`, fabricate an
+ARM/ZIP or claim lab/runtime qualification. V3.1 uses the same managed-ID
+install/registration contract and default-false `DeployDefenderWorkbook`
+switch for native and migrated entries. Installed Notebook provenance remains
+only the package/content identity/version quartet; source paths, hashes,
+native reviews and authoring metadata are not installed. Registration keeps
+the existing reviewed dependency contract. Original Sentinel selections remain
+independent and no native source is deployed twice.
+
 ### Toolkit-owner managed update policy
 
 Toolkit-managed Defender Workbooks and XDR detections are updated by stable ID.

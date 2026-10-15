@@ -44,6 +44,47 @@ function Assert-DefenderWorkbookReleaseVersion {
     }
 }
 
+function Assert-NativeDefenderWorkbookDocument {
+    param([psobject]$Document, [string]$SolutionRoot)
+
+    $python = if ($env:SENTINEL_XDR_PYTHON) { $env:SENTINEL_XDR_PYTHON } else { 'python' }
+    $start = [System.Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $python
+    $start.UseShellExecute = $false
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $start.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    foreach ($argument in @('-m', 'sentinel_xdr_migration.native_workbooks', $SolutionRoot)) {
+        $start.ArgumentList.Add($argument)
+    }
+    $start.Environment['PYTHONPATH'] = [System.IO.Path]::GetFullPath(
+        (Join-Path $PSScriptRoot '../../SentinelToXDRMigration'))
+    $start.Environment['PYTHONIOENCODING'] = 'utf-8'
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        [void]$process.Start()
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $process.StandardInput.Write(($Document | ConvertTo-Json -Depth 100 -Compress))
+        $process.StandardInput.Close()
+        $process.WaitForExit()
+        $output = $stdout.GetAwaiter().GetResult()
+        $diagnostic = $stderr.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            throw "Native Defender Workbook validation failed: $output $diagnostic"
+        }
+        $receipt = $output | ConvertFrom-Json -ErrorAction Stop
+        if ($null -eq $receipt -or $receipt.errors -isnot [array] -or $receipt.errors.Count -ne 0) {
+            throw 'Native Defender Workbook validation returned no valid receipt.'
+        }
+    } finally {
+        $process.Dispose()
+    }
+}
+
 function Assert-DefenderWorkbookDocument {
     param([psobject]$Document, [string]$SolutionRoot, [string]$SolutionName, [string]$ContentPath, [switch]$PassThruSource)
 
@@ -63,6 +104,19 @@ function Assert-DefenderWorkbookDocument {
     }
     Assert-DefenderWorkbookReleaseVersion -Version $metadata.version
     $provenance = $Document.contentProvenance
+    if ($null -ne $provenance -and $provenance.origin -ceq 'native-xdr') {
+        Assert-NativeDefenderWorkbookDocument -Document $Document -SolutionRoot $SolutionRoot
+        if ($PassThruSource) {
+            $nativeSource = Resolve-SolutionContentPath -SolutionRoot $SolutionRoot -SolutionName $SolutionName `
+                -ContentPath $provenance.source.path -RequireFile
+            return Get-Content -LiteralPath $nativeSource.FullPath -Raw | ConvertFrom-Json -ErrorAction Stop
+        }
+        return
+    }
+    if ($null -ne $provenance.PSObject.Properties['origin'] -and
+        $provenance.origin -cne 'sentinel-migration') {
+        throw "Defender Workbook '$ContentPath' has an unknown origin."
+    }
     if ($provenance -isnot [pscustomobject] -or
         $provenance.dependencyReviewRequired -isnot [bool] -or $provenance.dependencyReviewRequired -or
         $provenance.conversion -isnot [pscustomobject] -or
@@ -704,6 +758,11 @@ function Get-DefenderWorkbookParserDependencies {
     $sourceNotebook = Assert-DefenderWorkbookDocument -Document $Document -SolutionRoot $SolutionRoot `
         -SolutionName $SolutionName -ContentPath 'prerequisite scan' -PassThruSource
     $provenance = $Document.contentProvenance
+    if ($provenance.origin -ceq 'native-xdr') {
+        # The shared native validator rejects functions and non-native tables;
+        # native imports have no savedSearch/parser deployment prerequisites.
+        return
+    }
     $declared = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $property = $provenance.PSObject.Properties['requiredWorkspaceFunctions']
     if ($null -ne $property -and $property.Value -isnot [array]) {
@@ -1061,9 +1120,15 @@ function Add-XdrDefenderWorkbooksToSolution {
     $contentPackages = @($Template.resources | Where-Object {
         $_.type -ieq 'Microsoft.OperationalInsights/workspaces/providers/contentPackages'
     })
-    if ($contentPackages.Count -ne 1 -or
-        $null -eq $contentPackages[0].properties.dependencies.PSObject.Properties['criteria']) {
-        throw 'Defender Workbook packaging requires exactly one contentPackages dependency criteria resource.'
+    if ($contentPackages.Count -ne 1 -or $null -eq $contentPackages[0].properties) {
+        throw 'Defender Workbook packaging requires exactly one contentPackages resource.'
+    }
+    $dependencyProperty = $contentPackages[0].properties.PSObject.Properties['dependencies']
+    if ($null -ne $dependencyProperty -and
+        ($null -eq $dependencyProperty.Value -or
+         $null -eq $dependencyProperty.Value.PSObject.Properties['criteria'] -or
+         $dependencyProperty.Value.criteria -isnot [array])) {
+        throw 'Defender Workbook packaging requires valid contentPackages dependency criteria.'
     }
     $resources = @()
     $criteria = @()
@@ -1134,7 +1199,11 @@ function Add-XdrDefenderWorkbooksToSolution {
     )
     # Exempt only reviewed prerequisites and their registration faces from DeployParser.
     Register-SolutionRequiredResources -Resources $requiredResources
-    $Template.resources += $resources
+    $Template.resources = @($Template.resources) + @($resources)
+    if ($null -eq $dependencyProperty) {
+        $contentPackages[0].properties | Add-Member -NotePropertyName dependencies -NotePropertyValue (
+            [pscustomobject]@{ operator = 'AND'; criteria = @() })
+    }
     $existing = @($contentPackages[0].properties.dependencies.criteria | Where-Object { $_.kind -ine 'DefenderWorkbook' })
     $contentPackages[0].properties.dependencies.criteria = @($existing) + @($criteria)
     Write-Warning 'Defender Workbook install/registration is an UNVERIFIED candidate contract. Approved lab installation, registration readback, identity/provenance and repeat-install/update evidence are required; generation does not establish provider acceptance.'

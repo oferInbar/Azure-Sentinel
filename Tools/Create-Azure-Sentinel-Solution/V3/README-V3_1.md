@@ -114,6 +114,29 @@ uninstall operation. There is no new all-off runtime check. A selection can
 leave prerequisites unmet: the booleans do not rewrite dependency semantics,
 guarantee Content Hub acceptance, or provision missing external dependencies.
 
+### Native Defender Workbooks without a Sentinel parent
+
+Already-native Advanced Hunting workbooks use the explicit
+`native-workbook-plan` / `native-workbook-review` / `native-workbook-import` authoring route documented in
+[the migration toolkit README](../../SentinelToXDRMigration/README.md#native-defender-workbook-authoringimport-no-sentinel-parent).
+Raw source belongs in solution-local `Workbook Sources/Native/`, never in
+Sentinel `Workbooks` selections. Select only the authored `XDR Workbooks`
+candidate. `contentProvenance.origin: native-xdr` selects source/hash-bound
+native review instead of migrated-source converter proof. It does not weaken
+the existing migrated workbook contract.
+
+The V3.1 emitter invokes the shared native Python validator before any template
+mutation, requiring Python 3.11/3.12 with the toolkit dependencies.
+`SENTINEL_XDR_PYTHON` selects the interpreter (default: `python`); the subprocess
+uses this emitter's toolkit checkout, not another editable installation.
+Unknown functions/tables and stale/incomplete reviews block packaging.
+Native and migrated entries share managed install/registration, independent
+Sentinel selection, default-false `DeployDefenderWorkbook`, and the installed
+provenance quartet. Native sources/reviews are not installed or ZIP entries.
+No Sentinel workbook, converter receipt or runtime acceptance is required or
+manufactured for the native authoring route. Provider acceptance still requires
+the existing independent approved evidence.
+
 ### Defender Workbook parser prerequisites
 
 Authored workbooks declare reviewed function prerequisites in
