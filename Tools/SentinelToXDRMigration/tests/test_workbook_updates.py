@@ -326,3 +326,73 @@ def test_powershell_assert_and_dependency_scan_use_current_review(update_case):
     path.write_text(json.dumps(document), encoding="utf-8")
     result = powershell_scan(root, path)
     assert result.returncode != 0
+
+
+@pytest.mark.parametrize("complete_dependencies", [False, True])
+def test_migrated_hybrid_queries_preserve_historical_sentinel_lineage(migrated_solution, complete_dependencies):
+    from test_workbook_dependencies import write_query
+    root = migrated_solution
+    raw = (
+        'let alerts = SecurityAlert | project SystemAlertId; '
+        'let incidents = materialize(SecurityIncident '
+        '| join kind=inner (alerts) on $left.AlertId == $right.SystemAlertId); '
+        'incidents | count'
+    )
+    write_query(root, raw)
+    tables = ["SecurityAlert", "SecurityIncident"] if complete_dependencies else ["SecurityAlert"]
+    settings = config(root, tables)
+    settings["workbookDependencies"] = {"Workbooks/nested/fixture.json": {
+        "requiredWorkloads": [{"workload": "sentinel", "dataTypes": tables}],
+        "requiredDataConnectors": [{"connectorId": "MicrosoftThreatProtection", "dataTypes": tables}],
+    }}
+    assert convert(root, settings)["converted"] == 1
+    path = authored(root)
+    baseline = root / "baseline-hybrid.json"
+    baseline.write_bytes(path.read_bytes())
+    old = json.loads(path.read_bytes())
+    current = deepcopy(old)
+    current["items"][0]["content"]["query"] += " | take 2"
+    path.write_text(json.dumps(current), encoding="utf-8")
+    case = root, path, baseline, 0, old
+    plan = accepted(case)
+    assert plan["queries"][0]["tables"] == ["SecurityAlert", "SecurityIncident"]
+    apply(case)
+    updated = json.loads(path.read_bytes())
+    historical = deepcopy(updated["contentProvenance"])
+    historical.pop("authoredReview")
+    assert historical == old["contentProvenance"]
+    assert workbooks.validate_workbooks(root)["invalid"] == 0
+    if shutil.which("pwsh"):
+        result = powershell_scan(root, path)
+        assert result.returncode == 0, result.stdout + result.stderr
+    for replacement in (
+        raw + " | union SecurityEvent",
+        raw.replace("SecurityIncident", "SecurityEvent"),
+    ):
+        current["items"][0]["content"]["query"] = replacement
+        path.write_text(json.dumps(current), encoding="utf-8")
+        with pytest.raises(ValueError):
+            accepted(case)
+    if not complete_dependencies:
+        current["items"][0]["content"]["query"] = raw
+        current["items"].append(deepcopy(current["items"][0]))
+        path.write_text(json.dumps(current), encoding="utf-8")
+        with pytest.raises(ValueError):
+            accepted(case)
+
+
+def test_migrated_sentinel_query_requires_explicit_connector_coverage(migrated_solution):
+    from test_workbook_dependencies import write_query
+    root = migrated_solution
+    write_query(root, "SecurityAlert | take 1")
+    settings = config(root, ["SecurityAlert"])
+    settings["workbookDependencies"] = {"Workbooks/nested/fixture.json": {
+        "requiredWorkloads": [{"workload": "sentinel", "dataTypes": ["SecurityAlert"]}],
+        "requiredDataConnectors": [],
+    }}
+    assert convert(root, settings)["converted"] == 1
+    path = authored(root)
+    baseline = root / "baseline-no-connector.json"
+    baseline.write_bytes(path.read_bytes())
+    with pytest.raises(ValueError, match="connector coverage"):
+        updates.plan_workbook_update(root, path.relative_to(root).as_posix(), baseline)

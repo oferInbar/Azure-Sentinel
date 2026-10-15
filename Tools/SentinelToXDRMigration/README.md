@@ -462,6 +462,14 @@ updates also support their existing Sentinel tables and workspace functions.
 Unknown/new dependencies and unsupported dynamic/cross-resource inputs fail;
 reviewer assertions cannot make them supported.
 
+Older accepted migrated artifacts can contain nested hybrid table references
+that their historical dependency inventory omitted. Their original receipt is
+not rewritten: an existing query may retain that exact baseline table set only,
+with existing explicit Sentinel connector coverage. The complete current
+inventory records those discovered tables. Adding that undeclared lineage to
+another query or changing its table set fails. Native-only restrictions remain
+unchanged.
+
 The review binds the original file SHA, canonical baseline artifact, complete
 current canonical Notebook and authored document, exact query/dependency
 inventories, actor/reference, and decisions. Only changed baseline values and
@@ -484,6 +492,20 @@ Keep existing version/release and candidate gates: package through
 -ContentRoot <content checkout> -SkipPackaging -PackageReportPath <exact V3.1 report>`.
 That wrapper otherwise defaults to legacy V3 packaging and disallows
 cross-checkout packaging; do not use it to create this candidate.
+If an old migration run's frozen selection predates the maintained content,
+do not alter that run or weaken its selection gate. The existing standalone
+content-maintenance backend is:
+
+```powershell
+& "$Toolkit\Tools\Create-Azure-Sentinel-Solution\V3\createSolutionV3_1.ps1" `
+  -SolutionDataFolderPath "$Solution\Data" -ToolkitRootPath $Toolkit `
+  -VersionMode local -VersionBump none `
+  -ArmValidationMethod lab-deployment -SkipAttributionLookup
+```
+
+Use the same official validation-only wrapper afterward. This builds a
+candidate; it does not establish migration workflow acceptance or lab/runtime
+qualification.
 
 ### Toolkit-owner managed update policy
 

@@ -12,6 +12,9 @@ import sys
 
 from ._workbook_core import workbook
 from .dependencies import dependency_validation_errors
+from .dependencies import TABLE_WORKLOADS
+from .catalog import query_table_references
+from ._workbook_core import mapping_catalog
 from .native_workbooks import _payload, _canonical_payload_sha256, _query
 from .workbook_functions import validate_functions
 from .workbooks import (
@@ -84,21 +87,42 @@ def _historical_errors(root, document):
     return [error for row in result["results"] for error in row["errors"]]
 
 
-def _queries(document, provenance):
+def _queries(document, provenance, baseline):
     native = provenance.get("origin") == "native-xdr"
     records = provenance.get("requiredWorkspaceFunctions", [])
     aliases = {record["functionAlias"] for record in records}
     declared = {table for record in provenance["requiredWorkloads"] for table in record["dataTypes"]}
+    sentinel = {table for record in provenance["requiredWorkloads"]
+                if record["workload"] == "sentinel" for table in record["dataTypes"]}
+    connectors = {table for record in provenance["requiredDataConnectors"] for table in record["dataTypes"]}
+    known = set(TABLE_WORKLOADS) | set(mapping_catalog.load_mapping_catalog()["tables"])
+    historical = {surface["path"]: surface for surface in workbook.query_surfaces(baseline)}
     queries, used = [], set()
     for surface in workbook.query_surfaces(document):
         raw = surface["node"]["query"]
-        lineage = _query(surface, allowed_tables=declared if not native else (),
+        inherited = set()
+        previous = historical.get(surface["path"])
+        if not native and previous:
+            # Some accepted converter receipts predate complete nested-source
+            # discovery. Preserve only that exact query's proven old lineage;
+            # never invent dependencies or extend the exception to new queries.
+            candidates = {row["table"] for row in query_table_references(
+                previous["node"]["query"], known_tables=known)} & known
+            inherited = set(_query(previous, allowed_tables=declared | candidates,
+                                   allowed_functions=aliases, allow_sentinel=True))
+        lineage = _query(surface, allowed_tables=declared | inherited if not native else (),
                          allowed_functions=aliases, allow_sentinel=not native,
                          include_lineage=True)
         tables = lineage["tables"]
-        if not set(tables) <= declared:
+        if inherited - declared and set(tables) != inherited:
+            raise ValueError("Historically incomplete dependencies require unchanged query table lineage.")
+        if not set(tables) <= declared | inherited:
             raise ValueError("Current query tables are outside historical reviewed dependencies: "
-                             + ", ".join(sorted(set(tables) - declared)))
+                             + ", ".join(sorted(set(tables) - declared - inherited)))
+        if not native and not (set(tables) & sentinel) <= connectors:
+            raise ValueError("Current Sentinel query tables require historical explicit connector coverage.")
+        if inherited - declared and not (inherited & sentinel & connectors):
+            raise ValueError("Inherited hybrid lineage requires historical explicit Sentinel connector coverage.")
         used.update(lineage["workspaceFunctions"])
         queries.append({
             "path": surface["path"], "querySha256": workbook.query_hash(raw),
@@ -129,7 +153,7 @@ def _plan(root, current, baseline, baseline_record):
     validate_functions(root, historical.get("requiredWorkspaceFunctions", []))
     if errors:
         raise ValueError("; ".join(errors))
-    queries = _queries(restored, historical)
+    queries = _queries(restored, historical, baseline)
     old = {q["path"]: q["node"]["query"] for q in workbook.query_surfaces(baseline)}
     new = {q["path"]: q["node"]["query"] for q in workbook.query_surfaces(restored)}
     changed = []

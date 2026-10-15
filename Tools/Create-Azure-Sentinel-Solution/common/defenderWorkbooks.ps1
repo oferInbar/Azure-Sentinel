@@ -866,6 +866,13 @@ function Get-DefenderWorkbookParserDependencies {
         }
     }
     $sourceAllowedBareTables = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    if ($null -ne $provenance.PSObject.Properties['authoredReview']) {
+        # The shared adapter has checked these against the reconstructed
+        # baseline and current KQL, including exact inherited hybrid lineage.
+        foreach ($query in $provenance.authoredReview.queries) {
+            foreach ($table in $query.tables) { [void]$allowedBareTables.Add($table) }
+        }
+    }
     foreach ($item in $allowedBareTables) { [void]$sourceAllowedBareTables.Add($item) }
     $catalogPath = Join-Path $PSScriptRoot '../../SentinelToXDRMigration/sentinel_xdr_migration/_workbook_core/data/mapping_catalog.json'
     if (Test-Path -LiteralPath $catalogPath -PathType Leaf) {
