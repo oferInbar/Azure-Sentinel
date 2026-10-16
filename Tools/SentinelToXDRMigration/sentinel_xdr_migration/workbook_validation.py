@@ -277,6 +277,15 @@ def _resolve(value: Any, template: Mapping[str, Any], parameters: Mapping[str, A
                  "resourceGroup().id": f"/subscriptions/{target['subscriptionId']}/resourceGroups/{target['resourceGroup']}"}
         if text in fixed:
             return fixed[text]
+        prop_match = re.fullmatch(r"variables\((.*)\)\.([A-Za-z_][A-Za-z0-9_]*)", text, re.DOTALL)
+        if prop_match:
+            var_args = [expression(arg) for arg in _arguments(prop_match.group(1))]
+            if len(var_args) == 1:
+                variables = template.get("variables") or {}
+                obj = variables.get(var_args[0])
+                if isinstance(obj, Mapping) and prop_match.group(2) in obj:
+                    return _resolve(obj[prop_match.group(2)], template, parameters, target, depth=depth + 1)
+            raise ValueError("ARM variable property is not bound")
         match = re.fullmatch(r"([A-Za-z]+)\((.*)\)", text, re.DOTALL)
         if not match:
             raise ValueError(f"unresolvable ARM scope/condition expression: {text}")
@@ -375,13 +384,25 @@ def _resource_inventory(template: dict[str, Any], parameters: dict[str, Any], ta
             if is_extension and kind.casefold() not in {"microsoft.security/workbooks", "microsoft.security/detectionrules"}:
                 raise ValueError("unsupported MicrosoftSecurity resource scope contract")
             if kind.casefold().endswith(("/alertrules", "/detectionrules")):
-                if props.get("isEnabled", props.get("enabled")) is not False:
+                enabled_val = props.get("isEnabled", props.get("enabled"))
+                if enabled_val is not None:
+                    enabled_val = _resolve(enabled_val, document, values, target)
+                status_val = _resolve(props.get("status"), document, values, target) if "status" in props else None
+                if enabled_val is not False and str(status_val).casefold() != "disabled":
                     raise ValueError("detection deployment requires explicitly disabled content")
             if "microsoft.operationalinsights/workspaces/" in kind.casefold():
                 name = resource.get("name")
+                raw_name = str(name)
+                var_ref = re.fullmatch(r"\[variables\('([^']+)'\)(?:\.([A-Za-z_][A-Za-z0-9_]*))?\]", raw_name.strip())
+                if var_ref:
+                    var_entry = (document.get("variables") or {}).get(var_ref.group(1))
+                    if var_ref.group(2) and isinstance(var_entry, Mapping):
+                        var_entry = var_entry.get(var_ref.group(2))
+                    if isinstance(var_entry, str):
+                        raw_name = var_entry
                 # Registration suffixes may use uniqueString; only the workspace prefix
                 # must be proven here, not fabricated by an approximate ARM evaluator.
-                prefix = re.match(r"^\[concat\(parameters\('workspace'\),\s*'(/[^']*)'", str(name))
+                prefix = re.match(r"^\[concat\(parameters\('workspace'\),\s*'(/[^']*)'", raw_name)
                 if not prefix:
                     resolved_name = _resolve(name, document, values, target)
                     if not isinstance(resolved_name, str) or not resolved_name.startswith(workspace + "/"):

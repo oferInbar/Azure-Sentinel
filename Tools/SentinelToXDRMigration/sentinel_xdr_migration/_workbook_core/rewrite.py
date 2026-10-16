@@ -570,6 +570,8 @@ def rewrite(kql: str, tables: Optional[List[str]],
 
     for t in tables:
         entry = tbl_map.get(t)
+        if not entry and isinstance(t, str) and t.endswith("_CL"):
+            entry = {"tier": "1to1", "ahTable": t, "applyGlobalDropColumns": True}
         tier = entry["tier"] if entry else "unknown"
         tiers[t] = tier
         if not entry:
@@ -601,8 +603,9 @@ def rewrite(kql: str, tables: Optional[List[str]],
 
     eligible_type_tables = {
         t for t in tables
-        if t in tbl_map and tbl_map[t].get("tier") == "1to1"
-        and tbl_map[t].get("ahTable", t) == t
+        if (t in tbl_map and tbl_map[t].get("tier") == "1to1"
+            and tbl_map[t].get("ahTable", t) == t)
+        or (t not in tbl_map and isinstance(t, str) and t.endswith("_CL"))
     }
     type_is_la_only = "Type" in drop_cols
     source_has_type = type_is_la_only and bool(_find_identifiers(kql, {"Type"}))

@@ -27,7 +27,10 @@ _CONFIDENCE = {"converted": 0.7, "needs-review": 0.3, "blocked": 0.0}
 def classify(tables: Optional[List[str]]) -> dict:
     """Per-table tier + worst overall tier for a set of resolved tables."""
     cat = mapping_catalog.load_mapping_catalog()["tables"]
-    tiers = {t: (cat[t]["tier"] if t in cat else "unknown") for t in (tables or [])}
+    tiers = {
+        t: (cat[t]["tier"] if t in cat else ("1to1" if isinstance(t, str) and t.endswith("_CL") else "unknown"))
+        for t in (tables or [])
+    }
     if not tiers:
         overall = "unknown"
     else:

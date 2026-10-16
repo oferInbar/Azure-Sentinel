@@ -337,7 +337,14 @@ def azure_cli_credential(
     class ProfiledCredential:
         def get_token(self, *scopes: str, **kwargs: Any):
             with azure_cli_profile(azure_config_dir):
-                return credential.get_token(*scopes, **kwargs)
+                try:
+                    return credential.get_token(*scopes, **kwargs)
+                except Exception:
+                    if tenant_id and subscription:
+                        return AzureCliCredential(tenant_id=tenant_id).get_token(
+                            *scopes, **kwargs
+                        )
+                    raise
 
         def __getattr__(self, name: str) -> Any:
             return getattr(credential, name)

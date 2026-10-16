@@ -485,6 +485,10 @@ def create_candidate(solution: str | Path, *, validation_receipt: str | Path | N
             if completed.returncode:
                 raise RuntimeError(f"official candidate static validation failed ({completed.returncode}): {completed.stdout[-4000:]}\n{completed.stderr[-1000:]}")
             validation_receipt = evidence / "build-and-validate-report.md"
+            if not validation_receipt.is_file() and evidence.is_dir():
+                nested_receipts = sorted(evidence.glob("*/build-and-validate-report.md"))
+                if len(nested_receipts) == 1:
+                    validation_receipt = nested_receipts[0]
         gate_names = ["conversion", "review", "structure", "package"]
         if context["workflowProfile"] == "qualification" and context.get("workbookQualificationAfterArm") is not True:
             gate_names.append("qualification")

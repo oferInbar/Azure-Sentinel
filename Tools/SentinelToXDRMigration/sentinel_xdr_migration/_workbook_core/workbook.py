@@ -556,7 +556,8 @@ def opaque_functions(query: str, *, include_bare: bool = True) -> set[str]:
     if include_bare:
         bare = _bare_source_identifiers(code) | (quoted_bare - _BUILTINS - _STATEMENT_PREFIXES - local_vars)
         known_tables = set(migrator.mapping_catalog.load_mapping_catalog()["tables"])
-        result |= (bare - known_tables - local_vars)
+        custom_tables = {name for name in bare if isinstance(name, str) and name.endswith("_CL")}
+        result |= (bare - known_tables - custom_tables - local_vars)
     return {name for name in result if not is_standard_builtin_asim_parser(name)}
 
 

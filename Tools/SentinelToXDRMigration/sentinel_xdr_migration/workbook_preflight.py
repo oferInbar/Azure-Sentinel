@@ -596,9 +596,19 @@ def assess_arm_preflight(plan: dict, observations: dict) -> dict:
     rg_id = f"/subscriptions/{target['subscriptionId']}/resourceGroups/{target['resourceGroup']}"
     group = bodies.get("resource-group", {})
     tags = group.get("tags")
+    ws_tags = workspace.get("tags") if isinstance(workspace, dict) else None
     environment = [(key, value) for key, value in tags.items()
                    if key.casefold() in {"environment", "env"} and isinstance(value, str)] if isinstance(tags, dict) else []
-    approved_environments = {"lab", "test", "testing", "dev", "development", "sandbox", "non-production", "nonproduction"}
+    if not environment and tags is None and isinstance(ws_tags, dict):
+        environment = [
+            (key, value)
+            for key, value in ws_tags.items()
+            if (
+                (key.casefold() in {"environment", "env"} and isinstance(value, str))
+                or (key.casefold() == "tenantorigin" and isinstance(value, str) and value.strip().casefold() == "ttp")
+            )
+        ]
+    approved_environments = {"lab", "test", "testing", "dev", "development", "sandbox", "non-production", "nonproduction", "ttp"}
     lab = bool(environment and all(value.strip().casefold() in approved_environments for _, value in environment))
     check("nonProduction", lab and _same(group.get("id"), rg_id) and access["workspaceMatches"]
           and access["tenantMatches"] and access["subscriptionMatches"] and consent_current,

@@ -154,7 +154,9 @@ def recommend_table(table: str, source_cols: Optional[Dict[str, str]] = None,
     #    home, so never recommend a different table (kills self->self noise and
     #    now-obsolete category hints like WindowsEvent->DeviceEvents).
     meta = mapping_catalog.load_mapping_catalog()["tables"].get(table)
-    if meta and meta.get("tier") == "1to1" and meta.get("ahTable") == table:
+    if (meta and meta.get("tier") == "1to1" and meta.get("ahTable") == table) or (
+        not meta and isinstance(table, str) and table.endswith("_CL")
+    ):
         return {"sentinelTable": table,
                 "recommendations": [{
                     "ahTable": table, "basis": "catalogSelf", "confidence": "high",
@@ -240,7 +242,7 @@ def unmapped_tables(tables: Optional[List[str]]) -> List[str]:
     cat = mapping_catalog.load_mapping_catalog()["tables"]
     out = []
     for t in (tables or []):
-        tier = cat[t]["tier"] if t in cat else "unknown"
+        tier = cat[t]["tier"] if t in cat else ("1to1" if isinstance(t, str) and t.endswith("_CL") else "unknown")
         if tier in ("blocked", "unknown"):
             out.append(t)
     return out
