@@ -1022,6 +1022,11 @@ def package_solution_v3_1(
         workbook_validation = validate_workbooks(root, selected_only=True)
         if workbook_validation["invalid"] or workbook_validation["valid"] != len(workbook_files):
             raise ValueError("selected Defender workbooks have unresolved structural or review blockers")
+        from .workbook_publication import publication_errors
+        for workbook_file in workbook_files:
+            blockers = publication_errors(root, _read_json(workbook_file))
+            if blockers:
+                raise ValueError("; ".join(blockers))
     script = (
         selected_toolkit_root
         / "Tools"

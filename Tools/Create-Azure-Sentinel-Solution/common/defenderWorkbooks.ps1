@@ -45,7 +45,8 @@ function Assert-DefenderWorkbookReleaseVersion {
 }
 
 function Assert-NativeDefenderWorkbookDocument {
-    param([psobject]$Document, [string]$SolutionRoot)
+    param([psobject]$Document, [string]$SolutionRoot,
+        [ValidateSet('native_workbooks', 'workbook_updates', 'workbook_publication')][string]$ValidationModule = 'native_workbooks')
 
     $python = if ($env:SENTINEL_XDR_PYTHON) { $env:SENTINEL_XDR_PYTHON } else { 'python' }
     $start = [System.Diagnostics.ProcessStartInfo]::new()
@@ -56,7 +57,7 @@ function Assert-NativeDefenderWorkbookDocument {
     $start.RedirectStandardError = $true
     $start.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
     $start.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
-    foreach ($argument in @('-m', 'sentinel_xdr_migration.native_workbooks', $SolutionRoot)) {
+    foreach ($argument in @('-m', "sentinel_xdr_migration.$ValidationModule", $SolutionRoot)) {
         $start.ArgumentList.Add($argument)
     }
     $start.Environment['PYTHONPATH'] = [System.IO.Path]::GetFullPath(
@@ -104,6 +105,32 @@ function Assert-DefenderWorkbookDocument {
     }
     Assert-DefenderWorkbookReleaseVersion -Version $metadata.version
     $provenance = $Document.contentProvenance
+    if ($null -ne $provenance -and $provenance.format -ceq 'public-workbook-v1') {
+        Assert-NativeDefenderWorkbookDocument -Document $Document -SolutionRoot $SolutionRoot `
+            -ValidationModule workbook_publication
+        if ($PassThruSource) { return $Document }
+        return
+    }
+    throw "Published authored workbooks must be clean; run workbook-publication-plan/clean for '$ContentPath'."
+}
+
+# Legacy diagnostics are not a publication entry point.
+function Assert-LegacyDefenderWorkbookDocument {
+    param([psobject]$Document, [string]$SolutionRoot, [string]$SolutionName, [string]$ContentPath, [switch]$PassThruSource)
+    $provenance = $Document.contentProvenance
+    if ($null -ne $provenance -and $null -ne $provenance.PSObject.Properties['authoredReview']) {
+        Assert-NativeDefenderWorkbookDocument -Document $Document -SolutionRoot $SolutionRoot `
+            -ValidationModule workbook_updates
+        if ($PassThruSource) {
+            if ($provenance.origin -ceq 'native-xdr') {
+                return $Document
+            }
+            $resolved = Resolve-SolutionContentPath -SolutionRoot $SolutionRoot -SolutionName $SolutionName `
+                -ContentPath $provenance.source.path -RequireFile
+            return (Get-Content -LiteralPath $resolved.FullPath -Raw | ConvertFrom-Json -ErrorAction Stop)
+        }
+        return
+    }
     if ($null -ne $provenance -and $provenance.origin -ceq 'native-xdr') {
         Assert-NativeDefenderWorkbookDocument -Document $Document -SolutionRoot $SolutionRoot
         if ($PassThruSource) {
@@ -798,6 +825,11 @@ function Get-DefenderWorkbookParserDependencies {
             }
         }
     }
+    if ($provenance.format -ceq 'public-workbook-v1') {
+        # Python validated exact current query aliases and hash-bound local proof
+        # (or an explicitly requested public Git reproduction) above.
+        foreach ($alias in $declared) { [void]$referenced.Add($alias) }
+    }
     if (-not $declared.SetEquals($referenced)) {
         throw 'Defender Workbook requiredWorkspaceFunctions must exactly cover reviewed query workspaceFunctions.'
     }
@@ -852,6 +884,13 @@ function Get-DefenderWorkbookParserDependencies {
         }
     }
     $sourceAllowedBareTables = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    if ($null -ne $provenance.PSObject.Properties['authoredReview']) {
+        # The shared adapter has checked these against the reconstructed
+        # baseline and current KQL, including exact inherited hybrid lineage.
+        foreach ($query in $provenance.authoredReview.queries) {
+            foreach ($table in $query.tables) { [void]$allowedBareTables.Add($table) }
+        }
+    }
     foreach ($item in $allowedBareTables) { [void]$sourceAllowedBareTables.Add($item) }
     $catalogPath = Join-Path $PSScriptRoot '../../SentinelToXDRMigration/sentinel_xdr_migration/_workbook_core/data/mapping_catalog.json'
     if (Test-Path -LiteralPath $catalogPath -PathType Leaf) {

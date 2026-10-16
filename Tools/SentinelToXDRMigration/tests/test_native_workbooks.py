@@ -384,7 +384,8 @@ def test_native_only_v31_package_requires_no_sentinel_parent(solution, monkeypat
 
 
 @pytest.mark.skipif(not shutil.which("pwsh"), reason="PowerShell 7 required")
-def test_real_v31_mixed_package_and_static_validator(solution, monkeypatch):
+@pytest.mark.parametrize("reviewed_updates", [False, True])
+def test_real_v31_mixed_package_and_static_validator(solution, monkeypatch, reviewed_updates):
     monkeypatch.setenv("SENTINEL_XDR_PYTHON", sys.executable)
     sentinel = solution / "Workbooks" / "sentinel.json"
     sentinel.parent.mkdir()
@@ -418,6 +419,24 @@ def test_real_v31_mixed_package_and_static_validator(solution, monkeypatch):
     imported(solution)
     (solution / SOURCE).unlink()
     assert (solution / "XDR Workbooks" / "sentinel.json").read_bytes() == migrated
+    if reviewed_updates:
+        from sentinel_xdr_migration.workbook_updates import plan_workbook_update, apply_workbook_update
+        for path in workbooks.selected_workbook_files(solution):
+            baseline = solution / ("baseline-" + path.name)
+            baseline.write_bytes(path.read_bytes())
+            document = json.loads(path.read_bytes())
+            for surface in workbook.query_surfaces(document):
+                if not surface["node"]["query"].startswith("datatable("):
+                    surface["node"]["query"] += " | take 2"
+            document["isLocked"] = True
+            path.write_text(json.dumps(document), encoding="utf-8")
+            relative = path.relative_to(solution).as_posix()
+            review = plan_workbook_update(solution, relative, baseline)
+            review.update(actor="fixture reviewer", reference="Reviewed post-import fixes", decision="accept")
+            for query in review["changedQueries"]:
+                query.update(decision="accept", evidence="Read exact fixture correction and lineage.")
+            apply_workbook_update(solution, relative, baseline, review)
+            baseline.unlink()
     assert workbooks.validate_workbooks(solution)["invalid"] == 0
     subprocess.run(["git", "init", "--quiet", str(solution.parent.parent)], check=True)
     arguments = [

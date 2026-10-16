@@ -63,7 +63,8 @@ def identities(root, relative):
     return content, instance
 
 
-def _query(surface):
+def _query(surface, *, allowed_tables=(), allowed_functions=(), allow_sentinel=False,
+           include_lineage=False):
     raw = surface["node"]["query"]
     if not isinstance(raw, str) or surface["queryType"] != workbook.AH:
         raise ValueError("Every native query must be a string using advancedHunting.")
@@ -71,7 +72,8 @@ def _query(surface):
     for match in re.finditer(r"\b(?:workspace|app|resource|cluster|database|table|totable|externaldata)\s*[\[(]", code, re.I):
         if not workbook._is_union_withsource_output_binding(code, match.start()):
             raise ValueError("Native import does not support dynamic, external or cross-resource sources.")
-    known = set(TABLE_WORKLOADS) | set(mapping_catalog.load_mapping_catalog()["tables"])
+    allowed_tables, allowed_functions = set(allowed_tables), set(allowed_functions)
+    known = set(TABLE_WORKLOADS) | set(mapping_catalog.load_mapping_catalog()["tables"]) | allowed_tables
     asim_names = {name for name in re.findall(r"\b[A-Za-z_]\w*", code)
                   if workbook.is_standard_builtin_asim_parser(name)}
     tables = {r["table"] for r in query_table_references(raw, known_tables=known | asim_names)}
@@ -84,18 +86,24 @@ def _query(surface):
             if workbook.is_standard_builtin_asim_parser(name)}
     # Built-in parsers are supported functions, not proof of their hidden
     # input tables, workloads or connector prerequisites.
-    tables -= asim
+    tables -= asim | allowed_functions
     local = set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=", code))
     tables -= local | workbook._BUILTINS | workbook._STATEMENT_PREFIXES
-    opaque = workbook.opaque_functions(raw) - tables
-    explicit = workbook.opaque_functions(raw, include_bare=False) | (quoted_calls - asim)
+    opaque = workbook.opaque_functions(raw) - tables - allowed_functions
+    explicit = (workbook.opaque_functions(raw, include_bare=False)
+                | (quoted_calls - asim)) - allowed_functions
     if opaque or explicit:
         raise ValueError("Unreviewable native functions/sources: " + ", ".join(sorted(opaque | explicit)))
-    if any(table not in TABLE_WORKLOADS or TABLE_WORKLOADS[table] == "sentinel" for table in tables):
+    if any((table not in TABLE_WORKLOADS or TABLE_WORKLOADS[table] == "sentinel")
+           and not (allow_sentinel and table in allowed_tables) for table in tables):
         raise ValueError("Unknown or non-native tables: " + ", ".join(sorted(tables)))
-    if not tables and not asim and not rewrite.is_source_free_literal_query(raw):
+    known_function_input = allowed_functions & (calls | quoted_calls | workbook.opaque_functions(raw))
+    if not tables and not asim and not known_function_input and not rewrite.is_source_free_literal_query(raw):
         raise ValueError("Empty lineage requires a standard built-in ASIM parser "
                          "or a recognized literal datatable or numeric range query.")
+    if include_lineage:
+        return {"tables": sorted(tables), "builtinAsimParsers": sorted(asim),
+                "workspaceFunctions": sorted(known_function_input)}
     return sorted(tables)
 
 
