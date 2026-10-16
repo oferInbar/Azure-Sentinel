@@ -126,10 +126,15 @@ def _convert_catalog_solution(solution):
     )
 
 
-def test_catalog_title_fills_missing_source_name_using_template_path(tmp_path):
+@pytest.mark.parametrize("template_path", [
+    "nested/fixture.json",
+    "Workbooks\\nested\\fixture.json",
+    "fixture.json",
+])
+def test_catalog_title_fills_missing_source_name_using_template_path(tmp_path, template_path):
     solution = _catalog_solution(tmp_path, catalog=[{
         "workbookKey": "FixtureWorkbook",
-        "templateRelativePath": "Workbooks\\nested\\fixture.json",
+        "templateRelativePath": template_path,
         "title": "Friendly fixture title",
     }])
 
