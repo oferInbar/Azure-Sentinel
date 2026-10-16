@@ -268,19 +268,19 @@ function getChangedFiles(targetBranch: string): ChangedFile[] {
   try {
     // Make sure we have the target branch ref
     try {
-      execSync(`git rev-parse --verify ${targetBranch}`, { encoding: "utf8", stdio: "pipe" });
+      execFileSync("git", ["rev-parse", "--verify", targetBranch], { encoding: "utf8", stdio: "pipe" });
     } catch {
       // Try fetching it
       try {
-        execSync(`git fetch origin ${targetBranch}:${targetBranch} --no-tags --depth=1`, { encoding: "utf8", stdio: "pipe" });
+        execFileSync("git", ["fetch", "origin", `${targetBranch}:${targetBranch}`, "--no-tags", "--depth=1"], { encoding: "utf8", stdio: "pipe" });
       } catch {
         console.warn(`Warning: Could not find or fetch branch '${targetBranch}'. Trying origin/${targetBranch}...`);
         targetBranch = `origin/${targetBranch}`;
       }
     }
 
-    const mergeBase = execSync(`git merge-base ${targetBranch} HEAD`, { encoding: "utf8" }).trim();
-    const diffOutput = execSync(`git diff --name-status ${mergeBase} HEAD`, { encoding: "utf8" });
+    const mergeBase = execFileSync("git", ["merge-base", targetBranch, "HEAD"], { encoding: "utf8" }).trim();
+    const diffOutput = execFileSync("git", ["diff", "--name-status", mergeBase, "HEAD"], { encoding: "utf8" });
 
     return diffOutput
       .split("\n")
@@ -701,8 +701,8 @@ async function validateWorkbookMetadata(filePath: string, _fileKind: string): Pr
       // Attempt local version increment check using git
       try {
         const targetBranch = detectDefaultBranch();
-        const mergeBase = execSync(`git merge-base ${targetBranch} HEAD`, { encoding: "utf8" }).trim();
-        const diffOutput = execSync(`git diff ${mergeBase} HEAD -W -- Workbooks/WorkbooksMetadata.json`, { encoding: "utf8" });
+        const mergeBase = execFileSync("git", ["merge-base", targetBranch, "HEAD"], { encoding: "utf8" }).trim();
+        const diffOutput = execFileSync("git", ["diff", mergeBase, "HEAD", "-W", "--", "Workbooks/WorkbooksMetadata.json"], { encoding: "utf8" });
 
         if (diffOutput) {
           const diffLines = diffOutput.split("\n").map(l => l.trim());
@@ -851,9 +851,17 @@ async function validateIdChange(filePath: string, fileKind: string): Promise<Val
       : `(id:\\s*['"]?${guidRegex}['"]?(.|\\n)*){2}`;
 
     const targetBranch = detectDefaultBranch();
-    const mergeBase = execSync(`git merge-base ${targetBranch} HEAD`, { encoding: "utf8" }).trim();
+    const mergeBase = execFileSync("git", ["merge-base", targetBranch, "HEAD"], { encoding: "utf8" }).trim();
     const fullPath = path.resolve(process.cwd(), filePath);
-    const diffSummary = execSync(`git diff ${mergeBase} HEAD -- "${fullPath}"`, { encoding: "utf8" });
+    if (!isPathWithin(process.cwd(), fullPath)) {
+      return {
+        validator: "ID Change",
+        filePath,
+        passed: false,
+        error: "File path resolves outside the repository root",
+      };
+    }
+    const diffSummary = execFileSync("git", ["diff", mergeBase, "HEAD", "--", fullPath], { encoding: "utf8" });
 
     if (/^new file mode /m.test(diffSummary) || diffSummary.includes("--- /dev/null")) {
       return { validator: "ID Change", filePath, passed: true, skipped: true, skipReason: "New file in branch" };
@@ -1092,7 +1100,7 @@ async function runDotNetValidator(
       }
     }
 
-    const testOut = execSync(`dotnet test "${projectPath}" --configuration Release --verbosity minimal`, {
+    const testOut = execFileSync("dotnet", ["test", projectPath, "--configuration", "Release", "--verbosity", "minimal"], {
       encoding: "utf8",
       stdio: "pipe",
       timeout: 300000, // 5 minute timeout
@@ -1157,10 +1165,20 @@ async function runArmTtkValidator(files: ChangedFile[]): Promise<ValidationResul
 
   for (const file of armFiles) {
     try {
-      const cmd = scriptPath === localScriptPath
-        ? `pwsh -NoProfile -File "${scriptPath}" -PackagePath "${path.dirname(path.resolve(contentRoot, file.filePath))}"`
-        : `pwsh -NoProfile -File "${scriptPath}" -FilePath "${file.filePath}"`;
-      execSync(cmd, {
+      const resolvedFilePath = path.resolve(contentRoot, file.filePath);
+      if (!isPathWithin(contentRoot, resolvedFilePath)) {
+        results.push({
+          validator: "ARM-TTK",
+          filePath: file.filePath,
+          passed: false,
+          error: "File path resolves outside the selected content root",
+        });
+        continue;
+      }
+      const pwshArgs = scriptPath === localScriptPath
+        ? ["-NoProfile", "-File", scriptPath, "-PackagePath", path.dirname(resolvedFilePath)]
+        : ["-NoProfile", "-File", scriptPath, "-FilePath", file.filePath];
+      execFileSync("pwsh", pwshArgs, {
         encoding: "utf8",
         stdio: "pipe",
         timeout: 120000,

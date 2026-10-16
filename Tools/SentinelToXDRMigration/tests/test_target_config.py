@@ -17,9 +17,9 @@ from sentinel_xdr_migration.target_config import (
     resolve_qualification_target,
 )
 
-TENANT_ID = "39768270-33ce-4b90-a1a6-e0caeb3ba0ab"
-SUBSCRIPTION_ID = "42382e39-f157-46d1-a931-b8cfd779ece5"
-CUSTOMER_ID = "756386d8-e2d4-4f09-905a-74b24313721f"
+TENANT_ID = "a1111111-2222-4333-8444-555555555555"
+SUBSCRIPTION_ID = "b2222222-3333-4444-8555-666666666666"
+CUSTOMER_ID = "c3333333-4444-4555-8666-777777777777"
 WORKSPACE_ID = (
     f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/Approved-RG/"
     "providers/Microsoft.OperationalInsights/workspaces/Approved-Workspace"
@@ -235,7 +235,7 @@ class TargetConfigTests(unittest.TestCase):
             ("AZURE_CLIENT_SECRET=never-a-supported-setting\n", "unsupported entry"),
             ("AZURE_TENANT_ID=$(read-secret)\n", "unsupported syntax"),
             (
-                "AZURE_TENANT_ID='39768270-33ce-4b90-a1a6-e0caeb3ba0ab'\n",
+                "AZURE_TENANT_ID='11111111-2222-4333-8444-555555555555'\n",
                 "unsupported syntax",
             ),
         )

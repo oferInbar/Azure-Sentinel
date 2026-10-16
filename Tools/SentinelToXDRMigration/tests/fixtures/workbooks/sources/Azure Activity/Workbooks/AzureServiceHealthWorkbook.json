@@ -36,7 +36,7 @@
             },
             "queryType": 1,
             "resourceType": "microsoft.resourcegraph/resources",
-            "value": "/subscriptions/fcb7d51b-418f-45a9-8418-5c0f17e343c8"
+            "value": "/subscriptions/00000000-0000-0000-0000-000000000000"
           },
           {
             "id": "ea100a5b-3c79-4761-8235-6a7989c83da5",

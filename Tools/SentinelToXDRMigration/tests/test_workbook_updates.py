@@ -2,6 +2,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -65,7 +66,7 @@ def update_case(request):
 def accepted(case):
     root, path, baseline, _, _ = case
     plan = updates.plan_workbook_update(root, path.relative_to(root).as_posix(), baseline)
-    plan.update(actor="kingwil", reference="Explicit offline fixture correction review", decision="accept")
+    plan.update(actor="reviewer-fixture", reference="Explicit offline fixture correction review", decision="accept")
     for query in plan["changedQueries"]:
         query.update(decision="accept", evidence="Read exact corrected KQL and current dependency inventory.")
     return plan
@@ -317,7 +318,10 @@ def test_migrated_sentinel_tables_and_workspace_functions_remain_supported(migra
         if function_query:
             missing = powershell_scan(root, path)
             assert missing.returncode != 0
-            assert "requires exactly one emitted top-level savedSearch" in missing.stderr
+            normalized_stderr = " ".join(
+                re.sub(r"\x1b\[[0-9;]*m", "", missing.stderr).replace("|", " ").split()
+            )
+            assert "requires exactly one emitted top-level savedSearch" in normalized_stderr
     if function_query:
         with (root / record["sourcePath"]).open("a", encoding="utf-8") as handle:
             handle.write("\n# changed dependency")

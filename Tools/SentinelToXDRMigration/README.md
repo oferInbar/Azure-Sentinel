@@ -293,8 +293,8 @@ Use Python 3.11/3.12 and the toolkit's existing dependencies. For an isolated
 toolkit checkout, set `PYTHONPATH` rather than reinstalling an editable package:
 
 ```powershell
-$Toolkit = 'C:\E5Workbooks\Azure-Sentinel-toolkit-native-workbooks'
-$Python = 'C:\Users\wiking\.copilot\session-state\368f9173-fbe4-4420-a1b1-2fe04724ed6b\files\xdr-toolkit-venv\Scripts\python.exe'
+$Toolkit = 'C:\path\to\Azure-Sentinel'
+$Python = 'C:\path\to\venv\Scripts\python.exe'
 $env:PYTHONPATH = Join-Path $Toolkit 'Tools\SentinelToXDRMigration'
 $env:PYTHONIOENCODING = 'utf-8'
 $env:SENTINEL_XDR_PYTHON = $Python

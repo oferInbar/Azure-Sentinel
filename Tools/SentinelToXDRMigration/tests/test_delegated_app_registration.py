@@ -51,7 +51,7 @@ from sentinel_xdr_migration.graph_client_config import (
 from sentinel_xdr_migration.artifacts import create_run
 from sentinel_xdr_migration.cli import main as cli_main
 
-TENANT_ID = "39768270-33ce-4b90-a1a6-e0caeb3ba0ab"
+TENANT_ID = "11111111-2222-4333-8444-555555555555"
 CUSTOM_CLIENT_ID = "11111111-2222-3333-4444-555555555555"
 OBJECT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 APP_ID = "99999999-8888-7777-6666-555555555555"

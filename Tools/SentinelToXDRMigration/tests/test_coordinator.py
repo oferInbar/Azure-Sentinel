@@ -100,13 +100,13 @@ class CoordinatorTests(unittest.TestCase):
         self.workflow_state = initialize_workflow(
             self.solution,
             workflow_profile="qualification",
-            tenant_id="39768270-33ce-4b90-a1a6-e0caeb3ba0ab",
-            subscription_id="42382e39-f157-46d1-a931-b8cfd779ece5",
+            tenant_id="11111111-2222-4333-8444-555555555555",
+            subscription_id="22222222-3333-4444-8555-666666666666",
             workspace_resource_id=(
-                "/subscriptions/42382e39-f157-46d1-a931-b8cfd779ece5/"
+                "/subscriptions/22222222-3333-4444-8555-666666666666/"
                 "resourceGroups/rg/providers/Microsoft.OperationalInsights/workspaces/ws"
             ),
-            workspace_customer_id="756386d8-e2d4-4f09-905a-74b24313721f",
+            workspace_customer_id="33333333-4444-4555-8666-777777777777",
             version_bump="none",
         )
         self.run = self.workflow_state["runId"]
@@ -611,7 +611,7 @@ class CoordinatorTests(unittest.TestCase):
 
         state_path = Path(self.real_status["statePath"])
         state_document = json.loads(state_path.read_text(encoding="utf-8"))
-        changed_customer_id = "956386d8-e2d4-4f09-905a-74b24313721f"
+        changed_customer_id = "44444444-5555-4666-8777-888888888888"
         state_document["context"]["workspaceCustomerId"] = changed_customer_id
         state_path.write_text(json.dumps(state_document), encoding="utf-8")
         target_path = state_path.parent / "qualification-target.json"
@@ -961,7 +961,7 @@ class CoordinatorTests(unittest.TestCase):
         state_path = Path(self.real_status["statePath"])
         state_document = json.loads(state_path.read_text(encoding="utf-8"))
         state_context = state_document["context"]
-        changed_customer_id = "956386d8-e2d4-4f09-905a-74b24313721f"
+        changed_customer_id = "44444444-5555-4666-8777-888888888888"
         state_context["workspaceCustomerId"] = changed_customer_id
         state_path.write_text(json.dumps(state_document), encoding="utf-8")
         target_path = Path(self.real_status["statePath"]).parent / "qualification-target.json"

@@ -45,7 +45,7 @@ def test_legacy_cleanup_retains_exact_private_proof_not_public_history(update_ca
     serialized = json.dumps(clean)
     for forbidden in ("actor", "reference", "decision", "queries", "reversePayloadChanges",
                       "authoredReview", "nativeReview", "conversion", "private-reviewer-account",
-                      "private session authorization", "kingwil"):
+                      "private session authorization", "reviewer-fixture"):
         assert forbidden not in serialized
     receipt_path = Path(result["localReceipt"])
     assert receipt_path.is_relative_to(root / "Logs")
@@ -217,7 +217,7 @@ def test_package_resource_and_archive_contain_only_public_dependencies(update_ca
         text = output.read("mainTemplate.json").decode("utf-8")
     assert Path(result["localReceipt"]).exists()
     for forbidden in ("authoredReview", "nativeReview", "reversePayloadChanges", '"actor"',
-                      '"reference"', '"decision"', "kingwil", '"queries"'):
+                      '"reference"', '"decision"', "reviewer-fixture", '"queries"'):
         assert forbidden not in text
     registration = package["resources"][1]["properties"]
     assert registration["version"] == document["xdrMetadata"]["version"]

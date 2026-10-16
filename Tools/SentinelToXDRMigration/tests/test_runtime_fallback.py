@@ -125,7 +125,7 @@ class RuntimeFallbackEvidenceTests(unittest.TestCase):
         }), encoding="utf-8")
 
     def test_advanced_hunting_token_accepts_required_scope_superset(self):
-        tenant_id = "39768270-33ce-4b90-a1a6-e0caeb3ba0ab"
+        tenant_id = "11111111-2222-4333-8444-555555555555"
         claims = {
             "tid": tenant_id,
             "aud": "https://graph.microsoft.com",

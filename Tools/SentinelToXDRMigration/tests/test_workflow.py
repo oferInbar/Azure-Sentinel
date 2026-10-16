@@ -256,14 +256,14 @@ class WorkflowTests(unittest.TestCase):
 
     def _qualification_args(self) -> dict[str, str]:
         return {
-            "tenant_id": "39768270-33ce-4b90-a1a6-e0caeb3ba0ab",
-            "subscription_id": "42382e39-f157-46d1-a931-b8cfd779ece5",
+            "tenant_id": "11111111-2222-4333-8444-555555555555",
+            "subscription_id": "22222222-3333-4444-8555-666666666666",
             "workspace_resource_id": (
-                "/subscriptions/42382e39-f157-46d1-a931-b8cfd779ece5/"
+                "/subscriptions/22222222-3333-4444-8555-666666666666/"
                 "resourceGroups/rg/providers/Microsoft.OperationalInsights/"
                 "workspaces/ws"
             ),
-            "workspace_customer_id": "756386d8-e2d4-4f09-905a-74b24313721f",
+            "workspace_customer_id": "33333333-4444-4555-8666-777777777777",
         }
 
     def _complete_passed_stage(self, stage: str) -> None:
