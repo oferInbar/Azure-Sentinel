@@ -48,6 +48,8 @@ The 12 positional pipeline parameters (positions 0–11) are unchanged.
 The optional named `-SkipAttributionLookup` switch is available in both local
 and pipeline parameter sets. For CI callers that do not forward optional
 arguments, set `SENTINEL_SKIP_ATTRIBUTION_LOOKUP=1` in the process environment.
+Both controls apply only when attribution is optional; emitted XDR detections
+or Defender Workbooks require attribution and cannot skip missing-ID lookup.
 
 ## Independent content selection (V3.1 default)
 
@@ -113,6 +115,33 @@ installation (plus shared infrastructure/attribution when present), not an
 uninstall operation. There is no new all-off runtime check. A selection can
 leave prerequisites unmet: the booleans do not rewrite dependency semantics,
 guarantee Content Hub acceptance, or provision missing external dependencies.
+
+### Native Defender Workbooks without a Sentinel parent
+
+Already-native Advanced Hunting workbooks use the explicit
+`native-workbook-plan` / `native-workbook-review` / `native-workbook-import` authoring route documented in
+[the migration toolkit README](../../SentinelToXDRMigration/README.md#native-defender-workbook-authoringimport-no-sentinel-parent).
+The raw source may be supplied under solution-local `Workbook Sources/Native/`
+while running the authoring commands, but it need not be retained or shipped.
+Select only the authored `XDR Workbooks` candidate; no duplicate source artifact
+is packaged. `contentProvenance.origin: native-xdr` selects native review with
+historical source path/hash and a canonical reviewed Notebook payload hash,
+instead of migrated-source converter proof. It does not weaken the existing
+migrated workbook contract.
+
+The V3.1 emitter invokes the shared native Python validator before any template
+mutation, requiring Python 3.11/3.12 with the toolkit dependencies.
+`SENTINEL_XDR_PYTHON` selects the interpreter (default: `python`); the subprocess
+uses this emitter's toolkit checkout, not another editable installation.
+Unknown functions/tables, payload/query changes, and stale/incomplete reviews
+block packaging. Source deletion after import does not invalidate a native
+candidate.
+Native and migrated entries share managed install/registration, independent
+Sentinel selection, default-false `DeployDefenderWorkbook`, and the installed
+provenance quartet. Native sources/reviews are not installed or ZIP entries.
+No Sentinel workbook, converter receipt or runtime acceptance is required or
+manufactured for the native authoring route. Provider acceptance still requires
+the existing independent approved evidence.
 
 ### Defender Workbook parser prerequisites
 
@@ -303,9 +332,9 @@ These guards do not govern ARM `apiVersion`, `contentSchemaVersion`, ARM templat
 saved-search API revision numbers. Legacy `V3/createSolutionV3.ps1` and
 `pipeline/createSolutionV4.ps1` retain their previous version behavior.
 
-## Optional customer usage attribution
+## Customer usage attribution
 
-Set optional `trackingId` in the solution's **SolutionMetadata.json** to the
+Set `trackingId` in the solution's **SolutionMetadata.json** to the
 **complete customer usage attribution tracking ID** copied from Partner Center
 **offer > plan > Technical configuration**, for example:
 
@@ -366,24 +395,34 @@ Version catalog lookup and `GetPackageVersion` behavior are unchanged.
 Attribution requests use a 20-second request/connection timeout and, on
 PowerShell 7.4+, an explicit 20-second stalled-read timeout, with no retries or
 redirects (continuous downloads are not capped at 20 seconds).
-HTTP status, timeout, network/read, JSON, selection and marker failures produce
-classified `CUSTOMER USAGE ATTRIBUTION:` warnings and continue **without**
-attribution or metadata changes. A successful lookup logs publisher, offer,
+For packages emitting XDR detections or Defender Workbooks, attribution is
+**required**. HTTP status, timeout, network/read, JSON, selection and marker
+failures produce a classified, terminating `CUSTOMER USAGE ATTRIBUTION:` error
+before package files or the ZIP are written, leaving metadata unchanged.
+Verify the correct publisher/offer identity and unambiguous published plan/marker,
+or supply the complete ID from Partner Center and rebuild. There is no
+incomplete-package override. When attribution is optional (no emitted XDR
+detections or Defender Workbooks), lookup failures retain the warning-only
+behavior and continue **without** attribution or metadata changes.
+A successful lookup logs publisher, offer,
 plan ID, template URL (without query credentials), tracking ID and updated path
 as `CUSTOMER USAGE ATTRIBUTION SOURCE:`. It is not reported as a warning.
 
-For offline attribution, use `-SkipAttributionLookup` or set
-`SENTINEL_SKIP_ATTRIBUTION_LOOKUP=1`; explicit IDs still emit markers. Use
+For optional offline attribution, use `-SkipAttributionLookup` or set
+`SENTINEL_SKIP_ATTRIBUTION_LOOKUP=1`; explicit IDs still emit markers.
+Neither control suppresses lookup when required attribution has a missing ID.
+A valid explicit ID avoids attribution network access even for required packages. Use
 `-VersionMode local` as well to avoid the **independent** version-catalog lookup.
 These controls do not disable other packaging prerequisites or validators.
 The migration CLI inherits the same environment control, so no redundant CLI
 flag is required. Its packaging report preserves lookup failures in `warnings`
 and successful source messages in `attributionSources`.
 
-If no ID is available, nested XDR packaging still warns that Partner Center
-cannot automatically add tracking for functional nested deployments.
-Obtain the ID from offer > plan > Technical configuration, add `trackingId`,
-and rebuild. Missing attribution does not imply Marketplace upload rejection.
+Partner Center cannot automatically add tracking for functional nested
+deployments. If required lookup cannot resolve an ID, packaging fails rather
+than emitting a markerless package. Obtain the ID from offer > plan > Technical
+configuration, add `trackingId`, and rebuild. This packaging guard is not a
+claim about Marketplace upload rejection.
 See [Microsoft Marketplace Azure apps customer usage attribution](https://learn.microsoft.com/partner-center/marketplace-offers/azure-partner-customer-usage-attribution#microsoft-marketplace-azure-apps).
 
 The migration CLI uses `package-v3-1` and writes `packaging.v3_1.json` with
@@ -401,10 +440,11 @@ PYTHONPATH=Tools/SentinelToXDRMigration:Tools/SentinelToXDRMigration/tests pytho
 The attribution tests exercise both local and positional pipeline entry points
 with isolated synthetic solutions, verify generated JSON and ZIP contents, and
 cover missing/invalid IDs and nested XDR preservation. Catalog/template requests
-are mocked; default test subprocesses disable lookup, so unit tests never depend
+are mocked; optional test subprocesses disable lookup, so unit tests never depend
 on live Marketplace availability or mutate real solution metadata. Cases include
 automatic persistence/replay, explicit overrides, ambiguous identities/plans/
-markers, remote failures, offline controls, byte preservation, local write
+markers, required lookup despite both offline controls, terminating failures
+before artifact output, optional offline behavior, byte preservation, local write
 failures/concurrent edits and cached-ID retention during version bumps.
 They stub the unrelated
 full repository validators and isolate repository-root resolution. They do not

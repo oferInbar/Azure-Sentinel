@@ -256,6 +256,311 @@ adaptations. Refreshing this slice is a deliberate maintainer change requiring
 reviewed import evidence and the differential workbook fixture tests, not an
 automatic runtime fetch.
 
+### Native Defender workbook authoring/import (no Sentinel parent)
+
+Already-native `Notebook/1.0` content has an explicit offline authoring route.
+It is **not** migration: no Sentinel sibling, converter replay, conversion
+success receipt, workflow-stage receipt or runtime qualification is invented.
+Migrated workbooks retain their existing source inventory and deterministic
+converter proof unchanged.
+
+Provide the original raw JSON to the plan/review/import commands at
+`Workbook Sources/Native/<name>.json` (nested paths are supported). This input
+must be available while generating and importing the review, but it need not be
+committed, retained in the solution, or copied into the package. Its path and
+exact-byte SHA256 remain historical import evidence and preserve the existing
+stable identity assignment; validation does not reread or require that source.
+The review also binds `canonicalPayloadSha256`: SHA256 of canonical UTF-8 JSON
+(sorted keys, compact separators, non-ASCII preserved) for the complete Notebook
+after excluding only top-level `xdrMetadata` and `contentProvenance`. This
+protects notices, layout, queries, and all other Notebook fields, while strict
+query hashes and dependency discovery are independently rechecked. Do not
+select the raw source in `Workbooks` or `XDR Workbooks`; it is not a deployment
+artifact. The import command creates
+`XDR Workbooks/<name>.json` and appends that candidate once to the existing
+`Data/Solution_*.json` `XDR Workbooks` selection, preserving other selections
+and the solution version. A native-only solution needs no `Workbooks` directory.
+
+Use Python 3.11/3.12 and the toolkit's existing dependencies. For an isolated
+toolkit checkout, set `PYTHONPATH` rather than reinstalling an editable package:
+
+```powershell
+$Toolkit = 'C:\E5Workbooks\Azure-Sentinel-toolkit-native-workbooks'
+$Python = 'C:\Users\wiking\.copilot\session-state\368f9173-fbe4-4420-a1b1-2fe04724ed6b\files\xdr-toolkit-venv\Scripts\python.exe'
+$env:PYTHONPATH = Join-Path $Toolkit 'Tools\SentinelToXDRMigration'
+$env:PYTHONIOENCODING = 'utf-8'
+$env:SENTINEL_XDR_PYTHON = $Python
+$Solution = 'C:\content\Solutions\Example'
+$Source = 'Workbook Sources/Native/example.json'
+
+& $Python -m sentinel_xdr_migration.cli native-workbook-plan `
+  --solution $Solution --source $Source |
+  Set-Content -LiteralPath '.\native-review.json' -Encoding utf8
+
+# Review/edit native-review.json explicitly; do not auto-accept proposals.
+& $Python -m sentinel_xdr_migration.cli native-workbook-review `
+  --solution $Solution --source $Source --review '.\native-review.json' |
+  Set-Content -LiteralPath '.\native-reviewed.json' -Encoding utf8
+& $Python -m sentinel_xdr_migration.cli native-workbook-import `
+  --solution $Solution --source $Source --review '.\native-reviewed.json'
+& $Python -m sentinel_xdr_migration.cli native-workbook-validate --solution $Solution
+```
+
+The plan is the review input, not a success receipt. The review command checks
+and echoes complete current decisions; import independently rechecks them.
+Neither command auto-accepts proposals. Supply nonempty `actor`,
+`reference`, and `displayName`. For **every** current query pointer (including
+parameter and nested queries), supply `decision: "accept"` and nonempty
+`evidence` describing the exact query's complete input/dependency review.
+Keep the proposed `origin`, `source.path`, `source.sha256`, query `path`,
+`canonicalPayloadSha256`, `querySha256`, `tables`, `blockers`, `requiredWorkloads`, and
+`requiredDataConnectors` unchanged. The native route supports catalogued
+non-Sentinel tables and standard built-in underscore ASIM parsers (`_ASim_*`,
+`_Im_*`) recognized by the shared workbook classifier, including bare and called
+forms. It does not support arbitrary underscore/custom saved functions or
+connector/saved-function prerequisites. Reviewers cannot override discovery, label an unknown function
+as a table, accept a blocker, or supply arbitrary empty lineage. Unsupported
+functions/tables, dynamic/external/cross-resource sources and non-AH providers
+require a separate maintainer/content design decision, not a forced import.
+Empty table lineage is allowed for recognized built-in ASIM parser queries as
+well as the existing strict literal `datatable`/numeric `range` recognizers.
+ASIM parser names are not tables: only explicitly discovered catalogued tables
+contribute workload records. An ASIM-only query therefore has empty `tables`,
+`requiredWorkloads` and `requiredDataConnectors`; these mean no statically
+inferred dependencies, not proof of no prerequisites. The toolkit does not infer
+hidden parser inputs, workloads or connector coverage, and offline acceptance
+does not qualify parser availability or execution in the target tenant.
+The plan exits nonzero when it contains technical blockers.
+
+The importer currently produces a legacy review-bearing staging candidate.
+Before publication, run `workbook-publication-plan/clean` below: retain that
+complete proof locally and publish only this compact native provenance:
+
+```json
+{
+  "contentProvenance": {
+    "format": "public-workbook-v1",
+    "origin": "native-xdr",
+    "requiredWorkloads": [{"workload": "mdo", "dataTypes": ["EmailEvents"]}],
+    "requiredDataConnectors": [],
+    "requiredWorkspaceFunctions": []
+  }
+}
+```
+
+There is no public `conversion` or `nativeReview` object. `xdrMetadata` uses the
+normal schema/version/display name fields. Canonical UUIDv5 assignment is
+`uuid5(NAMESPACE_URL, "native-xdr-workbook:<solution directory name>:<source POSIX path>")`;
+the instance is the existing
+`uuid5(NAMESPACE_URL, "xdr-workbook-instance:<solution directory name>:<canonical ID>")`.
+Relocating a checkout, reimporting, changing query content or changing release
+does not change these IDs; renaming the solution directory/source path does.
+Import refuses differing existing candidates rather than silently overwriting
+them. A deliberate source edit requires a fresh review and removal of the old
+local candidate and its `XDR Workbooks` selection before reimport, retaining the
+same identity for the same path.
+
+Historical native proof validation compares the **whole original Notebook** with the staging
+payload after removing only the two additive authoring fields. Thus query
+strings (including CRLF/Unicode), items, notices, tabs and other source keys
+remain unchanged. Stale source proof or query coverage, duplicate JSON
+keys/IDs/selections, traversal and symlinks fail closed. Native validation is
+integrated with `validate_workbooks` and the existing local static XDR adapter.
+After cleanup, public structural validation is portable without raw source or
+private approval; authoring/package validation requires the current local receipt.
+The PowerShell emitter reuses shared Python validation
+against its in-memory public document and requires that interpreter's
+dependencies; a missing interpreter/dependency is an error, never a waiver.
+`SENTINEL_XDR_PYTHON` selects the interpreter; absent it, `python` is used.
+The subprocess imports only the emitter's toolkit checkout.
+
+For candidate package regression testing, use the correct V3.1 entry point
+from the **content repository root**, with a separate toolkit root, **after
+explicit publication cleanup**:
+
+```powershell
+Set-Location 'C:\content'
+& (Join-Path $Toolkit 'Tools\Create-Azure-Sentinel-Solution\V3\createSolutionV3_1.ps1') `
+  -SolutionDataFolderPath (Join-Path $Solution 'Data') `
+  -ToolkitRootPath $Toolkit -VersionMode local -VersionBump none `
+  -ArmValidationMethod lab-deployment
+```
+
+This generates an **unaccepted candidate** with ARM lab validation pending;
+it performs no deployment and is not a replacement for production release
+validation/acceptance. Do not use legacy `createSolutionV3.ps1`, fabricate an
+ARM/ZIP or claim lab/runtime qualification. V3.1 uses the same managed-ID
+install/registration contract and default-false `DeployDefenderWorkbook`
+switch for native and migrated entries. Installed Notebook provenance remains
+only the package/content identity/version quartet; source paths, hashes,
+native reviews and authoring metadata are not installed. Registration keeps
+the existing reviewed dependency contract. Original Sentinel selections remain
+independent and no native source is deployed twice.
+
+### Reviewed post-import workbook corrections (offline)
+
+Use `workbook-update-plan`, `workbook-update-review`, and
+`workbook-update-apply` for intentional authored Notebook corrections after
+migration/import. These commands do not migrate, deploy, invoke queries, or
+establish runtime/UI qualification. They require an explicit original reviewed
+**authored** baseline file, for example extracted with `git show` from the
+accepted content commit into a review workspace outside deployable content.
+Legacy update-reviewed artifacts are not original conversion baselines. A clean
+published artifact can instead be the public baseline for a later explicit review.
+
+```powershell
+# $Python, $Solution and PYTHONPATH use the same setup as native import above.
+$Content = 'XDR Workbooks\example.json'.Replace('\', '/')
+$Baseline = 'C:\review-workspace\baseline-example.json'
+New-Item -ItemType Directory -Force "$Solution\Logs" | Out-Null
+& $Python -m sentinel_xdr_migration.cli workbook-update-plan `
+  --solution $Solution --content $Content --baseline $Baseline |
+  Set-Content -LiteralPath "$Solution\Logs\update-plan.json" -Encoding utf8
+```
+
+Inspect the exact current Notebook and plan, including all current `queries`
+with discovered tables/functions and `changedQueries` (added/removed queries
+use null previous/current hashes). Explicitly set nonempty `actor` and
+`reference`, whole-document `decision: "accept"`, and each changed query's
+`decision: "accept"` and nonempty `evidence`. Do not edit generated hashes,
+dependencies or the reverse baseline delta. Save under gitignored `Logs` as
+`update-decisions.json`; never put review material in authored content or a PR.
+
+```powershell
+& $Python -m sentinel_xdr_migration.cli workbook-update-review `
+  --solution $Solution --content $Content --baseline $Baseline `
+  --review "$Solution\Logs\update-decisions.json" |
+  Set-Content -LiteralPath "$Solution\Logs\update-reviewed.json" -Encoding utf8
+& $Python -m sentinel_xdr_migration.cli workbook-update-apply `
+  --solution $Solution --content $Content --baseline $Baseline `
+  --review "$Solution\Logs\update-reviewed.json"
+& $Python -m sentinel_xdr_migration.cli native-workbook-validate --solution $Solution
+```
+
+Apply preserves the edited Notebook and metadata/IDs, independently validates
+the baseline's historical proof, and emits **clean public metadata**, not an
+embedded `authoredReview`. It refuses identity/prerequisite changes. Complete
+current dependencies are mandatory: native-only lineage, known tables, exact
+hash-bound workspace functions, built-in ASIM recognition, and dynamic/cross-
+resource rejection remain enforced. Reviewer assertions cannot waive them.
+
+The complete review, baseline bytes, and available historical source bytes
+remain in a hash-bound receipt under `Logs\workbook-reviews`. These are local
+authoring evidence, not signatures, reviewer-identity proof, runtime qualification,
+or publication metadata. Keep external source/baseline evidence; do not delete
+it after apply. No duplicate full source Notebook needs to be shipped.
+
+### Clean public workbooks and private authoring receipts
+
+Published authored JSON has only the Notebook, existing `xdrMetadata` identity/
+version, and compact `contentProvenance`:
+
+* `format: "public-workbook-v1"` and factual `origin`;
+* public `requiredWorkloads`, `requiredDataConnectors`, and
+  `requiredWorkspaceFunctions` (including function source paths/hashes).
+
+It contains **no author/reviewer accounts, acceptance decisions, references,
+session identifiers, query inventories, conversion receipts, reverse deltas, or
+proof histories**. Dependencies are not an acceptance claim. The schema rejects
+extra fields in public provenance and prerequisite records. Legacy proof schemas
+remain readable for importing/validating old evidence, not for publication.
+V3.1 rejects legacy authored files until cleaned; migration/import candidates
+must pass the explicit publication step before publishing.
+
+To clean an already reviewed legacy artifact (including old `authoredReview`):
+
+```powershell
+$ReviewDirectory = Join-Path $Solution 'Logs\workbook-reviews'
+New-Item -ItemType Directory -Force $ReviewDirectory | Out-Null
+$Plan = Join-Path $ReviewDirectory 'publication-plan.json'
+$Review = Join-Path $ReviewDirectory 'publication-decisions.json'
+& $Python -m sentinel_xdr_migration.cli workbook-publication-plan `
+  --solution $Solution --content $Content |
+  Set-Content -LiteralPath $Plan -Encoding utf8
+# Inspect the exact file and complete planned dependencies. Save the plan as
+# $Review with explicit nonempty actor/reference and decision "accept".
+# Never automatically approve a plan. Do not edit inputSha256.
+$Decision = Get-Content -LiteralPath $Review -Raw | ConvertFrom-Json
+& $Python -m sentinel_xdr_migration.cli workbook-publication-clean `
+  --solution $Solution --content $Content --review $Review `
+  --expected-sha256 $Decision.inputSha256
+& $Python -m sentinel_xdr_migration.cli workbook-publication-validate `
+  --solution $Solution --content $Content --mode authoring
+```
+
+Cleanup verifies the original raw SHA and all historical gates before writing,
+stores the original artifact/proof **verbatim locally**, and changes only
+`contentProvenance`. Notebook settings, KQL, `Notebook/1.0`, content/instance IDs,
+and `xdrMetadata.version` remain exact. It does not bump a release. An existing
+XDR 3.2.2 or O365 3.2.1 artifact remains at that release; deployment copies use
+the selected solution release as `contentVersion`.
+
+Historical hybrid receipts sometimes omitted a nested table. Their limited
+same-query historical exception remains usable to validate old proof, but is
+**not a public packaging waiver**. The plan adds known missing workloads; it
+never invents connector coverage. Reviewers must explicitly supply missing
+connector/table prerequisites in the local `dependencies` review. Existing
+prerequisites/functions cannot be removed/replaced by cleanup. For example,
+an old `SecurityAlert`-only connector record does not establish coverage for
+`SecurityIncident`; cleanup blocks until that additional prerequisite is
+explicitly reviewed. The historical receipt itself is retained unchanged.
+
+`workbook-publication-validate --mode structural`, the schema, Python
+`validate_workbooks`, and the static adapter validate portable public structure/
+current source dependencies **without private approvals**. They do not approve
+authoring. `--mode authoring`, `native-workbook-validate`, authoring workflow gates,
+and normal Python/PowerShell packaging additionally require a current canonical
+whole-document hash-bound local receipt. A later query/settings/metadata/
+dependency edit needs fresh explicit review; structural success is not a waiver.
+The clean/update command creates the receipt that packaging consumes automatically
+by current document hash. Prior receipts remain locally available, including when
+the same payload receives another authorization.
+
+For an **explicit standalone reproduction**, not authoring acceptance, a clean
+public Git checkout can package without private receipts:
+
+```powershell
+$env:SENTINEL_XDR_WORKBOOK_PUBLIC_REF = '<published commit SHA>'
+try {
+  # Use the standalone V3.1 command below, retaining the published release.
+} finally {
+  Remove-Item Env:\SENTINEL_XDR_WORKBOOK_PUBLIC_REF -ErrorAction SilentlyContinue
+}
+```
+
+This checks the actual in-memory workbook against the exact file at that Git
+commit, plus current public table/function/source dependencies. Missing refs or
+edited workbooks fail. There is **no automatic HEAD fallback** and it is not
+available as an authoring/workflow approval. Git history/review is the trust
+boundary for selecting a published ref; reproduction never claims personal
+approval. Receipts/Logs are never ZIP inputs: the package contains the generated
+template and UI only. Installed Notebook provenance remains the deployment
+identity/version quartet; registration additionally retains public dependencies.
+
+Keep existing version/release and candidate gates: package through
+`package-v3-1 --solution $Solution --toolkit-root $Toolkit --version-bump none`
+(for an already prepared release), then run the official
+`.script\local-validation\build-and-validate.ps1 -SolutionName <name>
+-ContentRoot <content checkout> -SkipPackaging -PackageReportPath <exact V3.1 report>`.
+That wrapper otherwise defaults to legacy V3 packaging and disallows
+cross-checkout packaging; do not use it to create this candidate.
+If an old migration run's frozen selection predates the maintained content,
+do not alter that run or weaken its selection gate. The existing standalone
+content-maintenance backend is:
+
+```powershell
+& "$Toolkit\Tools\Create-Azure-Sentinel-Solution\V3\createSolutionV3_1.ps1" `
+  -SolutionDataFolderPath "$Solution\Data" -ToolkitRootPath $Toolkit `
+  -VersionMode local -VersionBump none `
+  -ArmValidationMethod lab-deployment
+```
+
+Use the same official validation-only wrapper afterward. This builds a
+candidate; it does not establish migration workflow acceptance or lab/runtime
+qualification.
+Keep automatic attribution lookup and its fail-closed guard; do not add a skip
+flag to recover from an attribution failure.
+
 ### Toolkit-owner managed update policy
 
 Toolkit-managed Defender Workbooks and XDR detections are updated by stable ID.
@@ -1998,17 +2303,22 @@ XDR uses only its top-level YAML `version`, including when registration is
 disabled. Registration metadata and content product IDs use that same version.
 Data `XDR Detection Version`, solution version, and source provenance are not
 fallbacks in V3.1. See "Independent XDR release version" above for older files.
-Optional `trackingId` in SolutionMetadata.json is the complete Partner Center
+`trackingId` in SolutionMetadata.json is the complete Partner Center
 customer usage attribution ID, not a bare GUID, Partner ID, or plan ID.
 When absent/blank, V3.1 attempts anonymous **public Marketplace catalog/template**
 discovery (not authenticated Partner Center API access) using exact publisher and
 offer identity and one unambiguous plan/marker. It saves the validated full ID
 into authoritative SolutionMetadata.json and emits the current marker shape.
-Explicit IDs win without lookup. Set `SENTINEL_SKIP_ATTRIBUTION_LOOKUP=1` for
-offline attribution; the CLI inherits it without an additional flag.
-Lookup failures leave metadata unchanged and preserve prominent warnings in the
-packaging report; successful provenance is recorded separately in
-`attributionSources`. Local metadata write failures stop packaging.
+Explicit IDs win without lookup. Attribution is required when XDR detections
+or Defender Workbooks are emitted: neither `-SkipAttributionLookup` nor
+`SENTINEL_SKIP_ATTRIBUTION_LOOKUP=1` suppresses missing-ID lookup.
+Lookup failure or ambiguity leaves metadata unchanged and terminates packaging
+before package files/ZIP output. Verify publisher/offer identity and the
+published plan/marker, or supply the correct full ID and rebuild.
+For optional attribution only, the CLI inherits the environment control for
+offline skips and preserves warning-only lookup failures in the packaging
+report. Successful provenance is recorded separately in `attributionSources`.
+Local metadata write failures stop packaging.
 Partner Center cannot auto-add tracking for functional nested deployments.
 If lookup cannot resolve it, obtain the ID from offer > plan > Technical
 configuration, add it, and rebuild. Missing attribution does not imply upload

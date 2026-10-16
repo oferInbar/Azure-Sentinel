@@ -77,7 +77,12 @@ public static class AttributionMetadata
                     typeof(File).GetMethod("SetUnixFileMode", new[] { typeof(string), mode.GetType() })
                         .Invoke(null, new object[] { staging, mode });
                 }
-                File.Move(staging, path, true);
+                // Windows overwrite-move fails while the destination is open;
+                // Replace supports the writer-excluding, delete-sharing handle.
+                if (Path.DirectorySeparatorChar == '\\')
+                    File.Replace(staging, path, null);
+                else
+                    File.Move(staging, path, true);
             }
         }
         finally

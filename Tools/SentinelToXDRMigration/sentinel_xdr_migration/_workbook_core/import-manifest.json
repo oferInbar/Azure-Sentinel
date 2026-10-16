@@ -32,7 +32,7 @@
     },
     {
       "component": "data/xdr-workbook.schema.json",
-      "sha256": "32735770ee130a61cf0841adecf72a72c32ad10d808c425583642fbbcd7b6c2e"
+      "sha256": "6de557c34ad020d35294db9d2f1cf7cc6753a09cb676acd88dc11b42f5961dca"
     },
     {
       "component": "dataframes.py",

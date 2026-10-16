@@ -141,6 +141,7 @@ function Add-CustomerUsageAttribution {
         [string]$SolutionMetadataPath,
         [Parameter(Mandatory = $true)]
         [psobject]$Template,
+        # Retain the existing parameter name; nested XDR content requires attribution.
         [bool]$WarnIfMissing = $false,
         [switch]$SkipAttributionLookup
     )
@@ -152,19 +153,22 @@ function Add-CustomerUsageAttribution {
     $trackingId = $metadata.trackingId
     $discovered = $null
     if ($null -eq $trackingId -or ($trackingId -is [string] -and [string]::IsNullOrWhiteSpace($trackingId))) {
-        if (-not $SkipAttributionLookup -and $env:SENTINEL_SKIP_ATTRIBUTION_LOOKUP -ne '1') {
+        if ($WarnIfMissing -or (-not $SkipAttributionLookup -and $env:SENTINEL_SKIP_ATTRIBUTION_LOOKUP -ne '1')) {
             try {
                 $discovered = Resolve-PublishedCustomerUsageAttribution -Metadata $metadata
                 $trackingId = $discovered.TrackingId
             }
             catch {
+                if ($WarnIfMissing) {
+                    throw "CUSTOMER USAGE ATTRIBUTION: Required published lookup failed [$($_.Exception.Message)]. Packaging stopped; SolutionMetadata.json is unchanged. Verify publisherId and offerId identify the correct published offer with one unambiguous plan/marker, or supply the complete trackingId from Partner Center > offer > plan > Technical configuration in '$SolutionMetadataPath' and rebuild. Attribution lookup cannot be skipped for nested XDR content."
+                }
                 Write-Warning "CUSTOMER USAGE ATTRIBUTION: Published lookup failed [$($_.Exception.Message)]. No attribution marker will be emitted; SolutionMetadata.json is unchanged. Supply the complete trackingId from Partner Center > offer > plan > Technical configuration and rebuild."
             }
         }
     }
     if ($null -eq $trackingId -or ($trackingId -is [string] -and [string]::IsNullOrWhiteSpace($trackingId))) {
         if ($WarnIfMissing) {
-            Write-Warning "CUSTOMER USAGE ATTRIBUTION: No attribution marker will be emitted because trackingId is absent or blank in '$SolutionMetadataPath'. Partner Center cannot automatically add tracking when the template contains functional nested deployments (including XDR). Obtain the COMPLETE customer usage attribution tracking ID from Partner Center > offer > plan > Technical configuration, add trackingId to SolutionMetadata.json, and rebuild. Do not use a Partner ID, plan ID, or a newly generated GUID. See https://learn.microsoft.com/partner-center/marketplace-offers/azure-partner-customer-usage-attribution#microsoft-marketplace-azure-apps"
+            throw "CUSTOMER USAGE ATTRIBUTION: Required trackingId is still absent or blank in '$SolutionMetadataPath'. Packaging stopped; SolutionMetadata.json is unchanged. Verify publisherId and offerId, or supply the complete trackingId from Partner Center > offer > plan > Technical configuration and rebuild. Attribution lookup cannot be skipped for nested XDR content."
         }
         return
     }

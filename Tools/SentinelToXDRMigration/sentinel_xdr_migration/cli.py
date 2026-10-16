@@ -177,6 +177,32 @@ def main(argv: list[str] | None = None) -> int:
         description="Convert Microsoft Sentinel analytic rules into XDR Custom Detection YAML."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in ("workbook-publication-plan", "workbook-publication-clean", "workbook-publication-validate"):
+        publication = subparsers.add_parser(command, help="Clean public workbook; retain local authoring evidence.")
+        publication.add_argument("--solution", required=True)
+        publication.add_argument("--content", required=True)
+        if command.endswith("-clean"):
+            publication.add_argument("--expected-sha256", required=True)
+            publication.add_argument("--review", required=True)
+        if command.endswith("-validate"):
+            publication.add_argument("--mode", choices=("structural", "authoring"), required=True)
+    for update_command in ("workbook-update-plan", "workbook-update-review", "workbook-update-apply"):
+        update_parser = subparsers.add_parser(
+            update_command, help="Offline explicit post-import edits; preserve historical receipts.")
+        update_parser.add_argument("--solution", required=True)
+        update_parser.add_argument("--content", required=True, help="Authored XDR Workbooks/ relative JSON path.")
+        update_parser.add_argument("--baseline", required=True, help="External original reviewed authored artifact.")
+        if update_command != "workbook-update-plan":
+            update_parser.add_argument("--review", required=True)
+    for native_command in ("native-workbook-plan", "native-workbook-review",
+                           "native-workbook-import", "native-workbook-validate"):
+        native_parser = subparsers.add_parser(
+            native_command, help="Offline native AH authoring; never conversion or runtime qualification.")
+        native_parser.add_argument("--solution", required=True)
+        if native_command != "native-workbook-validate":
+            native_parser.add_argument("--source", required=True, help="Workbook Sources/Native/ solution-relative JSON.")
+        if native_command in ("native-workbook-review", "native-workbook-import"):
+            native_parser.add_argument("--review", required=True, help="Complete reviewed current native plan JSON.")
     dependency_parser = subparsers.add_parser(
         "dependency-plan",
         help="Propose YAML dependencies offline, or verify them from approved lab metadata.",
@@ -1172,6 +1198,14 @@ def main(argv: list[str] | None = None) -> int:
     selection = None
     try:
         isolated_permission_commands = {
+            "workbook-publication-plan", "workbook-publication-clean", "workbook-publication-validate",
+            "workbook-update-plan",
+            "workbook-update-review",
+            "workbook-update-apply",
+            "native-workbook-plan",
+            "native-workbook-review",
+            "native-workbook-import",
+            "native-workbook-validate",
             "plan-delegated-app-permission-update",
             "verify-delegated-app-permission-update",
             "workbook-dependency-plan",
@@ -1541,6 +1575,64 @@ def main(argv: list[str] | None = None) -> int:
             result = plan_solution_dependencies(
                 args.solution, results_path=args.results, workspace_id=args.workspace_id,
             )
+        elif args.command.startswith("workbook-publication-"):
+            from .workbook_publication import plan_publication, clean_publication, publication_errors, is_public
+            from .workbook_updates import _read_external
+            if args.command.endswith("-plan"):
+                result = plan_publication(args.solution, args.content)
+            elif args.command.endswith("-validate"):
+                from .workbooks import _root, _path, _document, validate_workbooks
+                root = _root(args.solution)
+                path = _path(root, args.content)
+                document = _document(path)
+                validation = validate_workbooks(root, selected_only=True, _documents=[(path, document)])
+                errors = [error for row in validation["results"] for error in row["errors"]]
+                if not is_public(document):
+                    errors.append("Public workbook validation requires clean publication metadata.")
+                if not errors and args.mode == "authoring":
+                    errors = publication_errors(root, document)
+                result = {"valid": not errors, "validationScope": args.mode,
+                          "errors": errors, "runtimeQualified": False}
+            else:
+                _, review = _read_external(args.review)
+                result = clean_publication(args.solution, args.content, args.expected_sha256, review)
+        elif args.command.startswith("workbook-update-"):
+            from .workbook_updates import (
+                plan_workbook_update, review_workbook_update, apply_workbook_update, _read_external,
+            )
+            if args.command == "workbook-update-plan":
+                result = plan_workbook_update(args.solution, args.content, args.baseline)
+            else:
+                _, review = _read_external(args.review)
+                operation = (review_workbook_update if args.command == "workbook-update-review"
+                             else apply_workbook_update)
+                result = operation(args.solution, args.content, args.baseline, review)
+        elif args.command.startswith("native-workbook-"):
+            from .native_workbooks import (
+                plan_native_workbook, review_native_workbook, import_native_workbook, load_json,
+            )
+            from .workbooks import validate_workbooks
+            if args.command == "native-workbook-plan":
+                result = plan_native_workbook(args.solution, args.source)
+            elif args.command in ("native-workbook-review", "native-workbook-import"):
+                review_path = Path(args.review)
+                if any(p.is_symlink() for p in (review_path, *review_path.parents)):
+                    raise ValueError("Native review must not use symlinks.")
+                operation = (review_native_workbook if args.command == "native-workbook-review"
+                             else import_native_workbook)
+                result = operation(args.solution, args.source, load_json(review_path.read_bytes()))
+            else:
+                result = validate_workbooks(args.solution, selected_only=True)
+                from .workbook_publication import is_public, publication_errors
+                from .workbooks import _root, _path, _document
+                root = _root(args.solution)
+                for row in result["results"]:
+                    document = _document(_path(root, row["path"]))
+                    if is_public(document):
+                        row["errors"].extend(publication_errors(root, document))
+                        row["valid"] = not row["errors"]
+                result["valid"] = sum(row["valid"] for row in result["results"])
+                result["invalid"] = result["total"] - result["valid"]
         elif args.command == "workbook-dependency-plan":
             from .workbook_dependencies import plan_workbook_dependencies
             result = plan_workbook_dependencies(
@@ -1938,6 +2030,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.command == "package-v3-1" and result.get("status") == "blocked":
         return 1
+    if args.command == "workbook-publication-validate" and not result["valid"]:
+        return 1
     if args.command in {"workflow-arm-execute", "workflow-workbook-contract-import"} and result.get("accepted") is not True:
         return 1
     if args.command == "workflow-arm-preflight-execute" and result.get("status") != "ready":
@@ -1955,6 +2049,12 @@ def main(argv: list[str] | None = None) -> int:
         result["status"] != "active"
         or result.get("validationStatus") == "blocked"
     ):
+        return 1
+    if args.command == "native-workbook-validate" and result["invalid"]:
+        return 1
+    if args.command == "native-workbook-import" and result["validation"]["invalid"]:
+        return 1
+    if args.command == "native-workbook-plan" and any(q["blockers"] for q in result["queries"]):
         return 1
     return 0
 

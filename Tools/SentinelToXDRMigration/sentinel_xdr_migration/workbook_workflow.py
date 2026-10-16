@@ -273,6 +273,13 @@ def validate_evidence(solution: str | Path, state: dict[str, Any]) -> dict[str, 
     from .workbooks import validate_workbooks
 
     result = validate_workbooks(root, selected_only=True)
+    from .workbook_publication import is_public, publication_errors
+    for path in selected_workbook_references(root):
+        document = json.loads(path.read_bytes())
+        if is_public(document):
+            blockers = publication_errors(root, document)
+            if blockers:
+                raise ValueError("; ".join(blockers))
     if (
         result.get("total") != len(selected)
         or result.get("valid") != len(selected)
@@ -1476,4 +1483,3 @@ def audit_private_config_and_support_export(
                 "exposures": exposed_in_exports,
             },
         }
-
