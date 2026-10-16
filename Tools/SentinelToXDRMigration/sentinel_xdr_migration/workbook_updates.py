@@ -145,7 +145,11 @@ def _plan(root, current, baseline, baseline_record):
             raise ValueError("Workbook identity must remain unchanged.")
     for field in ("requiredWorkloads", "requiredDataConnectors", "requiredWorkspaceFunctions",
                   "dependencyReviewRequired"):
-        if current["contentProvenance"].get(field) != historical.get(field):
+        default = [] if field == "requiredWorkspaceFunctions" else None
+        if (field == "dependencyReviewRequired"
+                and current["contentProvenance"].get("format") == "public-workbook-v1"):
+            continue
+        if current["contentProvenance"].get(field, default) != historical.get(field, default):
             raise ValueError("Updates cannot replace historical reviewed dependencies: " + field)
     restored = deepcopy(current)
     restored["contentProvenance"] = deepcopy(historical)
@@ -230,19 +234,39 @@ def apply_workbook_update(solution, content, baseline_file, review):
     path = _path(root, content)
     previous = path.read_bytes()
     review = review_workbook_update(root, content, baseline_file, review)
-    _, baseline = _read_external(baseline_file)
-    document = _document(path)
+    baseline_raw, baseline = _read_external(baseline_file)
+    if _sha(baseline_raw) != review["baseline"]["sha256"]:
+        raise ValueError("Historical baseline changed before apply.")
+    document = _load_json(previous)
     document["contentProvenance"] = deepcopy(baseline["contentProvenance"])
-    document["contentProvenance"]["authoredReview"] = review
-    errors = validate_updated_document(root, document)
+    if _canonical(document) != review["canonicalDocumentSha256"]:
+        raise ValueError("Current workbook changed before apply.")
+    from .workbook_publication import (
+        is_public, public_document, retain_receipt, validate_public_document, source_evidence,
+    )
+    if is_public(baseline):
+        clean = public_document(document)
+        errors = validate_public_document(root, clean)
+    else:
+        document["contentProvenance"]["authoredReview"] = review
+        errors = validate_updated_document(root, document)
+        clean = public_document(document)
+        errors.extend(validate_public_document(root, clean))
     if errors:
         raise ValueError("; ".join(errors))
     from .workbooks import authored_schema_errors
-    errors = authored_schema_errors(document)
+    errors = authored_schema_errors(clean)
     if errors:
         raise ValueError("; ".join(errors))
-    _write(path, (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode(), previous)
-    return {"path": content, "sha256": _sha(path.read_bytes()), "runtimeQualified": False}
+    receipt = retain_receipt(root, clean, {
+        "publicDocument": clean, "inputSha256": _sha(previous),
+        "inputArtifact": previous.decode("utf-8"), "review": review,
+        "baselineArtifact": baseline_raw.decode("utf-8"), "baselineSha256": _sha(baseline_raw),
+        "sourceArtifacts": source_evidence(root, baseline),
+    })
+    _write(path, (json.dumps(clean, indent=2, ensure_ascii=False) + "\n").encode(), previous)
+    return {"path": content, "sha256": _sha(path.read_bytes()), "localReceipt": receipt,
+            "runtimeQualified": False}
 
 
 def validate_updated_document(solution, document):

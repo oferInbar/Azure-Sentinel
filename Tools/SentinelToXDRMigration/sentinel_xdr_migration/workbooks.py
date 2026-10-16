@@ -468,6 +468,14 @@ def validate_workbooks(solution, *, selected_only=False, _documents=None) -> dic
             errors.append("Workbook displayName is required.")
         if any(key in provenance for key in ("packageId", "packageVersion", "contentId", "contentVersion")):
             errors.append("Deployment provenance quartet must not be authored.")
+        from .workbook_publication import is_public, validate_public_document
+        if is_public(document):
+            errors.extend(validate_public_document(root, document))
+            source_paths.update(row["path"] for row in inventory.values()
+                                if row["identity"] == identity)
+            results.append({"path": path.relative_to(root).as_posix(),
+                            "sha256": digest, "valid": not errors, "errors": errors})
+            continue
         if "authoredReview" in provenance or provenance.get("origin") == "native-xdr":
             if "authoredReview" in provenance:
                 from .workbook_updates import validate_updated_document

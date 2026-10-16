@@ -46,7 +46,7 @@ function Assert-DefenderWorkbookReleaseVersion {
 
 function Assert-NativeDefenderWorkbookDocument {
     param([psobject]$Document, [string]$SolutionRoot,
-        [ValidateSet('native_workbooks', 'workbook_updates')][string]$ValidationModule = 'native_workbooks')
+        [ValidateSet('native_workbooks', 'workbook_updates', 'workbook_publication')][string]$ValidationModule = 'native_workbooks')
 
     $python = if ($env:SENTINEL_XDR_PYTHON) { $env:SENTINEL_XDR_PYTHON } else { 'python' }
     $start = [System.Diagnostics.ProcessStartInfo]::new()
@@ -104,6 +104,19 @@ function Assert-DefenderWorkbookDocument {
         throw "Defender Workbook '$ContentPath' requires distinct canonical contentId/instanceId GUIDs and reviewed displayName."
     }
     Assert-DefenderWorkbookReleaseVersion -Version $metadata.version
+    $provenance = $Document.contentProvenance
+    if ($null -ne $provenance -and $provenance.format -ceq 'public-workbook-v1') {
+        Assert-NativeDefenderWorkbookDocument -Document $Document -SolutionRoot $SolutionRoot `
+            -ValidationModule workbook_publication
+        if ($PassThruSource) { return $Document }
+        return
+    }
+    throw "Published authored workbooks must be clean; run workbook-publication-plan/clean for '$ContentPath'."
+}
+
+# Legacy diagnostics are not a publication entry point.
+function Assert-LegacyDefenderWorkbookDocument {
+    param([psobject]$Document, [string]$SolutionRoot, [string]$SolutionName, [string]$ContentPath, [switch]$PassThruSource)
     $provenance = $Document.contentProvenance
     if ($null -ne $provenance -and $null -ne $provenance.PSObject.Properties['authoredReview']) {
         Assert-NativeDefenderWorkbookDocument -Document $Document -SolutionRoot $SolutionRoot `
@@ -811,6 +824,11 @@ function Get-DefenderWorkbookParserDependencies {
                 [void]$referenced.Add($alias)
             }
         }
+    }
+    if ($provenance.format -ceq 'public-workbook-v1') {
+        # Python validated exact current query aliases and hash-bound local proof
+        # (or an explicitly requested public Git reproduction) above.
+        foreach ($alias in $declared) { [void]$referenced.Add($alias) }
     }
     if (-not $declared.SetEquals($referenced)) {
         throw 'Defender Workbook requiredWorkspaceFunctions must exactly cover reviewed query workspaceFunctions.'

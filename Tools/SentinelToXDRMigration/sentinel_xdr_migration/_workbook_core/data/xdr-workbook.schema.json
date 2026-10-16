@@ -20,6 +20,45 @@
       "additionalProperties": false
     },
     "contentProvenance": {
+      "oneOf": [{"$ref": "#/$defs/publicProvenance"}, {"$ref": "#/$defs/legacyProvenance"}]
+    }
+  },
+  "$defs": {
+    "publicProvenance": {
+      "type": "object",
+      "required": ["format", "origin", "requiredWorkloads", "requiredDataConnectors", "requiredWorkspaceFunctions"],
+      "properties": {
+        "format": {"const": "public-workbook-v1"},
+        "origin": {"enum": ["native-xdr", "sentinel-migration"]},
+        "requiredWorkloads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["workload", "dataTypes"],
+            "properties": {
+              "workload": {"enum": ["mde", "mdo", "mdi", "mda", "mdc", "entraid", "purview", "appgovernance", "sentinel", "mtp"]},
+              "dataTypes": {"$ref": "#/$defs/dataTypes"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "requiredDataConnectors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["connectorId", "dataTypes"],
+            "properties": {
+              "connectorId": {"type": "string", "minLength": 1},
+              "dataTypes": {"$ref": "#/$defs/dataTypes"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "requiredWorkspaceFunctions": {"type": "array", "items": {"$ref": "#/$defs/workspaceFunction"}}
+      },
+      "additionalProperties": false
+    },
+    "legacyProvenance": {
       "type": "object",
       "required": ["source", "requiredWorkloads", "requiredDataConnectors", "dependencyReviewRequired"],
       "allOf": [{
@@ -116,9 +155,7 @@
         "dependencyReviewRequired": {"const": false}
       },
       "additionalProperties": false
-    }
-  },
-  "$defs": {
+    },
     "authoredReview": {
       "type": "object",
       "required": ["schemaVersion", "baseline", "baselineMetadata", "reversePayloadChanges", "canonicalPayloadSha256", "canonicalDocumentSha256", "queries", "changedQueries", "actor", "reference", "decision", "reviewSha256"],

@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 
 from sentinel_xdr_migration import cli, workbook_updates as updates, workbooks
+from sentinel_xdr_migration import workbook_publication as publication
 from test_native_workbooks import (
     solution as native_solution, imported as native_imported, candidate as native_candidate,
 )
@@ -86,10 +87,14 @@ def test_restores_historical_proof_without_changing_edited_notebook(update_case)
         current["contentProvenance"]["nativeReview"]["actor"] = "manual replacement"
     path.write_text(json.dumps(current), encoding="utf-8")
     assert workbooks.validate_workbooks(root, selected_only=True)["invalid"] == 1
-    assert apply(update_case)["runtimeQualified"] is False
+    applied = apply(update_case)
+    assert applied["runtimeQualified"] is False
     result = json.loads(path.read_bytes())
-    review = result["contentProvenance"].pop("authoredReview")
-    assert result["contentProvenance"] == old["contentProvenance"]
+    receipt = json.loads(Path(applied["localReceipt"]).read_bytes())
+    review = receipt["evidence"]["review"]
+    historical = json.loads(receipt["evidence"]["baselineArtifact"])
+    assert historical["contentProvenance"] == old["contentProvenance"]
+    assert result["contentProvenance"] == publication.public_document(old)["contentProvenance"]
     assert result["items"] == current["items"]
     assert result["xdrMetadata"] == current["xdrMetadata"]
     assert len(review["changedQueries"]) == 1
@@ -98,6 +103,7 @@ def test_restores_historical_proof_without_changing_edited_notebook(update_case)
     for source in (root / "Workbook Sources").rglob("*.json"):
         source.unlink()
     assert workbooks.validate_workbooks(root, selected_only=True)["invalid"] == 0
+    assert publication.publication_errors(root, result) == []
 
 
 @pytest.mark.parametrize("mutation", [
@@ -106,10 +112,12 @@ def test_restores_historical_proof_without_changing_edited_notebook(update_case)
 ])
 def test_future_tampering_and_staleness_fail(update_case, mutation):
     root, path, _, index, _ = update_case
-    apply(update_case)
+    applied = apply(update_case)
     document = json.loads(path.read_bytes())
     provenance = document["contentProvenance"]
-    review = provenance["authoredReview"]
+    receipt_path = Path(applied["localReceipt"])
+    receipt = json.loads(receipt_path.read_bytes())
+    review = receipt["evidence"]["review"]
     if mutation == "query":
         document["items"][index]["content"]["query"] += " | take 4"
     elif mutation == "settings":
@@ -117,7 +125,7 @@ def test_future_tampering_and_staleness_fail(update_case, mutation):
     elif mutation == "identity":
         document["xdrMetadata"]["contentId"] = str(uuid4())
     elif mutation == "historical-proof":
-        provenance["source"]["sha256"] = "0" * 64
+        receipt["evidence"]["baselineArtifact"] += " "
     elif mutation == "baseline-hash":
         review["baseline"]["canonicalDocumentSha256"] = "0" * 64
     elif mutation == "delta":
@@ -133,7 +141,8 @@ def test_future_tampering_and_staleness_fail(update_case, mutation):
     else:
         document["xdrMetadata"]["displayName"] += " changed"
     path.write_text(json.dumps(document), encoding="utf-8")
-    assert workbooks.validate_workbooks(root, selected_only=True)["invalid"] == 1
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert publication.publication_errors(root, document)
 
 
 @pytest.mark.parametrize("query", [
@@ -179,22 +188,22 @@ def test_review_does_not_accept_self_asserted_or_stale_evidence(update_case, mut
 
 def test_recomputed_hashes_do_not_override_discovered_dependencies(update_case):
     root, path, _, index, old = update_case
-    apply(update_case)
+    applied = apply(update_case)
     document = json.loads(path.read_bytes())
-    review = document["contentProvenance"].pop("authoredReview")
+    receipt_path = Path(applied["localReceipt"])
+    receipt = json.loads(receipt_path.read_bytes())
     document["items"][index]["content"]["query"] = "UnknownTable | take 1"
-    review["reversePayloadChanges"] = updates._reverse(updates._payload(document), updates._payload(old))
-    review["canonicalPayloadSha256"] = updates._canonical_payload_sha256(document)
-    review["canonicalDocumentSha256"] = updates._canonical(document)
-    digest = updates.workbook.query_hash("UnknownTable | take 1")
-    review["queries"][0]["querySha256"] = digest
-    review["changedQueries"][0]["querySha256"] = digest
-    review["reviewSha256"] = updates._review_digest(review)
-    document["contentProvenance"]["authoredReview"] = review
+    receipt["canonicalDocumentSha256"] = publication.digest(document)
+    receipt["evidence"]["publicDocument"] = document
+    receipt.pop("receiptSha256")
+    receipt["receiptSha256"] = publication.digest(receipt)
+    new_receipt = publication._receipt_path(root, document)
+    new_receipt.write_text(json.dumps(receipt), encoding="utf-8")
     path.write_text(json.dumps(document), encoding="utf-8")
     result = workbooks.validate_workbooks(root, selected_only=True)
     assert result["invalid"] == 1
     assert any("UnknownTable" in error for error in result["results"][0]["errors"])
+    assert publication.publication_errors(root, document)
 
 
 def test_replacement_conversion_receipt_cannot_be_used_as_original_baseline(migrated_solution):
@@ -356,11 +365,31 @@ def test_migrated_hybrid_queries_preserve_historical_sentinel_lineage(migrated_s
     case = root, path, baseline, 0, old
     plan = accepted(case)
     assert plan["queries"][0]["tables"] == ["SecurityAlert", "SecurityIncident"]
-    apply(case)
+    if not complete_dependencies:
+        with pytest.raises(ValueError, match="Unknown or non-native"):
+            apply(case)
+        # Legacy historical exceptions stay in local proof. Publication needs
+        # explicit complete public prerequisites, not an inherited waiver.
+        legacy = deepcopy(current)
+        legacy["contentProvenance"]["authoredReview"] = updates.review_workbook_update(
+            root, path.relative_to(root).as_posix(), baseline, plan)
+        assert updates.validate_updated_document(root, legacy) == []
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+        clean_review = publication.plan_publication(root, path.relative_to(root).as_posix())
+        clean_review.update(actor="fixture reviewer", reference="Explicit complete prerequisites", decision="accept")
+        assert clean_review["dependencyErrors"]
+        unchanged = path.read_bytes()
+        with pytest.raises(ValueError, match="connector coverage"):
+            publication.clean_publication(root, path.relative_to(root).as_posix(),
+                                          clean_review["inputSha256"], clean_review)
+        assert path.read_bytes() == unchanged
+        clean_review["dependencies"]["requiredDataConnectors"][0]["dataTypes"].append("SecurityIncident")
+        publication.clean_publication(root, path.relative_to(root).as_posix(),
+                                      clean_review["inputSha256"], clean_review)
+    else:
+        apply(case)
     updated = json.loads(path.read_bytes())
-    historical = deepcopy(updated["contentProvenance"])
-    historical.pop("authoredReview")
-    assert historical == old["contentProvenance"]
+    assert "authoredReview" not in updated["contentProvenance"]
     assert workbooks.validate_workbooks(root)["invalid"] == 0
     if shutil.which("pwsh"):
         result = powershell_scan(root, path)
