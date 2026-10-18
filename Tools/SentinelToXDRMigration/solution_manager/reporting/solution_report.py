@@ -2011,6 +2011,18 @@ def build_solution_report(
     report["artifacts"]["qualificationTarget"] = (
         str(target_reference) if target_link.get("available") is True else None
     )
+    from solution_manager.reporting.decision_manifest import build_sanitized_decision_manifest
+
+    decision_manifest = build_sanitized_decision_manifest(root)
+    report["decisionManifestSummary"] = {
+        "schemaVersion": decision_manifest["schemaVersion"],
+        "decisionCount": len(decision_manifest["decisions"]),
+        "totalDecisions": len(decision_manifest["decisions"]),
+        "count": len(decision_manifest["decisions"]),
+        "manifestSha256": decision_manifest["manifestSha256"],
+        "sanitizedVerified": True,
+        "scopes": sorted({item["scope"] for item in decision_manifest["decisions"]}),
+    }
     report["flowEvidence"] = _build_flow_evidence(
         root, reports, report["workflow"], report["artifacts"], packaging
     )
