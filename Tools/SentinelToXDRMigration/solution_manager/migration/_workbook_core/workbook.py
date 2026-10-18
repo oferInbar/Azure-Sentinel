@@ -580,7 +580,9 @@ def opaque_functions(query: str, *, include_bare: bool = True) -> set[str]:
 
 def convert_workbook(source: dict, resolutions: dict | None = None,
                      tables: list[str] | None = None,
-                     allowed_workspace_functions=()) -> dict:
+                     allowed_workspace_functions=(),
+                     *,
+                     preserve_sentinel_tables: bool = False) -> dict:
     """Return an intact review draft and report. Never resolves or executes live.
 
     resolutions maps original query pointers to {querySha256, tables, evidence}.
@@ -594,6 +596,7 @@ def convert_workbook(source: dict, resolutions: dict | None = None,
     entries, removed, retained_scope = _scope_parameters(doc)
     removed_prefixes = [path + "/" for path, p in entries if p["name"] in removed]
     issues, reports, gates = [], [], set()
+    provenance_notes: list[str] = []
 
     def issue(path, code, message):
         issues.append({"path": path, "code": code, "message": message})
@@ -691,6 +694,12 @@ def convert_workbook(source: dict, resolutions: dict | None = None,
             continue
         resolved = tables
         entry["resolutionEvidence"] = "caller-reviewed tables" if tables is not None else None
+        if resolved is None and evidence is None and not preserve_sentinel_tables:
+            bare_sources = _bare_source_identifiers(code)
+            alert_tables = {"SecurityAlert", "SecurityIncident", "AlertInfo", "AlertEvidence"}
+            if bare_sources and bare_sources <= alert_tables and not opaque:
+                resolved = sorted(bare_sources)
+                entry["resolutionEvidence"] = "deterministic SecurityAlert/SecurityIncident to AlertInfo/AlertEvidence migration"
         if evidence is not None:
             if (not isinstance(evidence, dict)
                     or evidence.get("querySha256") != query_hash(original["node"]["query"])
@@ -711,8 +720,15 @@ def convert_workbook(source: dict, resolutions: dict | None = None,
                       "Supply underlying source tables separately from workspace function aliases.")
                 continue
         contract = migrator.convert(raw, tables=resolved, source_id=path,
-                                    artifact_type="workbook", resolve=False)
+                                    artifact_type="workbook", resolve=False,
+                                    preserve_sentinel_tables=preserve_sentinel_tables)
         entry["conversion"] = contract
+        if contract.get("notes"):
+            entry["notes"] = list(contract["notes"])
+            entry["provenanceNotes"] = list(contract["notes"])
+            for note in contract["notes"]:
+                if note not in provenance_notes:
+                    provenance_notes.append(note)
         if "Watchlist" in contract["resolvedTables"]:
             entry["referenceInputs"] = ["Watchlist"]
         entry["status"] = contract["status"]
@@ -852,15 +868,19 @@ def convert_workbook(source: dict, resolutions: dict | None = None,
     output_paths = {id(s["node"]): s["path"] for s in query_surfaces(doc)}
     for surface, entry in zip(surfaces, reports):
         entry["outputPath"] = output_paths.get(id(surface["node"]))
+    report_payload = {
+        "status": "blocked" if issues else ("needs-validation" if gates else "converted"),
+        "queries": reports,
+        "removedParameters": [{"name": p["name"], "sourcePath": path}
+                              for path, p in entries if p["name"] in removed],
+        "issues": issues,
+        "gates": [{"code": gate, "status": "unverified"} for gate in sorted(gates)],
+        "validation": {"localStructureOnly": True, "runtime": "not-run", "ui": "not-run"},
+    }
+    if provenance_notes:
+        report_payload["notes"] = list(provenance_notes)
+        report_payload["provenanceNotes"] = list(provenance_notes)
     return {
         "workbook": doc,
-        "report": {
-            "status": "blocked" if issues else ("needs-validation" if gates else "converted"),
-            "queries": reports,
-            "removedParameters": [{"name": p["name"], "sourcePath": path}
-                                  for path, p in entries if p["name"] in removed],
-            "issues": issues,
-            "gates": [{"code": gate, "status": "unverified"} for gate in sorted(gates)],
-            "validation": {"localStructureOnly": True, "runtime": "not-run", "ui": "not-run"},
-        },
+        "report": report_payload,
     }
