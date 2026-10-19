@@ -87,12 +87,33 @@ def _escape(value: Any, default: str = "") -> str:
     return html.escape(text if text else default, quote=True)
 
 
+def _rebase_evidence_url(candidate: str) -> str:
+    if candidate == "qualification_evidence":
+        return "../qualification-evidence.json"
+    if candidate.startswith("qualification_evidence.") or candidate.startswith("qualification_evidence:"):
+        sep = "." if "." in candidate else ":"
+        frag = candidate.split(sep, 1)[1]
+        return f"../qualification-evidence.json#{frag}"
+    if candidate == "validationStatus":
+        return "./pr-qualification-result.json#validationStatus"
+    if not candidate.startswith(("http://", "https://", "file://", "mailto:", "/", ".", "#", "Solutions/")):
+        if candidate.startswith("Evidence/pr-qualification/"):
+            return "./" + candidate[len("Evidence/pr-qualification/"):]
+        if candidate.startswith("Evidence/"):
+            return "../" + candidate[len("Evidence/"):]
+        if candidate.startswith("Logs/"):
+            return "../../../../" + candidate
+        return "../../" + candidate
+    return candidate
+
+
 def _sanitize_href(raw_url: Any) -> str:
     if raw_url is None:
         return "#"
     candidate = str(raw_url).strip()
     if not candidate or _UNSAFE_SCHEME_RE.match(candidate):
         return "#"
+    candidate = _rebase_evidence_url(candidate)
     try:
         parsed = urlsplit(candidate)
     except ValueError:
@@ -108,6 +129,7 @@ def _sanitize_markdown_url(raw_url: Any) -> str:
     candidate = str(raw_url).strip()
     if not candidate or _UNSAFE_SCHEME_RE.match(candidate):
         return "#"
+    candidate = _rebase_evidence_url(candidate)
     try:
         parsed = urlsplit(candidate)
     except ValueError:
@@ -321,7 +343,7 @@ def _format_evidence_ref_html(ref: dict[str, Any]) -> str:
         display_html = escaped_label
 
     return (
-        f'<a class="evidence-link" href="{href}"{line_attr}>{display_html}</a>{kind_badge}'
+        f'<a class="evidence-link" href="{href}" target="_blank" rel="noopener noreferrer"{line_attr}>{display_html}</a>{kind_badge}'
     )
 
 
@@ -341,7 +363,7 @@ def _render_evidence_links_list_html(check: dict[str, Any]) -> str:
             escaped_ref = _escape(supporting_ref)
             items.append(
                 "<li>"
-                f'<a class="evidence-link supporting-evidence-link" href="{href}">'
+                f'<a class="evidence-link supporting-evidence-link" href="{href}" target="_blank" rel="noopener noreferrer">'
                 f"Author Supporting Evidence: <code>{escaped_ref}</code>"
                 "</a>"
                 ' <span class="evidence-kind">[author-exception]</span>'
@@ -407,7 +429,7 @@ def _render_author_exception_box_html(author_exc: dict[str, Any] | None, reviewe
     author = str(author_exc.get("author") or "").strip()
 
     supporting_link_html = (
-        f'<a class="evidence-link supporting-evidence-link" href="{_sanitize_href(supporting_ref)}">'
+        f'<a class="evidence-link supporting-evidence-link" href="{_sanitize_href(supporting_ref)}" target="_blank" rel="noopener noreferrer">'
         f"{_escape(supporting_ref)}</a>"
         if supporting_ref
         else '<span class="muted">None provided</span>'

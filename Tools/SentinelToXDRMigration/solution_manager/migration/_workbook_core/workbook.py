@@ -141,7 +141,7 @@ def _scope_parameters(doc, protected=()):
         qt = surface.get("queryType") if surface else None
         return (
             not (p.get("query") and qt in (0, None, AH))
-            and not is_preserved_provider_surface(surface)
+            and not (p.get("type") == 5 and is_preserved_provider_surface(surface))
             and p.get("type") != 4
         )
 

@@ -66,9 +66,18 @@ def _make_evidence_ref(
     line: int | None = None,
     kind: str = "file",
 ) -> dict[str, Any]:
+    norm_path = str(path or "").strip()
+    if norm_path == "qualification_evidence":
+        norm_path = "Evidence/qualification-evidence.json"
+    elif norm_path.startswith("qualification_evidence.") or norm_path.startswith("qualification_evidence:"):
+        sep = "." if "." in norm_path else ":"
+        frag = norm_path.split(sep, 1)[1]
+        norm_path = f"Evidence/qualification-evidence.json#{frag}"
+    elif norm_path == "validationStatus":
+        norm_path = "Evidence/pr-qualification/pr-qualification-result.json#validationStatus"
     return {
         "label": str(label),
-        "path": str(path),
+        "path": norm_path,
         "line": line,
         "kind": str(kind),
     }
@@ -325,14 +334,8 @@ def _find_mock_files(
 ) -> list[Path]:
     """Locate candidate mock data JSON files in solution root, Sample Data, Mocks, or run_dir."""
     candidates: list[Path] = []
-    direct = [
-        solution_root / "mock.json",
-    ]
-    if run_dir is not None:
-        direct.extend([run_dir / "mock.json", run_dir / "workbook-mock.json"])
-    for c in direct:
-        if c.is_file() and not c.is_symlink() and c not in candidates:
-            candidates.append(c)
+    if (solution_root / "mock.json").is_file() and not (solution_root / "mock.json").is_symlink():
+        candidates.append(solution_root / "mock.json")
 
     for folder_name in ("Sample Data", "Mocks", "Mock"):
         folder = solution_root / folder_name
@@ -341,8 +344,13 @@ def _find_mock_files(
                 if f.is_file() and not f.is_symlink() and f not in candidates:
                     candidates.append(f)
 
+    if run_dir is not None and not candidates:
+        for c in (run_dir / "mock.json", run_dir / "workbook-mock.json"):
+            if c.is_file() and not c.is_symlink() and c not in candidates:
+                candidates.append(c)
+
     logs_dir = solution_root / "Logs"
-    if logs_dir.is_dir() and not logs_dir.is_symlink():
+    if not candidates and logs_dir.is_dir() and not logs_dir.is_symlink():
         for f in sorted(logs_dir.rglob("*mock*.json")):
             if f.is_file() and not f.is_symlink() and f not in candidates:
                 candidates.append(f)
