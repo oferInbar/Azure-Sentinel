@@ -35,9 +35,17 @@
 
 ---
 
-## Privacy, PII & Secrets Scan Summary
+## Privacy, PII & Secrets Review Findings
 
-- **Changed Toolkit Files Scanned (`upstream/master...HEAD`):** 69 files across `Tools/`, `.github/`, `AGENTS.md`, `CLAUDE.md`, and `.gitignore`.
-- **Local Machine Paths (`/Users/...`, `C:\Users\...`):** `0` leaks (only synthetic `/Users/secadmin` and `/Users/developer` test fixtures in `test_decision_manifest.py`).
-- **Tenant / Subscription / Workspace GUIDs:** `0` hardcoded lab IDs in toolkit code.
-- **Personal Emails / Credentials / Tokens:** `0` leaks (only `support@microsoft.com` in test fixtures).
+| # | Severity | File | Lines | Privacy / Hygiene Finding |
+|---|----------|------|-------|---------------------------|
+| P1 | 🟠 HIGH | `Tools/SentinelToXDRMigration/docs/qualification/README.md` | 181-182 | Internal Microsoft SharePoint URL and personal OneDrive URL committed in source table |
+| P2 | 🟠 HIGH | `Tools/SentinelToXDRMigration/solution_manager/cli.py` | 1358-1364 | `pr-qualify` writes JSON, HTML, and Markdown without passing through the shared `decision_manifest` / evidence sanitizer boundary; `pr_qualification_report.py` also allows `file://` scheme |
+| P3 | 🟡 MEDIUM | `Tools/SentinelToXDRMigration/solution_manager/reporting/decision_manifest.py` | 194, 257-270 | Unlabeled GUIDs in free text can survive sanitization, and verification errors can echo raw identifiers |
+| P4 | 🟡 MEDIUM | `.gitignore` | 369-370 | Add ignore rules for raw unsanitized local receipts/state while allowlisting sanitized PR qualification artifacts |
+
+### Deterministic Scan Summary
+- **Changed Toolkit Files Scanned (`upstream/master...HEAD`):** 69 toolkit files across `Tools/SentinelToXDRMigration/` and `Tools/Create-Azure-Sentinel-Solution/`.
+- **Confirmed Live Secrets / Tokens:** `0` found.
+- **Local Machine Paths (`/Users/...`, `C:\Users\...`) in New Toolkit Code:** `0` leaks (only synthetic `/Users/secadmin` and `/Users/developer` test fixtures in `test_decision_manifest.py`).
+
