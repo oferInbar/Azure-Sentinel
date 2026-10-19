@@ -160,7 +160,7 @@ def _create_solution_fixture(
         json.dumps(
             {
                 "Name": "HybridFixture",
-                "Version": "3.2.1",
+                "Version": "3.2.2",
                 "Analytic Rules": rule_rels,
                 "Workbooks": wb_rels,
                 "XDR Workbooks": xdr_wb_rels,

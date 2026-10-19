@@ -476,11 +476,12 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
         self.assertEqual({"packageId", "packageVersion", "contentId", "contentVersion"}, set(installed["contentProvenance"]))
         self.assertEqual(authored, self.target.read_bytes())
         self.assertEqual(source, self.source.read_bytes())
-        self.assertNotIn("DeployParser", result["template"]["parameters"])
-        self.assertNotIn("DeployParser", result["ui"]["parameters"]["outputs"])
+        self.assertIn("DeployParser", result["template"]["parameters"])
+        self.assertTrue(result["template"]["parameters"]["DeployParser"]["defaultValue"])
+        self.assertIn("DeployParser", result["ui"]["parameters"]["outputs"])
         for resource in resources:
             if resource["type"].endswith("/savedSearches"):
-                self.assertNotIn("condition", resource)
+                self.assertEqual("[parameters('DeployParser')]", resource.get("condition"))
                 self.assertEqual("*", resource["properties"]["eTag"])
 
     def test_syslog_two_parser_objects_emit_canonical_parser_ids_and_pass_python_verifier(self) -> None:
@@ -583,8 +584,9 @@ class DefenderWorkbookPackagingTests(unittest.TestCase):
         self.invoke(package=True)
         package = json.loads((self.solution / "Package/mainTemplate.json").read_text(encoding="utf-8-sig"))
         self.assertIn("DeployParser", package["parameters"])
+        self.assertTrue(package["parameters"]["DeployParser"]["defaultValue"])
         for resource in package["resources"][2:5]:
-            self.assertNotIn("condition", resource)
+            self.assertEqual("[parameters('DeployParser')]", resource.get("condition"))
         self.assertEqual("[parameters('DeployParser')]", package["resources"][5]["condition"])
         installation = next(r for r in package["resources"] if r["type"] == "Microsoft.Resources/deployments")
         self.assertIn(

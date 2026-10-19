@@ -537,8 +537,10 @@ function Get-DefenderWorkbookImplicitFunctions {
                     if ([regex]::IsMatch($before, $braceBodyPrefixPat)) { '{()' + $m.Value.Substring(1, $m.Value.Length - 2) + '}' }
                     else { $m.Value }
                 })
-                $locals = @([regex]::Matches($code, '\blet\s+([A-Za-z_]\w*)\s*=') |
-                    ForEach-Object { $_.Groups[1].Value })
+                $locals = @(
+                    @([regex]::Matches($code, '\blet\s+([A-Za-z_]\w*)\s*=') | ForEach-Object { $_.Groups[1].Value }) +
+                    @([regex]::Matches($code, '(?i)\|\s*as\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+([A-Za-z_]\w*)') | ForEach-Object { $_.Groups[1].Value })
+                )
                 $builtins = @(
                     'datatable', 'externaldata', 'external_data', 'range', 'print', 'dynamic', 'datetime', 'timespan',
                     'toscalar', 'tostring', 'toint', 'tolong', 'todouble', 'todatetime', 'todecimal', 'todynamic', 'toreal', 'totable',
@@ -1251,8 +1253,8 @@ function Add-XdrDefenderWorkbooksToSolution {
             }
         }
     )
-    # Exempt only reviewed prerequisites and their registration faces from DeployParser.
-    Register-SolutionRequiredResources -Resources $requiredResources
+    # Keep required parser resources gated by DeployParser (defaultValue: true) so
+    # Content Hub multi-workspace installation always receives the DeployParser parameter.
     $Template.resources = @($Template.resources) + @($resources)
     if ($null -eq $dependencyProperty) {
         $contentPackages[0].properties | Add-Member -NotePropertyName dependencies -NotePropertyValue (

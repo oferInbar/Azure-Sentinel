@@ -40,7 +40,7 @@ def _write_sample_solution(tmp_path: Path) -> Path:
             {
                 "publisherId": "contoso",
                 "offerId": "contoso-cloud",
-                "version": "3.2.0",
+                "version": "3.2.2",
             },
             indent=2,
         ),
@@ -162,7 +162,7 @@ def _write_workflow_state(sol: Path, *, include_private_context: bool = False) -
     state = {
         "schemaVersion": "1.1.0",
         "solutionName": "ContosoCloud",
-        "solutionVersion": "3.2.0",
+        "solutionVersion": "3.2.2",
         "workflowProfile": "qualification",
         "armValidationMethod": "arm-ttk",
         "context": context_block,
@@ -203,7 +203,7 @@ def test_build_and_write_sanitized_decision_manifest_all_scopes(tmp_path: Path) 
     manifest = build_sanitized_decision_manifest(sol, state_path=state_path)
     assert manifest["schemaVersion"] == DECISION_MANIFEST_SCHEMA_VERSION
     assert manifest["solutionName"] == "ContosoCloud"
-    assert manifest["solutionVersion"] == "3.2.0"
+    assert manifest["solutionVersion"] == "3.2.2"
     assert manifest["workflowProfile"] == "qualification"
     assert manifest["armValidationMethod"] == "arm-ttk"
 

@@ -447,7 +447,7 @@ def convert_workbooks(solution, *, config=None, report_directory=None, overwrite
         if version is None:
             report["issues"].append({
                 "path": "/xdrMetadata/version", "code": "release-version-required",
-                "message": "Select targetVersion >=3.2.0 and <4.0.0; source release is unchanged."})
+                "message": "Select targetVersion >=3.2.2 and <4.0.0; source release is unchanged."})
         canonical = row["identity"]
         instance = str(uuid5(NAMESPACE_URL, f"xdr-workbook-instance:{root.name}:{canonical}"))
         target["xdrMetadata"] = {

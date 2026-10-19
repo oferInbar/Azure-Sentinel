@@ -94,7 +94,7 @@ def is_preserved_provider_surface(surface: dict | None) -> bool:
     qt = surface.get("queryType")
     rt = (surface.get("resourceType") or "").strip().lower()
     node = surface.get("node")
-    raw = node.get("query") if isinstance(node, dict) else None
+    raw = node.get("query") if isinstance(node, dict) else (surface.get("sourceKql") or surface.get("queryKql"))
     return (
         qt == 1
         and rt == ARG_RESOURCE_TYPE
@@ -136,9 +136,14 @@ def _scope_parameters(doc, protected=()):
 
     def eligible(name):
         p = params[name]
-        # A type-5 parameter may be a KQL-backed Computer filter, not a workspace.
-        qt = surfaces.get(id(p), {}).get("queryType")
-        return not (p.get("query") and qt in (0, None, AH)) and p.get("type") != 4
+        # A type-5 parameter may be a KQL-backed Computer filter or preserved ARG resource picker, not a workspace.
+        surface = surfaces.get(id(p))
+        qt = surface.get("queryType") if surface else None
+        return (
+            not (p.get("query") and qt in (0, None, AH))
+            and not is_preserved_provider_surface(surface)
+            and p.get("type") != 4
+        )
 
     candidates = {
         name for name, p in params.items()
@@ -427,10 +432,17 @@ def _quoted_calls_and_table_sources(query: str) -> tuple[set[str], set[str]]:
     return calls, bare
 
 
+def _local_tabular_vars(code: str) -> set[str]:
+    return (
+        set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=", code))
+        | set(re.findall(r"\|\s*as\b(?:\s+hint\.[\w.]+\s*=\s*[\w.*-]+)*\s+([A-Za-z_]\w*)", code, re.IGNORECASE))
+    )
+
+
 def union_source_names(query: str) -> set[str]:
     """Heuristic operands, not proof of a table or saved-function dependency."""
     code = _stripped_code(query)
-    locals = set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=", code))
+    locals = _local_tabular_vars(code)
     return {name for name, _ in _union_operands(code)} - locals
 
 
@@ -480,7 +492,7 @@ def _bare_source_identifiers(code: str) -> set[str]:
         for ident in re.findall(r"(?<![.\w])([A-Za-z_]\w*)\b(?!\s*\()", op.group(1)):
             bare.add(ident)
     bare.update(name for name, is_call in _union_operands(code) if not is_call)
-    local_vars = set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=", code))
+    local_vars = _local_tabular_vars(code)
     return {
         name for name in (bare - _BUILTINS - _STATEMENT_PREFIXES - local_vars)
         if not is_standard_builtin_asim_parser(name)
@@ -567,7 +579,7 @@ def opaque_functions(query: str, *, include_bare: bool = True) -> set[str]:
     calls.update(name for name, is_call in _union_operands(code) if is_call)
     calls.update(quoted_calls)
     local_funcs = set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=\s*(?:view\s*)?\(", code))
-    local_vars = set(re.findall(r"\blet\s+([A-Za-z_]\w*)\s*=", code))
+    local_vars = _local_tabular_vars(code)
     result = calls - _BUILTINS - _STATEMENT_PREFIXES - local_funcs - local_vars
     result |= _parameter_source_or_call_tokens(query)
     if include_bare:

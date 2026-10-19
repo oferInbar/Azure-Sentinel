@@ -125,6 +125,25 @@ themselves establish a toolkit fix is required.
   `deployment`, `mock_ingestion`, `rule_parity`, `workbook_qualification`) and
   `evaluate_qualification_promotion_gate` to verify end-to-end qualification
   readiness before promoting `qualification` as the default profile.
+- **Raise minimum V3.1 solution release version floor to `>= 3.2.2 and < 4.0.0`.**
+  Updated V3.1 solution version policy documentation and workflow examples to
+  require canonical solution versions in `[3.2.2, 4.0.0)`.
+- **Add cross-surface `AlertEvidence` Azure resource column compatibility aliases
+  and document deterministic `SecurityAlert`/`SecurityIncident` mappings.**
+  Added `ALERT_EVIDENCE_CROSS_SURFACE_EXPRESSIONS` using
+  `coalesce(tostring(column_ifexists(...)))` so migrated `SecurityAlert` and
+  `SecurityIncident` queries referencing `ResourceID`/`AzureResourceId`,
+  `ResourceType`/`AzureResourceType`, or `SubscriptionId`/`AzureSubscriptionId`
+  execute identically across Defender XDR Advanced Hunting and Azure Monitor /
+  Sentinel Log Analytics.
+- **Bundle Microsoft Graph Bicep/ARM template (`grant-graph-hunting-scopes.arm.json`)
+  and `build_missing_graph_scope_arm_offer` remediation helper.** Added bundled
+  `grant-graph-hunting-scopes.bicep` and `grant-graph-hunting-scopes.arm.json`
+  templates under `solution_manager/qualification/templates/` and
+  `build_missing_graph_scope_arm_offer` to offer explicit-approval deployment of
+  `Microsoft.Graph/applications@v1.0`, `servicePrincipals@v1.0`, and
+  `oauth2PermissionGrants@v1.0` when `ThreatHunting.Read.All` or
+  `CustomDetection.ReadWrite.All` is missing.
 
 ## Candidate follow-ups
 

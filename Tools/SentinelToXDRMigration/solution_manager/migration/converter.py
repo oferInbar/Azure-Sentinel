@@ -103,6 +103,7 @@ NRT_SUPPORTED_TABLES = frozenset(
         "SecurityAlert",
         "SecurityEvent",
         "SigninLogs",
+        "Syslog",
     )
 )
 
@@ -422,6 +423,15 @@ SECURITY_ALERT_DIRECT_COLUMN_MAP: dict[str, str] = {
     "Tactics": "AttackTechniques",
     "Entities": "AdditionalFields",
 }
+ALERT_EVIDENCE_CROSS_SURFACE_EXPRESSIONS: dict[str, str] = {
+    "ResourceId": 'coalesce(tostring(column_ifexists("ResourceID", "")), tostring(column_ifexists("AzureResourceId", "")))',
+    "AzureResourceId": 'coalesce(tostring(column_ifexists("ResourceID", "")), tostring(column_ifexists("AzureResourceId", "")))',
+    "ResourceID": 'coalesce(tostring(column_ifexists("ResourceID", "")), tostring(column_ifexists("AzureResourceId", "")))',
+    "ResourceType": 'coalesce(tostring(column_ifexists("ResourceType", "")), tostring(column_ifexists("AzureResourceType", "")))',
+    "AzureResourceType": 'coalesce(tostring(column_ifexists("ResourceType", "")), tostring(column_ifexists("AzureResourceType", "")))',
+    "SubscriptionId": 'coalesce(tostring(column_ifexists("SubscriptionId", "")), tostring(column_ifexists("AzureSubscriptionId", "")))',
+    "AzureSubscriptionId": 'coalesce(tostring(column_ifexists("SubscriptionId", "")), tostring(column_ifexists("AzureSubscriptionId", "")))',
+}
 SECURITY_ALERT_COMPAT_ALIAS_EXPRESSIONS: dict[str, str] = {
     "SystemAlertId": "AlertId",
     "AlertName": "Title",
@@ -436,6 +446,7 @@ SECURITY_ALERT_COMPAT_ALIAS_EXPRESSIONS: dict[str, str] = {
     "HostName": "DeviceName",
     "IPAddress": "RemoteIP",
     "UserPrincipalName": "AccountUpn",
+    **ALERT_EVIDENCE_CROSS_SURFACE_EXPRESSIONS,
 }
 SECURITY_INCIDENT_DIRECT_COLUMN_MAP: dict[str, str] = {
     "TimeGenerated": "Timestamp",
@@ -457,6 +468,7 @@ SECURITY_INCIDENT_COMPAT_ALIAS_EXPRESSIONS: dict[str, str] = {
     "HostName": "DeviceName",
     "IPAddress": "RemoteIP",
     "UserPrincipalName": "AccountUpn",
+    **ALERT_EVIDENCE_CROSS_SURFACE_EXPRESSIONS,
 }
 ALERT_EVIDENCE_INDICATOR_TOKENS = frozenset({
     "Entities",
@@ -491,6 +503,7 @@ ALERT_EVIDENCE_INDICATOR_TOKENS = frozenset({
     "HostName",
     "IPAddress",
     "UserPrincipalName",
+    *ALERT_EVIDENCE_CROSS_SURFACE_EXPRESSIONS.keys(),
 })
 MITRE_TACTIC_NAMES = frozenset({
     "InitialAccess",
@@ -759,6 +772,7 @@ def convert_security_alert_incident_query(
             "HostName",
             "IPAddress",
             "UserPrincipalName",
+            *ALERT_EVIDENCE_CROSS_SURFACE_EXPRESSIONS.keys(),
         ]
         if is_incident
         else [
@@ -775,6 +789,7 @@ def convert_security_alert_incident_query(
             "HostName",
             "IPAddress",
             "UserPrincipalName",
+            *ALERT_EVIDENCE_CROSS_SURFACE_EXPRESSIONS.keys(),
         ]
     )
 
@@ -783,7 +798,17 @@ def convert_security_alert_incident_query(
         re.match(r"^(?:project(?:-away|-keep|-rename|-reorder)?|extend|summarize|mv-expand)\b", stage.strip(), re.IGNORECASE)
         for stage in downstream_stages
     )
-    always_compat_keys = {"Description", "Entities", "Status", "AlertIds", "CompromisedEntity", "HostName", "IPAddress", "UserPrincipalName"}
+    always_compat_keys = {
+        "Description",
+        "Entities",
+        "Status",
+        "AlertIds",
+        "CompromisedEntity",
+        "HostName",
+        "IPAddress",
+        "UserPrincipalName",
+        *ALERT_EVIDENCE_CROSS_SURFACE_EXPRESSIONS.keys(),
+    }
     if is_incident:
         always_compat_keys = always_compat_keys | {"IncidentName", "IncidentNumber", "Severity", "Status"}
 

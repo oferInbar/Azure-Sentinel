@@ -102,6 +102,35 @@ class TestSecurityAlertAndIncidentConversion:
         assert "AlertInfo\n| join kind=leftouter AlertEvidence on AlertId" in converted
         assert "Entities = AdditionalFields" in converted
 
+    def test_security_alert_cross_surface_azure_resource_columns_emit_coalesce_aliases(self) -> None:
+        query = (
+            "SecurityAlert\n"
+            "| where isnotempty(AzureResourceId) or isnotempty(ResourceID)\n"
+            "| where AzureResourceType =~ 'microsoft.containerservice/managedclusters'\n"
+            "| project TimeGenerated, SystemAlertId, AlertName, AzureResourceId, ResourceID, "
+            "AzureResourceType, AzureSubscriptionId, CloudResource"
+        )
+        converted, notes, renamed = convert_security_alert_incident_query(query)
+        assert "security_alert_migrated_to_alert_info_and_evidence" in notes
+        assert renamed == {"SecurityAlert": "AlertInfo"}
+        assert "AlertInfo\n| join kind=leftouter AlertEvidence on AlertId" in converted
+        assert (
+            'AzureResourceId = coalesce(tostring(column_ifexists("ResourceID", "")), '
+            'tostring(column_ifexists("AzureResourceId", "")))'
+        ) in converted
+        assert (
+            'ResourceID = coalesce(tostring(column_ifexists("ResourceID", "")), '
+            'tostring(column_ifexists("AzureResourceId", "")))'
+        ) in converted
+        assert (
+            'AzureResourceType = coalesce(tostring(column_ifexists("ResourceType", "")), '
+            'tostring(column_ifexists("AzureResourceType", "")))'
+        ) in converted
+        assert (
+            'AzureSubscriptionId = coalesce(tostring(column_ifexists("SubscriptionId", "")), '
+            'tostring(column_ifexists("AzureSubscriptionId", "")))'
+        ) in converted
+
     def test_security_incident_query_maps_to_alert_info_with_compatibility_projection(self) -> None:
         query = (
             "SecurityIncident\n"
@@ -275,7 +304,7 @@ class TestSecurityAlertAndIncidentConversion:
         sol_data_path.write_text(json.dumps(sol_data, indent=2), encoding="utf-8")
         summary = convert_workbooks(
             sol,
-            config={"targetVersion": "3.2.0"},
+            config={"targetVersion": "3.2.2"},
             report_directory=tmp_path / "reports",
         )
         assert summary["converted"] == 1

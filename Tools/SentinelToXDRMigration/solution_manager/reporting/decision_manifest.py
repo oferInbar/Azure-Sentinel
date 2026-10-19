@@ -991,18 +991,39 @@ def build_sanitized_decision_manifest(
     qual_state = state.get("qualificationSummary") if isinstance(state.get("qualificationSummary"), Mapping) else {}
     parity_doc = _find_artifact_json(root, run_dir, "alert-parity-report.json")
     query_parity_doc = _find_artifact_json(root, run_dir, "mock-query-parity.json")
+    pipeline_doc = _find_artifact_json(root, run_dir, "qualification-pipeline-state.json")
     alert_parity_stage = ((state.get("stages") or {}).get("alertParity") or {}) if isinstance(state.get("stages"), Mapping) else {}
     if (
         qual_state
         or parity_doc
         or query_parity_doc
+        or pipeline_doc
         or workflow_profile == "qualification"
         or alert_parity_stage.get("status") in {"passed", "failed", "blocked"}
     ):
+        wb_contract = (
+            pipeline_doc.get("workbookContractResult")
+            if isinstance(pipeline_doc.get("workbookContractResult"), Mapping)
+            else {}
+        )
+        wb_queries = wb_contract.get("queryValidation") if isinstance(wb_contract.get("queryValidation"), list) else []
+        wb_query_summary = ""
+        if wb_queries and isinstance(wb_queries[0], Mapping):
+            executed_cnt = wb_queries[0].get("executedQueryCount")
+            failed_cnt = wb_queries[0].get("failedQueryCount")
+            if isinstance(executed_cnt, int) and isinstance(failed_cnt, int):
+                wb_query_summary = f" Workbook qualification passed ({executed_cnt - failed_cnt}/{executed_cnt} queries)."
+        pipeline_summary = ""
+        if pipeline_doc.get("status") == "passed" and (pipeline_doc.get("promotionGate") or {}).get("passed") is True:
+            pipeline_summary = (
+                "Qualification pipeline passed: preflight, disabled ARM template deployment with GET readback, "
+                f"synthetic DCR mock ingestion, and functional qualification verified.{wb_query_summary}"
+            )
         qual_decision = (
             qual_state.get("decision")
             or qual_state.get("status")
             or parity_doc.get("status")
+            or pipeline_doc.get("status")
             or alert_parity_stage.get("status")
             or ("qualified" if workflow_profile == "qualification" else "not-run")
         )
@@ -1010,6 +1031,7 @@ def build_sanitized_decision_manifest(
             qual_state.get("rationale")
             or qual_state.get("reason")
             or parity_doc.get("summary")
+            or pipeline_summary
             or alert_parity_stage.get("message")
             or f"Qualification profile summary ({qual_decision})."
         )
@@ -1022,11 +1044,13 @@ def build_sanitized_decision_manifest(
                 qual_state.get("sourceSha256")
                 or parity_doc.get("selectionPlanSha256")
                 or query_parity_doc.get("sourceSha256")
+                or pipeline_doc.get("planSha256")
             ),
             target_sha256=(
                 qual_state.get("targetSha256")
                 or parity_doc.get("reportSha256")
                 or query_parity_doc.get("targetSha256")
+                or ((pipeline_doc.get("ingestionEvidence") or {}).get("payloadSha256") if isinstance(pipeline_doc.get("ingestionEvidence"), Mapping) else None)
             ),
         )
 
