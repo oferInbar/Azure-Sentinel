@@ -171,6 +171,7 @@
   "ProofpointTAP",
   "ProofpointTAPNativePoller",
   "ProofpointTAPv2",
+  "PulumiAuditLogsDefinition",
   "PulseConnectSecure",
   "QscoutAppEventsCCFDefinition",
   "QualysKB",
@@ -236,6 +237,7 @@
   "ZscalerPrivateAccess",
   "illusiveAttackManagementSystem",
   "WindowsSecurityEvents",
+  "WhoisFreaks",
   "IronNetIronDefense",
   "GCPIAMDataConnector",
   "Illusive",
@@ -362,6 +364,6 @@
   "UniqkeyEventsConnector",
   "StratoSecurePush",
   "CatoNetworksEventsPush",
-  "RecordedFuture"
+  "RecordedFuture",
+  "DelineaPlatformConnector"
 ]
-
