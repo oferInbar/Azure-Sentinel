@@ -206,43 +206,16 @@ themselves establish a toolkit fix is required.
 
 ## Candidate follow-ups
 
-- [x] **Flip default workflow profile from `authoring` to `qualification` after live
-  lab sign-off.** Completed: `workflow-init`, `initialize_workflow`, canonical
-  workflow docs, and all agent adapters now default to `qualification` with
-  `authoring` preserved as an explicit offline/ISV fallback.
-- [x] **Unblock the six explicitly blocked identity/risk tables in the mapping
-  catalog.** Change `AADProvisioningLogs`, `AADRiskyUsers`, `AADUserRiskEvents`,
-  `ADFSSignInLogs`, `RiskyUsers`, and `UserRiskEvents` from `tier: "blocked"` to
-  `tier: "1to1"` (same-name Advanced Hunting parser support).
-- [x] **Allow working KQL queries in Defender workbooks even when a table is not
-  listed in the static catalog.** Ensure a missing static catalog entry never
-  blocks workbook conversion, validation replay, publication, or V3.1 packaging
-  when the query works in Advanced Hunting or has reviewed dependency/runtime
-  evidence.
-- [x] **Assume Sentinel table exposure in Defender XDR once the required data
-  connector is connected.** Reflect across dependency and validation checks that
-  a table belonging to the `sentinel` workload with a declared/connected data
-  connector is exposed in the unified Defender XDR environment.
-- [x] **Preserve `TimeGenerated` everywhere without rewriting to `Timestamp`.**
-  Remove `TimeGenerated -> Timestamp` column rewrites across detection and
-  workbook conversion, catalog renames, and validators, because Defender XDR
-  Advanced Hunting virtually maps `TimeGenerated` to `Timestamp` on all tables.
-- [x] **Let live lab or Data Connector table evidence override static table
-  lists.** Treat evidence of a table in the live lab or in a solution Data
-  Connector definition file (`dataTypes`) as sufficient to override static table
-  catalogs, distinguishing "unknown to our offline snapshot" from "unsupported in
-  this environment."
-- [x] **Surface CI `DocumentsLinkValidation` locale failures in validation mode and recommend fixes:** Extend `VAL-URL-01` (`solution_manager/qualification/pr_check_runner.py`) and `validate` mode to scan all solution text files (including `Evidence/`, `Analytic Rules/`, `XDR Detections/`, `SolutionMetadata.json`, and `ReleaseNotes.md`) using the CI regex `/(https:\/\/docs\.microsoft\.com|https:\/\/azure\.microsoft\.com)(\/[a-z]{2}-[a-z]{2})/i` from `.script/documentsLinkValidator.ts` (and optionally `learn.microsoft.com`), surface any matches in validation mode with a recommended locale-stripped URL fix, and normalize recorded `resolvedUrl` values when generating URL verification evidence (`QUAL-URL-01`).
 - [ ] `[P0]` **Support multi-tactic mappings in XDR Custom Detections (`XDR Detections/*.yaml` and V3.1 packaging):** Preserve all Sentinel `tactics[]` across `converter.py` (`solution_manager/migration/converter.py`), `customDetections.ps1` (`Tools/Create-Azure-Sentinel-Solution/common/customDetections.ps1`), and `deploy.py` instead of truncating `tactics` to `tactics[0]` in `detectionAction.alertTemplate.category`, aligning with Microsoft Graph `/beta/security/rules/detectionRules` and Defender XDR multi-tactic support (e.g., comma-separated `category` or multi-tactic schema fields).
-- [ ] `[P2]` **Backfill multi-tactic mappings across already-migrated XDR Custom Detections:** Re-convert and repackage existing migrated solutions whose source Sentinel Analytic Rules declare multiple `tactics` so their `XDR Detections/*.yaml` and packaged `mainTemplate.json` preserve the full tactic set instead of a single primary tactic.
-- [ ] `[P1]` **Make live Playwright browser execution the enforced default in Qualification mode:** Wire `QualificationOrchestrator` and `verify_workbook_playwright_rendering` (`solution_manager/qualification/workbook_playwright.py`) to execute real Playwright browser verification (`capture_workbook_browser` / `execute_workbook_browser` in `workbook_browser.py` with `producer: "playwright-dom-v1"`) by default instead of falling back to the `playwright_runner=None` pass stub when `enable_playwright=True`, and require real Playwright DOM/screenshot traversal evidence for `E2E-Q05` and `TK-Q06`.
 - [ ] `[P0]` **Ensure `qualification` is the enforced default across all remaining entry points and flows:** Audit and update any remaining CLI subcommands, orchestrator entry points, validation/reporting helpers, and documentation/memory references that still fall back to `authoring` or offline-only stubs so `qualification` is consistently enforced end-to-end by default.
+- [ ] `[P0]` **Support secondary workspaces on solution content:** Support targeting and qualifying solution content (Custom Detections, Defender Workbooks, Advanced Hunting queries, and schema discovery via `workspaceId`) against secondary Log Analytics workspaces onboarded to Defender XDR in addition to the primary workspace.
+- [ ] `[P1]` **Make live Playwright browser execution the enforced default in Qualification mode:** Wire `QualificationOrchestrator` and `verify_workbook_playwright_rendering` (`solution_manager/qualification/workbook_playwright.py`) to execute real Playwright browser verification (`capture_workbook_browser` / `execute_workbook_browser` in `workbook_browser.py` with `producer: "playwright-dom-v1"`) by default instead of falling back to the `playwright_runner=None` pass stub when `enable_playwright=True`, and require real Playwright DOM/screenshot traversal evidence for `E2E-Q05` and `TK-Q06`.
 - [ ] `[P1]` **Enforce AI-ready table schema requirements (table & column descriptions) in Qualification mode and adopt the new Graph Advanced Hunting schema endpoints:** Require every solution table (`Microsoft.OperationalInsights/workspaces/tables` in `Data Connectors/*_tables.json` and `Package/mainTemplate.json`) to provide a non-empty, meaningful table description (`properties.schema.description`) and 100% column description coverage (`properties.schema.columns[].description`) in static validation (`VAL-TBL-01..03`) and live qualification readback (`QUAL-TBL-01..03`, leaving deep schema and entity mapping out of Phase 1). Start using the new Microsoft Graph Security Advanced Hunting schema and query endpoints (`GET /beta/security/getHuntingSchema`, `GET /beta/security/getHuntingSchemaTables` / `getHuntingSchemaTables(workspaceId=<guid>)`, and `GET /beta/security/getRunHuntingQuery(...,workspaceId=<guid>)`) alongside ARM `Tables - Get` to verify live table/column descriptions and workspace-scoped schema exposure in Defender XDR.
+- [ ] `[P2]` **Backfill multi-tactic mappings across already-migrated XDR Custom Detections:** Re-convert and repackage existing migrated solutions whose source Sentinel Analytic Rules declare multiple `tactics` so their `XDR Detections/*.yaml` and packaged `mainTemplate.json` preserve the full tactic set instead of a single primary tactic.
 - [ ] `[P2]` **Incorporate the ASIM Content PR Validation workflow (QTP & ITP) into the Qualification flow:** Integrate ASIM query-time parser (QTP) and ingestion-time parser (ITP) discovery and qualification as a shared target-based subsystem across `QualificationOrchestrator` and `pr_check_runner.py` (detailed plan in `Tools/ignored/ASIM_Qualification_Integration_Plan.md`):
   - **Static checks (`VAL-ASIM-01..03`):** QTP YAML template/naming/schema/parameter contract (`VerifyASimParserTemplate.py`), sample CSV fixture typing and single-`Type` validation (`Sample Data/ASIM/*_IngestedLogs.csv`), and ITP transform KQL/`ParserFilterQuery`/`SourceRawTable`/`TargetASIMTable` validation (`asim_ingest_time_validation.py`).
   - **Live Sentinel QTP/ITP checks (`QUAL-ASIM-01..06`, `QUAL-ASIM-09`):** Timestamp-rebased fixture preparation (100 ns slot isolation), custom `_CL` table and temporary pass-through/transform DCR setup, `LogsIngestionClient` upload and visibility verification, query-local `ASimSchemaTester` (`QUAL-ASIM-02`), `ASimDataTester` (`QUAL-ASIM-03`), parameterized `ASimFilteringTest` (`QUAL-ASIM-04`), ITP transformation DCR ingestion into `Microsoft-{TargetASIMTable}` (`QUAL-ASIM-05`), optional QTP-vs-ITP parity (`QUAL-ASIM-06`), and deterministic temporary DCR cleanup (`QUAL-ASIM-09`).
   - **Live Defender XDR Advanced Hunting checks (`QUAL-ASIM-07..08`) & Evidence:** Verify `_ASim_*` / `_Im_*` built-in/saved function provenance and workspace-scoped backing tables via `GET /beta/security/getHuntingSchema` and `GET /beta/security/getHuntingSchemaTables(workspaceId=<guid>)` (`QUAL-ASIM-07`), execute workspace-scoped AH invocation via `POST /beta/security/runHuntingQuery` (`QUAL-ASIM-08`), and emit `Evidence/asim-qualification.json` into the HTML qualification report.
-- [ ] `[P0]` **Support secondary workspaces on solution content:** Support targeting and qualifying solution content (Custom Detections, Defender Workbooks, Advanced Hunting queries, and schema discovery via `workspaceId`) against secondary Log Analytics workspaces onboarded to Defender XDR in addition to the primary workspace.
 
 Any future environment write remains separately gated by explicit approval
 immediately before the exact operation. No cloud action is authorized by this
