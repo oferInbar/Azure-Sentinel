@@ -1,0 +1,76 @@
+name: Solution Manager & XDR Migration Feature Request
+description: Propose an enhancement or follow-up item for the Sentinel-to-Defender-XDR Solution Manager toolkit
+title: "[Solution Manager] Feature Request: "
+labels: ["Solution-Manager", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to propose a new capability, validation rule, qualification check, or workflow improvement for the **Sentinel-to-Defender-XDR Solution Manager** toolkit (`Tools/SentinelToXDRMigration/`).
+        You can also reference this issue in a lightweight PR to [`Tools/SentinelToXDRMigration/FOLLOW_UPS.md`](https://github.com/Azure/Azure-Sentinel/blob/master/Tools/SentinelToXDRMigration/FOLLOW_UPS.md#community-proposed-enhancements).
+
+  - type: dropdown
+    id: workflow_stage
+    attributes:
+      label: Workflow Stage
+      description: Which stage of the Solution Manager lifecycle does this request target?
+      options:
+        - Authoring
+        - Conversion (Sentinel -> XDR)
+        - Validation (Static / Offline)
+        - Qualification (Live Lab / Parity / Playwright)
+        - Packaging (V3.1)
+        - Reporting & Evidence
+        - Agent / CLI UX
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: artifact_type
+    attributes:
+      label: Artifact Type
+      description: Which solution artifact or component is primarily affected?
+      options:
+        - Analytic Rules / XDR Custom Detections
+        - Workbooks / Defender XDR Workbooks
+        - Data Connectors & Table Schemas
+        - ASIM / Parsers
+        - Solution Metadata & Packaging
+        - Multiple / General
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Limitation
+      description: Describe the current limitation, gap, or friction point when authoring, converting, validating, qualifying, or packaging a solution.
+      placeholder: "Example: When migrating Analytic Rules that reference secondary workspaces..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed Behavior / Solution
+      description: Describe the desired behavior, CLI/agent workflow, validation check, or packaging output.
+      placeholder: "Example: Allow specifying secondary workspace IDs during qualification and verify..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: example_context
+    attributes:
+      label: Example Scenario or Sample Artifacts
+      description: Optional — provide a sample solution name, KQL snippet, YAML/ARM excerpt, or reproduction steps.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: follow_up_tracking
+    attributes:
+      label: Follow-Up List Candidate
+      description: Let maintainers know if you would like this tracked in FOLLOW_UPS.md.
+      options:
+        - label: Propose adding this item to `Tools/SentinelToXDRMigration/FOLLOW_UPS.md` (`Community Proposed Enhancements` / `Candidate follow-ups`)

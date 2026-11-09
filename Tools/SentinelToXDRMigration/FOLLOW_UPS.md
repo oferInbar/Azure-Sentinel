@@ -184,11 +184,11 @@ themselves establish a toolkit fix is required.
   to `XDR Detections/*.yaml` and `XDR Workbooks/*.json`, and allowed verified
   live `qualification` evidence to override offline static KQL analyzer false
   positives.
-- **Instrument NPF metrics in CI labeler, validation, and qualification
-  artifacts.** Added `passesPerSolution`, `commitPasses`, `highestStage`,
-  `verdicts`, `runNumber`, `stageTimestamps`, `verdict`, `verdictReasons`,
-  `overrides[]`, and `operatorHash` across `.github/workflows/npf-pr-labeler.yaml`
-  and `solution_manager`.
+- **Instrument New Publishing Flow (NPF) metrics in CI labeler, validation, and
+  qualification artifacts.** Added `passesPerSolution`, `commitPasses`,
+  `highestStage`, `verdicts`, `runNumber`, `stageTimestamps`, `verdict`,
+  `verdictReasons`, `overrides[]`, and `operatorHash` across
+  `.github/workflows/npf-pr-labeler.yaml` and `solution_manager`.
 - **Unblock six identity/risk tables, preserve `TimeGenerated` everywhere, and
   allow lab/connector table evidence to override static catalogs.** Changed
   `AADProvisioningLogs`, `AADRiskyUsers`, `AADUserRiskEvents`, `ADFSSignInLogs`,
@@ -209,15 +209,37 @@ themselves establish a toolkit fix is required.
 - [ ] `[P0]` **Support multi-tactic mappings in XDR Custom Detections (`XDR Detections/*.yaml` and V3.1 packaging):** Preserve all Sentinel `tactics[]` across `converter.py` (`solution_manager/migration/converter.py`), `customDetections.ps1` (`Tools/Create-Azure-Sentinel-Solution/common/customDetections.ps1`), and `deploy.py` instead of truncating `tactics` to `tactics[0]` in `detectionAction.alertTemplate.category`, aligning with Microsoft Graph `/beta/security/rules/detectionRules` and Defender XDR multi-tactic support (e.g., comma-separated `category` or multi-tactic schema fields).
 - [ ] `[P0]` **Ensure `qualification` is the enforced default across all remaining entry points and flows:** Audit and update any remaining CLI subcommands, orchestrator entry points, validation/reporting helpers, and documentation/memory references that still fall back to `authoring` or offline-only stubs so `qualification` is consistently enforced end-to-end by default.
 - [ ] `[P0]` **Support secondary workspaces for XDR Custom Detections:** Support targeting, deploying, and qualifying XDR Custom Detections (`XDR Detections/*.yaml`, Advanced Hunting queries, and schema discovery via `workspaceId`) against secondary Log Analytics workspaces onboarded to Defender XDR in addition to the primary workspace.
-- [ ] `[P0]` **Enforce mandatory AI-ready table schema requirements (table & column descriptions) in both Validation and Qualification modes and adopt the new Graph Advanced Hunting schema endpoints:** Require every solution table (`Microsoft.OperationalInsights/workspaces/tables` in `Data Connectors/*_tables.json` and `Package/mainTemplate.json`) to provide a non-empty, meaningful table description (`properties.schema.description`) and 100% column description coverage (`properties.schema.columns[].description`) as mandatory blocking checks in both Validation mode (`VAL-TBL-01..03` in `validate_solution` / `validate_content` and `pr_check_runner.py`) and Qualification mode (`QUAL-TBL-01..03` live readback, leaving deep schema and entity mapping out of Phase 1). Start using the new Microsoft Graph Security Advanced Hunting schema and query endpoints (`GET /beta/security/getHuntingSchema`, `GET /beta/security/getHuntingSchemaTables` / `getHuntingSchemaTables(workspaceId=<guid>)`, and `GET /beta/security/getRunHuntingQuery(...,workspaceId=<guid>)`) alongside ARM `Tables - Get` to verify live table/column descriptions and workspace-scoped schema exposure in Defender XDR.
+- [ ] `[P0]` **Enforce mandatory AI-ready table schema requirements (table & column descriptions) in both Validation and Qualification modes and adopt the new Graph Advanced Hunting schema endpoints:** Require every solution table (`Microsoft.OperationalInsights/workspaces/tables` in `Data Connectors/*_tables.json` and `Package/mainTemplate.json`) to provide a non-empty, meaningful table description (`properties.schema.description`) and 100% column description coverage (`properties.schema.columns[].description`) as mandatory blocking checks in both Validation mode (`VAL-TBL-01..03` in `validate_solution` / `validate_content` and `pr_check_runner.py`) and Qualification mode (`QUAL-TBL-01..03` live readback). Use the Microsoft Graph Security Advanced Hunting schema and query APIs alongside ARM `Tables - Get` to verify live table/column descriptions and workspace-scoped schema exposure in Defender XDR.
 - [ ] `[P1]` **Make live Playwright browser execution the enforced default in Qualification mode:** Wire `QualificationOrchestrator` and `verify_workbook_playwright_rendering` (`solution_manager/qualification/workbook_playwright.py`) to execute real Playwright browser verification (`capture_workbook_browser` / `execute_workbook_browser` in `workbook_browser.py` with `producer: "playwright-dom-v1"`) by default instead of falling back to the `playwright_runner=None` pass stub when `enable_playwright=True`, and require real Playwright DOM/screenshot traversal evidence for `E2E-Q05` and `TK-Q06`.
 - [ ] `[P1]` **Agent to check that detection tactics match the detection intent and recommend additional TTPs (optional):** Have the agent evaluate whether declared MITRE ATT&CK `tactics` and `relevantTechniques` on Sentinel Analytic Rules and XDR Custom Detections align with the query logic and detection intent, and surface optional recommendations for missing or better-matching TTPs during authoring/review.
 - [ ] `[P1]` **Support secondary workspaces for Defender XDR Workbooks:** Support targeting, deploying, and qualifying Defender XDR Workbooks (`XDR Workbooks/*.json` and workbook queries/pickers via `workspaceId`) against secondary Log Analytics workspaces onboarded to Defender XDR in addition to the primary workspace.
 - [ ] `[P2]` **Backfill multi-tactic mappings across already-migrated XDR Custom Detections:** Re-convert and repackage existing migrated solutions whose source Sentinel Analytic Rules declare multiple `tactics` so their `XDR Detections/*.yaml` and packaged `mainTemplate.json` preserve the full tactic set instead of a single primary tactic.
-- [ ] `[P2]` **Incorporate the ASIM Content PR Validation workflow (QTP & ITP) into the Qualification flow:** Integrate ASIM query-time parser (QTP) and ingestion-time parser (ITP) discovery and qualification as a shared target-based subsystem across `QualificationOrchestrator` and `pr_check_runner.py` (detailed plan in `Tools/ignored/ASIM_Qualification_Integration_Plan.md`):
+- [ ] `[P2]` **Incorporate the ASIM Content PR Validation workflow (QTP & ITP) into the Qualification flow:** Integrate ASIM query-time parser (QTP) and ingestion-time parser (ITP) discovery and qualification as a shared target-based subsystem across `QualificationOrchestrator` and `pr_check_runner.py`:
   - **Static checks (`VAL-ASIM-01..03`):** QTP YAML template/naming/schema/parameter contract (`VerifyASimParserTemplate.py`), sample CSV fixture typing and single-`Type` validation (`Sample Data/ASIM/*_IngestedLogs.csv`), and ITP transform KQL/`ParserFilterQuery`/`SourceRawTable`/`TargetASIMTable` validation (`asim_ingest_time_validation.py`).
   - **Live Sentinel QTP/ITP checks (`QUAL-ASIM-01..06`, `QUAL-ASIM-09`):** Timestamp-rebased fixture preparation (100 ns slot isolation), custom `_CL` table and temporary pass-through/transform DCR setup, `LogsIngestionClient` upload and visibility verification, query-local `ASimSchemaTester` (`QUAL-ASIM-02`), `ASimDataTester` (`QUAL-ASIM-03`), parameterized `ASimFilteringTest` (`QUAL-ASIM-04`), ITP transformation DCR ingestion into `Microsoft-{TargetASIMTable}` (`QUAL-ASIM-05`), optional QTP-vs-ITP parity (`QUAL-ASIM-06`), and deterministic temporary DCR cleanup (`QUAL-ASIM-09`).
-  - **Live Defender XDR Advanced Hunting checks (`QUAL-ASIM-07..08`) & Evidence:** Verify `_ASim_*` / `_Im_*` built-in/saved function provenance and workspace-scoped backing tables via `GET /beta/security/getHuntingSchema` and `GET /beta/security/getHuntingSchemaTables(workspaceId=<guid>)` (`QUAL-ASIM-07`), execute workspace-scoped AH invocation via `POST /beta/security/runHuntingQuery` (`QUAL-ASIM-08`), and emit `Evidence/asim-qualification.json` into the HTML qualification report.
+  - **Live Defender XDR Advanced Hunting checks (`QUAL-ASIM-07..08`) & Evidence:** Verify `_ASim_*` / `_Im_*` built-in/saved function provenance and workspace-scoped backing tables via Microsoft Graph Security Advanced Hunting schema and workspace-scoped query APIs (`QUAL-ASIM-07`), execute workspace-scoped Advanced Hunting invocation (`QUAL-ASIM-08`), and emit `Evidence/asim-qualification.json` into the HTML qualification report.
+
+## Community Feature Requests & Feedback
+
+Solution authors, ISV partners, and community contributors can propose new
+capabilities or workflow improvements for the Sentinel-to-Defender-XDR Solution
+Manager toolkit in two ways:
+
+1. **Open a GitHub Issue (recommended):** Use the
+   [Solution Manager & XDR Migration Feature Request template](https://github.com/Azure/Azure-Sentinel/issues/new?template=solution_manager_feature_request.yml&labels=Solution-Manager,enhancement&title=%5BSolution+Manager%5D+Feature+Request%3A+)
+   to describe the workflow stage, artifact type, problem statement, and
+   proposed behavior.
+2. **Submit a lightweight Pull Request:** Add a row to the
+   [Community Proposed Enhancements](#community-proposed-enhancements) table
+   below linking to your issue or PR. Maintainers triage community proposals
+   and promote accepted items into `## Candidate follow-ups` with a priority
+   tag (`[P0]`, `[P1]`, or `[P2]`).
+
+## Community Proposed Enhancements
+
+| Proposal | Workflow Stage / Artifact | Use Case & Benefit | Issue / PR | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| _Example: Custom parser parameter validation hints_ | _Validation / ASIM & Parsers_ | _Surface actionable parameter signature fixes during static validation before live lab deployment_ | _#00000_ | _Template (replace or append rows via PR)_ |
 
 Any future environment write remains separately gated by explicit approval
 immediately before the exact operation. No cloud action is authorized by this
