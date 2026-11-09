@@ -3808,3 +3808,26 @@ python -m unittest discover -s Tools\SentinelToXDRMigration\tests -p "test_*.py"
 - solution migration dashboard;
 - optional retrieval-assisted guidance for schemas, prior art, and historical
   findings.
+
+## Feature Requests & Community Roadmap
+
+Solution authors, ISV partners, and community contributors can review tracked
+follow-up work and propose new capabilities for the Sentinel-to-Defender-XDR
+Solution Manager toolkit (`Tools/SentinelToXDRMigration/`):
+
+1. **Open a structured GitHub Issue:** Use the
+   [Solution Manager & XDR Migration Feature Request form](https://github.com/Azure/Azure-Sentinel/issues/new?template=solution_manager_feature_request.yml&labels=Solution-Manager,enhancement&title=%5BSolution+Manager%5D+Feature+Request%3A+)
+   (`.github/ISSUE_TEMPLATE/solution_manager_feature_request.yml`) to select the
+   target **Workflow Stage** (`Authoring`, `Conversion`, `Validation`,
+   `Qualification`, `Packaging`, `Reporting & Evidence`, or `Agent / CLI UX`)
+   and **Artifact Type**, and describe the problem statement and proposed
+   behavior.
+2. **Propose or review roadmap items in [`FOLLOW_UPS.md`](FOLLOW_UPS.md):**
+   - Review prioritized (`[P0]`, `[P1]`, `[P2]`) engineering items under
+     [`## Candidate follow-ups`](FOLLOW_UPS.md#candidate-follow-ups) and
+     recently delivered capabilities under
+     [`## Recently completed in V1 PREVIEW`](FOLLOW_UPS.md#recently-completed-in-v1-preview).
+   - Submit a lightweight Pull Request adding a row to
+     [`## Community Proposed Enhancements`](FOLLOW_UPS.md#community-proposed-enhancements)
+     linking to your GitHub Issue or PR for maintainer triage and promotion into
+     `## Candidate follow-ups`.
