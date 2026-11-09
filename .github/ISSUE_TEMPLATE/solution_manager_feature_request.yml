@@ -18,7 +18,7 @@ body:
         - Authoring
         - Conversion (Sentinel -> XDR)
         - Validation (Static / Offline)
-        - Qualification (Live Lab / Parity / Playwright)
+        - Qualification (Lab Verification)
         - Packaging (V3.1)
         - Reporting & Evidence
         - Agent / CLI UX
